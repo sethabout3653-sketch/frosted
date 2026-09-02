@@ -24,7 +24,7 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isValidId(messageId) && isValidChatMessage(request.resource.data);
       allow delete: if true;
-      allow update: if false;
+      allow update: if true;
     }
 
     function isValidSignal(data) {

@@ -3,7 +3,7 @@ import { MessageSquare, Users, X, Mic } from "lucide-react";
 import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import { ChatProfile, ChatMessage } from "../types";
-import { collection, query, orderBy, limit, onSnapshot } from "firebase/firestore";
+import { collection, query, orderBy, limit, onSnapshot, getDocs, where, writeBatch } from "firebase/firestore";
 import { db } from "../firebase";
 
 import VoiceChannel from "./VoiceChannel";
@@ -56,7 +56,7 @@ export default function Chat() {
     return () => unsubscribe();
   }, []);
 
-  const handleProfileComplete = (p: { username: string; photoURL: string }) => {
+  const handleProfileComplete = async (p: { username: string; photoURL: string }) => {
     const newProfile: ChatProfile = {
       uid: profile?.uid || "user_" + Math.random().toString(36).substring(2, 11),
       username: p.username,
@@ -67,6 +67,24 @@ export default function Chat() {
       localStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
     } catch (e) {}
     setActiveTab("chat");
+
+    // Update all previous messages sent by this user globally
+    try {
+      const q = query(collection(db, "messages"), where("uid", "==", newProfile.uid));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const batch = writeBatch(db);
+        snapshot.docs.forEach((doc) => {
+          batch.update(doc.ref, { 
+            username: newProfile.username, 
+            photoURL: newProfile.photoURL 
+          });
+        });
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error("Error updating previous messages:", error);
+    }
   };
 
   return (
