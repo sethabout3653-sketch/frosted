@@ -6,8 +6,6 @@ import {
   ArrowLeft,
   Maximize2,
   RefreshCw,
-  MousePointer,
-  Lock,
 } from "lucide-react";
 
 interface GamePlayerProps {
@@ -227,31 +225,6 @@ export default function GamePlayer({
 
         {/* Game Manipulation Buttons */}
         <div className="flex items-center gap-2">
-          {/* Pointer Lock (Lock Mouse for 360 Turning) Button */}
-          <button
-            id="player-pointerlock-btn"
-            onClick={isPointerLocked ? exitPointerLock : requestPointerLock}
-            className={`flex items-center justify-center h-10 px-3.5 rounded-lg border text-sm font-semibold transition-all cursor-pointer ${
-              isPointerLocked
-                ? "bg-green-500/20 border-green-500/50 text-green-300"
-                : "bg-neutral-800 border-neutral-700 hover:bg-neutral-700 hover:border-neutral-600 text-neutral-200"
-            }`}
-            title="Locks cursor inside game for 360° mouse turning (Baldi, FPS, 3D games)"
-          >
-            {isPointerLocked ? (
-              <>
-                <Lock size={15} className="mr-1.5 text-green-400" />
-                <span>Mouse Locked</span>
-              </>
-            ) : (
-              <>
-                <MousePointer size={15} className="mr-1.5 text-neutral-300" />
-                <span className="hidden sm:inline">Lock Mouse (360°)</span>
-                <span className="sm:hidden">Lock</span>
-              </>
-            )}
-          </button>
-
           {/* Reload Button */}
           <button
             id="player-reload-btn"
@@ -281,27 +254,9 @@ export default function GamePlayer({
         id="player-frame-container"
         ref={containerRef}
         onClick={requestPointerLock}
-        className="relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800 shadow-2xl transition-all duration-300 max-w-6xl mx-auto min-h-[70vh] mb-4 overflow-hidden group cursor-pointer"
+        onMouseDown={requestPointerLock}
+        className="relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800 shadow-2xl transition-all duration-300 max-w-6xl mx-auto min-h-[70vh] mb-4 overflow-hidden"
       >
-        {/* Pointer Lock Hint Overlay */}
-        {!isPointerLocked && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none opacity-80 group-hover:opacity-100 transition-opacity">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/80 backdrop-blur-md border border-neutral-700 text-neutral-300 text-xs font-medium shadow-lg">
-              <MousePointer size={13} className="text-white animate-bounce" />
-              <span>Click screen or <b>Lock Mouse</b> button for 360° turning</span>
-            </div>
-          </div>
-        )}
-
-        {isPointerLocked && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-950/80 backdrop-blur-md border border-green-700 text-green-300 text-xs font-semibold shadow-lg">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-              <span>Mouse Locked • Press <b>ESC</b> to unlock</span>
-            </div>
-          </div>
-        )}
-
         {/* Embedded Game frame */}
         {gameUrl && (
           <iframe
