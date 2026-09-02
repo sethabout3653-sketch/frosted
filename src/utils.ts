@@ -1,7 +1,7 @@
 import { Game } from "./types";
 import localZones from "./zones.json";
 
-export const COVER_BASE = "https://raw.githack.com/gn-math/covers/main";
+export const COVER_BASE = "https://raw.githubusercontent.com/gn-math/covers/main";
 export const HTML_BASE = "https://raw.githack.com/gn-math/html/main";
 export const ASSETS_JSON_URL = "https://raw.githubusercontent.com/gn-math/assets/main/zones.json";
 
@@ -10,8 +10,12 @@ export const ASSETS_JSON_URL = "https://raw.githubusercontent.com/gn-math/assets
  */
 export function formatCoverUrl(cover: string): string {
   if (!cover) return "";
-  if (cover.startsWith("http")) return cover;
-  return cover
+  let url = cover;
+  if (url.startsWith("http://")) url = url.replace("http://", "https://");
+  
+  if (url.startsWith("https://")) return url;
+  
+  return url
     .replace(/{COVER_URL}/g, COVER_BASE)
     .replace(/{HTML_URL}/g, HTML_BASE);
 }
@@ -20,8 +24,13 @@ export function formatCoverUrl(cover: string): string {
  * Normalizes a game's play URL by replacing placeholders with raw.githack URLs.
  */
 export function formatGameUrl(url: string): string {
-  if (url.startsWith("http")) return url;
-  return url
+  if (!url) return "";
+  let formattedUrl = url;
+  if (formattedUrl.startsWith("http://")) formattedUrl = formattedUrl.replace("http://", "https://");
+
+  if (formattedUrl.startsWith("https://") || formattedUrl.startsWith("lumin:")) return formattedUrl;
+  
+  return formattedUrl
     .replace(/{HTML_URL}/g, HTML_BASE)
     .replace(/{COVER_URL}/g, COVER_BASE);
 }

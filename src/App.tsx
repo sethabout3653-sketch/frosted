@@ -50,6 +50,7 @@ function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog")
 }
 
 export default function App() {
+  const [currentView, setCurrentView] = useState<"home" | "game" | "chat">("home");
   // Core games list state seeded synchronously with ALL catalog and Lumin games combined,
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
@@ -141,6 +142,7 @@ export default function App() {
 
   const handleSelectGame = useCallback((game: Game) => {
     setSelectedGame(game);
+    setCurrentView("game");
     const url = new URL(window.location.href);
     url.searchParams.set("game", game.id.toString());
     window.history.pushState({}, "", url.toString());
@@ -148,9 +150,14 @@ export default function App() {
 
   const handleBackToHub = useCallback(() => {
     setSelectedGame(null);
+    setCurrentView("home");
     const url = new URL(window.location.href);
     url.searchParams.delete("game");
     window.history.pushState({}, "", url.toString());
+  }, []);
+
+  const handleOpenChat = useCallback(() => {
+    setCurrentView("chat");
   }, []);
 
   // Ultra-fast pre-indexed filtering
@@ -185,48 +192,53 @@ export default function App() {
         setSelectedTag={setSelectedTag}
         tags={tags}
         onGoHome={handleBackToHub}
+        onChatClick={handleOpenChat}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full flex flex-col">
-        {selectedGame ? (
-          /* Embedded Active Game view screen */
-          <GamePlayer
-            game={selectedGame}
-            onBack={handleBackToHub}
-          />
-        ) : (
-          /* Games Catalog Dashboard library */
-          <div id="games-dashboard-content" className="w-full max-w-7xl mx-auto px-4 py-6 md:px-8 flex-1 flex flex-col gap-6">
-            {/* Catalog Grid View */}
-            <section id="games-catalog-section" className="flex-1 flex flex-col gap-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
-                    <span>Unblocked Games</span>
-                    <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/10 text-white border border-white/20">
-                      {totalPlayableCount}
-                    </span>
-                  </h2>
-                  {loadingLive && (
-                    <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
-                      Loading games...
-                    </span>
-                  )}
-                </div>
-              </div>
+      <main className="flex-1 w-full flex flex-col min-h-0">
+        <div className={currentView === "game" && selectedGame ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
+          {selectedGame && (
+            <GamePlayer
+              game={selectedGame}
+              onBack={handleBackToHub}
+            />
+          )}
+        </div>
 
-              <GameGrid
-                games={processedGames}
-                onSelectGame={handleSelectGame}
-              />
-            </section>
-          </div>
-        )}
+        <div className={currentView === "home" ? "w-full max-w-7xl mx-auto px-4 py-6 md:px-8 flex-1 flex flex-col gap-6" : "hidden"}>
+          {/* Catalog Grid View */}
+          <section id="games-catalog-section" className="flex-1 flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
+                  <span>Unblocked Games</span>
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/10 text-white border border-white/20">
+                    {totalPlayableCount}
+                  </span>
+                </h2>
+                {loadingLive && (
+                  <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
+                    Loading games...
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <GameGrid
+              games={processedGames}
+              onSelectGame={handleSelectGame}
+            />
+          </section>
+        </div>
+
+        <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
+          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} />
+        </div>
       </main>
 
       {/* Footer Branding Area */}
-      <footer id="app-footer" className="mt-auto border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
+      <footer id="app-footer" className="border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
 
         <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="font-medium">
@@ -243,9 +255,6 @@ export default function App() {
           </div>
         </div>
       </footer>
-
-      {/* Global Chat Overlay */}
-      <Chat />
     </div>
   );
 }

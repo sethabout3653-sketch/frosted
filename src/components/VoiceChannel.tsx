@@ -38,7 +38,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
           username: profile.username,
-          photoURL: profile.photoURL,
+          photoURL: profile.photoURL || "",
           timestamp: Date.now(),
         });
 

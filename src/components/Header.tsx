@@ -9,6 +9,7 @@ interface HeaderProps {
   setSelectedTag: (tag: string) => void;
   tags: string[];
   onGoHome?: () => void;
+  onChatClick?: () => void;
 }
 
 const Header = memo(function Header({
@@ -18,6 +19,7 @@ const Header = memo(function Header({
   setSelectedTag,
   tags,
   onGoHome,
+  onChatClick,
 }: HeaderProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
 
@@ -76,8 +78,8 @@ const Header = memo(function Header({
             />
           </div>
 
-          {/* Genre Category Filter */}
-          <div className="relative">
+          {/* Genre Category Filter and Chat */}
+          <div className="flex items-center gap-2">
             <select
               id="tag-filter-select"
               value={selectedTag}
@@ -91,6 +93,12 @@ const Header = memo(function Header({
                 </option>
               ))}
             </select>
+            <button
+              onClick={onChatClick}
+              className="h-9 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-1 text-xs text-neutral-300 hover:border-white hover:text-white transition-colors cursor-pointer"
+            >
+              Chat
+            </button>
           </div>
         </div>
       </div>

@@ -55,34 +55,43 @@ export default function ChatPanel({ profile }: ChatPanelProps) {
     if (!text.trim() && !attachment) return;
 
     try {
-      await addDoc(collection(db, "messages"), {
+      const msgData: Record<string, any> = {
         uid: profile.uid,
         username: profile.username,
-        photoURL: profile.photoURL,
-        text: text.trim(),
-        attachment,
-        timestamp: Date.now(), // using client time as requested in simplified rules, but serverTimestamp() is better. Our rules say timestamp is number.
-      });
+        photoURL: profile.photoURL || "",
+        timestamp: Date.now(),
+      };
+
+      if (text.trim()) {
+        msgData.text = text.trim();
+      }
+      if (attachment) {
+        msgData.attachment = attachment;
+      }
+
+      await addDoc(collection(db, "messages"), msgData);
       setText("");
       setAttachment(null);
     } catch (error) {
-      console.error("Error sending message:", error);
+      handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
   const handleSendGif = async (gif: any, e: React.SyntheticEvent<HTMLElement, Event>) => {
     e.preventDefault();
     try {
-      await addDoc(collection(db, "messages"), {
+      const msgData: Record<string, any> = {
         uid: profile.uid,
         username: profile.username,
-        photoURL: profile.photoURL,
-        gif: gif.images.fixed_height.url,
+        photoURL: profile.photoURL || "",
+        gif: gif.images.fixed_height.url || "",
         timestamp: Date.now(),
-      });
+      };
+
+      await addDoc(collection(db, "messages"), msgData);
       setShowGiphy(false);
     } catch (error) {
-      console.error("Error sending GIF:", error);
+      handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
@@ -105,7 +114,7 @@ export default function ChatPanel({ profile }: ChatPanelProps) {
     try {
       await deleteDoc(doc(db, "messages", msgId));
     } catch (error) {
-      console.error("Error deleting message:", error);
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }
   };
 
