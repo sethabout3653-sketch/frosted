@@ -32,18 +32,26 @@ export function formatGameUrl(url: string): string {
 export async function fetchGamesList(): Promise<Game[]> {
   try {
     const response = await fetch(`${ASSETS_JSON_URL}?t=${Date.now()}`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch live games list: ${response.statusText}`);
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        return data as Game[];
+      }
     }
-    const data = await response.json();
-    if (Array.isArray(data)) {
-      return data as Game[];
+  } catch {
+    try {
+      const localRes = await fetch(`/zones.json?t=${Date.now()}`);
+      if (localRes.ok) {
+        const localData = await localRes.json();
+        if (Array.isArray(localData) && localData.length > 0) {
+          return localData as Game[];
+        }
+      }
+    } catch {
+      // ignore
     }
-    throw new Error("Invalid format: fetched games list is not an array");
-  } catch (error) {
-    console.warn("Could not fetch live games list from GitHub, using high-fidelity local database fallback:", error);
-    return localZones as Game[];
   }
+  return localZones as Game[];
 }
 
 /**

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } from "react";
 import { Game } from "./types";
 import { fetchGamesList, getUniqueTags, isFnfGame, isFnfMod, deduplicateGames } from "./utils";
-import { fetchLuminGames } from "./lumin";
+import { fetchLuminGames, getLocalLuminGames } from "./lumin";
 import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
@@ -49,12 +49,16 @@ function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog")
 }
 
 export default function App() {
-  // Core games list state seeded synchronously with the local zones file, deduplicated and pre-sorted
+  // Core games list state seeded synchronously with ALL catalog and Lumin games combined,
+  // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
     const catalogPrepared = (localZones as Game[])
       .filter((g) => g.id !== -1)
       .map((g) => prepareGame(g, "catalog"));
-    return deduplicateGames(catalogPrepared, []).sort((a, b) =>
+    const luminPrepared = getLocalLuminGames().map((g) =>
+      prepareGame(g, "luminsdk")
+    );
+    return deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) =>
       a.name.localeCompare(b.name)
     );
   });

@@ -1,5 +1,6 @@
 import { Game } from "./types";
 import { isFnfGame, isFnfMod } from "./utils";
+import localLuminRaw from "./lumin-games.json";
 
 declare global {
   interface Window {
@@ -125,9 +126,34 @@ function inferLuminTags(name: string, id: string): string[] {
 }
 
 /**
+ * Returns the bundled snapshot of LuminSDK games (1,169 games) with full metadata and search terms.
+ * Guarantees that even on Vercel, offline, or behind network blockers, all games are instantly ready.
+ */
+export function getLocalLuminGames(): Game[] {
+  return (localLuminRaw as Array<{ id: string; name: string; image_token: string }>).map((g) => {
+    const specialTags = inferLuminTags(g.name, g.id);
+    return {
+      id: `lumin-${g.id}`,
+      name: g.name,
+      cover: g.image_token
+        ? `${LUMIN_API_BASE}/api/v1/icon/${g.image_token}`
+        : "",
+      url: `lumin:${g.id}`,
+      author: undefined,
+      featured: false,
+      special: specialTags,
+      source: "luminsdk",
+      luminId: g.id,
+      _search: (g.name + " " + specialTags.join(" ")).toLowerCase(),
+    };
+  });
+}
+
+/**
  * Fetches the entire game library from LuminSDK, without using any of its default UI.
  * Tries the native Lumin.getGames() method first; if not initialized yet or in background,
  * seamlessly fetches via the direct Lumin session & games API.
+ * Falls back to the full bundled 1,169-game library if network or CORS restricts requests.
  */
 export async function fetchLuminGames(): Promise<Game[]> {
   // Pure REST API fetch: 0 client SDK overhead, 0 background scripts, 0 lag
@@ -151,6 +177,10 @@ export async function fetchLuminGames(): Promise<Game[]> {
     const data = await gamesRes.json();
     const rawGames = (data.games || []) as Array<{ id: string; name: string; image_token: string }>;
 
+    if (rawGames.length === 0) {
+      return getLocalLuminGames();
+    }
+
     return rawGames.map((g) => {
       const specialTags = inferLuminTags(g.name, g.id);
       return {
@@ -169,8 +199,8 @@ export async function fetchLuminGames(): Promise<Game[]> {
       };
     });
   } catch (error) {
-    console.warn("Could not fetch Lumin games library directly:", error);
-    return [];
+    console.warn("Could not fetch Lumin games library directly, using bundled database:", error);
+    return getLocalLuminGames();
   }
 }
 
