@@ -13,8 +13,22 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
   ],
 };
+
+// Modifies SDP to force Opus to run at maximum bitrate (510kbps), stereo, CBR, without compression/suppression loss
+function optimizeAudioSdp(sdp: string): string {
+  const lines = sdp.split("\r\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
+      if (!lines[i].includes("maxaveragebitrate")) {
+        lines[i] += ";maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0";
+      }
+    }
+  }
+  return lines.join("\r\n");
+}
 
 export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
@@ -23,6 +37,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   
   const localStreamRef = useRef<MediaStream | null>(null);
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
+  const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const audioElementsRef = useRef<{ [uid: string]: HTMLAudioElement }>({});
 
   useEffect(() => {
@@ -31,7 +46,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
     async function initVoice() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        // High quality uncompressed mic settings: disable aggressive noise suppression and dynamic gain compression
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: false, // Turn off heavy compression/noise gate
+            autoGainControl: false,  // Turn off dynamic amplitude compression
+            channelCount: { ideal: 2 },
+            sampleRate: { ideal: 48000, min: 44100 },
+            sampleSize: { ideal: 16 },
+          },
+          video: false,
+        });
         localStreamRef.current = stream;
 
         // Register self as online
@@ -73,7 +99,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
       } catch (err: any) {
         console.error("Failed to access microphone", err);
-        if (err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.message.includes('Permission denied')) {
+        if (err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.message?.includes('Permission denied')) {
           setError("Microphone permission was denied. Please allow microphone access in your browser settings to use voice chat.");
         } else {
           setError("Failed to access microphone. Please make sure you have a microphone connected.");
@@ -88,8 +114,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(t => t.stop());
       }
-      Object.values(peersRef.current).forEach((pc: any) => pc.close());
-      Object.values(audioElementsRef.current).forEach((audio: any) => {
+      Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => pc.close());
+      Object.values(audioElementsRef.current).forEach((audio: HTMLAudioElement) => {
         audio.pause();
         audio.srcObject = null;
       });
@@ -100,11 +126,31 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   }, [profile]);
 
   const createPeerConnection = (partnerUid: string, stream: MediaStream) => {
+    if (peersRef.current[partnerUid]) {
+      peersRef.current[partnerUid].close();
+      delete peersRef.current[partnerUid];
+    }
+
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peersRef.current[partnerUid] = pc;
+    iceCandidateQueuesRef.current[partnerUid] = [];
 
     stream.getTracks().forEach((track) => {
       pc.addTrack(track, stream);
+    });
+
+    // Set maximum audio bitrate on senders
+    pc.getSenders().forEach((sender) => {
+      if (sender.track && sender.track.kind === "audio") {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings) params.encodings = [{}];
+          params.encodings[0].maxBitrate = 510000; // 510 kbps maximum Opus audio quality
+          sender.setParameters(params).catch(() => {});
+        } catch (e) {
+          // Ignore if setParameters is unsupported
+        }
+      }
     });
 
     pc.onicecandidate = (event) => {
@@ -123,9 +169,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
         pc.close();
         delete peersRef.current[partnerUid];
+        delete iceCandidateQueuesRef.current[partnerUid];
       }
     };
 
@@ -133,44 +180,98 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   };
 
   const initiateCall = async (partnerUid: string, stream: MediaStream) => {
-    const pc = createPeerConnection(partnerUid, stream);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    sendSignal(partnerUid, "offer", JSON.stringify(offer));
+    try {
+      const pc = createPeerConnection(partnerUid, stream);
+      const offer = await pc.createOffer();
+      const highQualityOffer = new RTCSessionDescription({
+        type: offer.type,
+        sdp: optimizeAudioSdp(offer.sdp || ""),
+      });
+      await pc.setLocalDescription(highQualityOffer);
+      sendSignal(partnerUid, "offer", JSON.stringify(highQualityOffer));
+    } catch (err) {
+      console.error("Error initiating voice call:", err);
+    }
   };
 
-  const handleSignal = async (signal: VoiceSignal, stream: MediaStream) => {
-    const partnerUid = signal.senderId;
-    
-    if (signal.type === "offer") {
-      const pc = createPeerConnection(partnerUid, stream);
-      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(signal.data)));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendSignal(partnerUid, "answer", JSON.stringify(answer));
-    } 
-    else if (signal.type === "answer") {
-      const pc = peersRef.current[partnerUid];
-      if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(signal.data)));
-      }
-    } 
-    else if (signal.type === "candidate") {
-      const pc = peersRef.current[partnerUid];
-      if (pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(signal.data)));
+  const processCandidateQueue = async (partnerUid: string, pc: RTCPeerConnection) => {
+    const queue = iceCandidateQueuesRef.current[partnerUid] || [];
+    while (queue.length > 0) {
+      const candidateData = queue.shift();
+      if (candidateData) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+        } catch (e) {
+          console.warn("Error processing queued ICE candidate:", e);
+        }
       }
     }
   };
 
+  const handleSignal = async (signal: VoiceSignal, stream: MediaStream) => {
+    const partnerUid = signal.senderId;
+
+    try {
+      if (signal.type === "offer") {
+        const offerDescription = new RTCSessionDescription(JSON.parse(signal.data));
+        const pc = createPeerConnection(partnerUid, stream);
+        await pc.setRemoteDescription(offerDescription);
+        
+        await processCandidateQueue(partnerUid, pc);
+
+        const answer = await pc.createAnswer();
+        const highQualityAnswer = new RTCSessionDescription({
+          type: answer.type,
+          sdp: optimizeAudioSdp(answer.sdp || ""),
+        });
+        await pc.setLocalDescription(highQualityAnswer);
+        sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+      } 
+      else if (signal.type === "answer") {
+        const pc = peersRef.current[partnerUid];
+        if (pc) {
+          // CRITICAL FIX: Only set remote answer SDP if RTCPeerConnection is expecting an answer (have-local-offer state)
+          if (pc.signalingState === "have-local-offer") {
+            const answerDescription = new RTCSessionDescription(JSON.parse(signal.data));
+            await pc.setRemoteDescription(answerDescription);
+            await processCandidateQueue(partnerUid, pc);
+          } else {
+            console.warn(`Skipped setting remote answer for ${partnerUid} as connection state is '${pc.signalingState}' (expected 'have-local-offer')`);
+          }
+        }
+      } 
+      else if (signal.type === "candidate") {
+        const candidateData = JSON.parse(signal.data);
+        const pc = peersRef.current[partnerUid];
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch((e) => {
+            console.warn("Error adding ICE candidate:", e);
+          });
+        } else {
+          // Queue candidate until remote description is ready
+          if (!iceCandidateQueuesRef.current[partnerUid]) {
+            iceCandidateQueuesRef.current[partnerUid] = [];
+          }
+          iceCandidateQueuesRef.current[partnerUid].push(candidateData);
+        }
+      }
+    } catch (err) {
+      console.error(`Error handling WebRTC signal (${signal.type}):`, err);
+    }
+  };
+
   const sendSignal = async (receiverId: string, type: "offer" | "answer" | "candidate", data: string) => {
-    await addDoc(collection(db, "signals"), {
-      senderId: profile.uid,
-      receiverId,
-      type,
-      data,
-      timestamp: Date.now(),
-    });
+    try {
+      await addDoc(collection(db, "signals"), {
+        senderId: profile.uid,
+        receiverId,
+        type,
+        data,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("Error sending WebRTC signal:", err);
+    }
   };
 
   const toggleMute = () => {
@@ -209,7 +310,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           )}
         </div>
         <h2 className="text-lg font-bold text-white">General Voice</h2>
-        <p className="text-sm text-green-400 font-semibold mt-1">Connected</p>
+        <div className="flex items-center gap-2 mt-1">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+          <p className="text-xs text-green-400 font-semibold uppercase tracking-wider">Connected • Studio Quality Audio</p>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -247,3 +351,4 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     </div>
   );
 }
+
