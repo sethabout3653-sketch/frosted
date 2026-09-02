@@ -84,10 +84,35 @@ export function getUniqueTags(games: Game[]): string[] {
 }
 
 /**
+ * Identifies specific Baldi target game groups ("Baldi's Basics", "Baldi's Basics Plus", "Baldi's Basics Classic Remastered")
+ * that should prefer LuminSDK instead of gn-math catalog.
+ */
+export function getBaldiTargetGroup(name: string): string | null {
+  const canon = name
+    .toLowerCase()
+    .trim()
+    .replace(/['’":.-]/g, "")
+    .replace(/\s+/g, "");
+
+  if (canon === "baldibasics" || canon === "baldisbasics") {
+    return "baldi_basics";
+  }
+  if (canon === "baldibasicsplus" || canon === "baldisbasicsplus") {
+    return "baldi_basics_plus";
+  }
+  if (canon === "baldibasicsclassicremastered" || canon === "baldisbasicsclassicremastered") {
+    return "baldi_basics_classic_remastered";
+  }
+  return null;
+}
+
+/**
  * Deduplicates games between the primary gn-math catalog and secondary sources (LuminSDK),
  * and eliminates duplicate copies within the catalog itself.
- * Specifically for "Friday Night Funkin" / "FNF", the gn-math version (ninja-muffin24, id: 8)
- * is strictly preserved and any LuminSDK duplicate is deleted.
+ * Specifically:
+ * 1. For "Friday Night Funkin" / "FNF", the gn-math version is strictly preserved.
+ * 2. For "Baldi's Basics", "Baldi's Basics Plus", and "Baldi's Basics Classic Remastered",
+ *    the LuminSDK version is preferred over the gn-math catalog version.
  */
 export function deduplicateGames(catalogGames: Game[], luminGames: Game[]): Game[] {
   const seenCanonical = new Set<string>();
@@ -100,17 +125,34 @@ export function deduplicateGames(catalogGames: Game[], luminGames: Game[]): Game
       .replace(/['’":.-]/g, "")
       .replace(/\s+/g, " ");
 
-  // 1. Prioritize primary gn-math catalog games
+  // Identify which Baldi target groups are present in LuminSDK
+  const luminBaldiGroups = new Set<string>();
+  for (const lg of luminGames) {
+    if (lg.id === -1) continue;
+    const group = getBaldiTargetGroup(lg.name);
+    if (group) {
+      luminBaldiGroups.add(group);
+    }
+  }
+
+  // 1. Process primary gn-math catalog games
   for (const game of catalogGames) {
     if (game.id === -1) continue;
     const canon = getCanonical(game.name);
+
+    // If this catalog game is a Baldi target game that exists in LuminSDK, skip catalog version
+    const baldiGroup = getBaldiTargetGroup(game.name);
+    if (baldiGroup && luminBaldiGroups.has(baldiGroup)) {
+      continue;
+    }
+
     if (!seenCanonical.has(canon)) {
       seenCanonical.add(canon);
       result.push(game);
     }
   }
 
-  // 2. Add secondary LuminSDK games, strictly discarding any duplicates
+  // 2. Add secondary LuminSDK games
   for (const game of luminGames) {
     if (game.id === -1) continue;
     const canon = getCanonical(game.name);
@@ -120,7 +162,7 @@ export function deduplicateGames(catalogGames: Game[], luminGames: Game[]): Game
       continue;
     }
 
-    // Discard any Lumin game that duplicates a catalog game
+    // Discard any Lumin game that duplicates a catalog game (unless it's a target Baldi game that was skipped)
     if (seenCanonical.has(canon)) {
       continue;
     }

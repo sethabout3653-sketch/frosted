@@ -214,11 +214,6 @@ export default function GamePlayer({
                   FNF
                 </span>
               ) : null}
-              {isLuminGame && (
-                <span className="px-1.5 py-0.2 rounded bg-white/10 text-[10px] text-white border border-white/20">
-                  LuminSDK
-                </span>
-              )}
             </p>
           </div>
         </div>
