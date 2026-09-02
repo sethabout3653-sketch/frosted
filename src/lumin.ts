@@ -263,6 +263,11 @@ export async function embedLuminGame(
 
           const iframe = playerEl.querySelector<HTMLIFrameElement>("iframe, .lumin-player-frame");
           if (iframe) {
+            iframe.setAttribute("allow", "autoplay; fullscreen; keyboard; gamepad; pointer-lock");
+            const existingSandbox = iframe.getAttribute("sandbox");
+            if (existingSandbox && !existingSandbox.includes("allow-pointer-lock")) {
+              iframe.setAttribute("sandbox", `${existingSandbox} allow-pointer-lock`);
+            }
             resolve(iframe);
             return;
           }
