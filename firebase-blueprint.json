@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "A message in the general chat",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "maxLength": 1000 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "username": { "type": "string", "maxLength": 50 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "timestamp": { "type": "number" },
+        "gif": { "type": "string", "maxLength": 500 },
+        "attachment": { "type": "string", "maxLength": 5000000 }
+      },
+      "required": ["uid", "username", "timestamp"]
+    },
+    "VoiceSignal": {
+      "title": "Voice Signal",
+      "description": "WebRTC signaling data for peer-to-peer voice",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "maxLength": 128 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["offer", "answer", "candidate"] },
+        "data": { "type": "string", "maxLength": 10000 },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["senderId", "receiverId", "type", "data", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Global chat messages"
+    },
+    "/signals/{signalId}": {
+      "schema": { "$ref": "#/entities/VoiceSignal" },
+      "description": "WebRTC signals for voice chat"
+    }
+  }
+}

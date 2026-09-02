@@ -8,6 +8,7 @@ interface HeaderProps {
   selectedTag: string;
   setSelectedTag: (tag: string) => void;
   tags: string[];
+  onGoHome?: () => void;
 }
 
 const Header = memo(function Header({
@@ -16,6 +17,7 @@ const Header = memo(function Header({
   selectedTag,
   setSelectedTag,
   tags,
+  onGoHome,
 }: HeaderProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
 
@@ -32,18 +34,32 @@ const Header = memo(function Header({
     return () => clearTimeout(timer);
   }, [localQuery, setSearchQuery]);
 
+  const handleLogoClick = () => {
+    setLocalQuery("");
+    setSearchQuery("");
+    setSelectedTag("all");
+    if (onGoHome) {
+      onGoHome();
+    }
+  };
+
   return (
     <header id="app-header" className="sticky top-0 z-40 w-full border-b border-neutral-800 bg-black/85 px-4 py-3.5 md:px-8 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        {/* Brand Logo with Frosted Emblem */}
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-sm">
-            <Snowflake size={18} className="text-white" />
+        {/* Brand Logo with Frosted Emblem (clickable to go home & reset search) */}
+        <button
+          id="frosted-logo-btn"
+          onClick={handleLogoClick}
+          className="flex items-center gap-2.5 text-left group cursor-pointer focus:outline-none rounded-lg transition-transform active:scale-95"
+          title="Return to Home"
+        >
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-sm transition-all group-hover:bg-white/20 group-hover:border-white/40">
+            <Snowflake size={18} className="text-white transition-transform group-hover:rotate-45" />
           </span>
-          <h1 className="text-xl font-bold tracking-tight text-white lowercase">
+          <h1 className="text-xl font-bold tracking-tight text-white lowercase transition-colors group-hover:text-neutral-200">
             frosted
           </h1>
-        </div>
+        </button>
 
         {/* Black and White Search & Filter Panel */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-1 sm:justify-end">

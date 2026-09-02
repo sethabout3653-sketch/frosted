@@ -5,6 +5,7 @@ import { fetchLuminGames, getLocalLuminGames } from "./lumin";
 import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
+import Chat from "./components/Chat";
 import localZones from "./zones.json";
 
 function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog"): Game {
@@ -183,6 +184,7 @@ export default function App() {
         selectedTag={selectedTag}
         setSelectedTag={setSelectedTag}
         tags={tags}
+        onGoHome={handleBackToHub}
       />
 
       {/* Main Content Area */}
@@ -225,6 +227,7 @@ export default function App() {
 
       {/* Footer Branding Area */}
       <footer id="app-footer" className="mt-auto border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
+
         <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="font-medium">
             &copy; 2026 frosted. Fast, unblocked browser games library.
@@ -240,6 +243,9 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Global Chat Overlay */}
+      <Chat />
     </div>
   );
 }

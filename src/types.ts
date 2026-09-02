@@ -15,3 +15,28 @@ export interface Game {
 
 export type SortOption = "name" | "id" | "popular";
 
+export interface ChatProfile {
+  uid: string;
+  username: string;
+  photoURL: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  uid: string;
+  username: string;
+  photoURL: string;
+  text?: string;
+  gif?: string;
+  attachment?: string;
+  timestamp: number;
+}
+
+export interface VoiceSignal {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  type: "offer" | "answer" | "candidate";
+  data: string;
+  timestamp: number;
+}

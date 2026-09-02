@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['uid', 'username', 'timestamp'])
+        && data.uid is string && data.uid.size() <= 128
+        && data.username is string && data.username.size() <= 50
+        && data.timestamp is number
+        && (!('text' in data) || (data.text is string && data.text.size() <= 1000))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 5000000))
+        && (!('gif' in data) || (data.gif is string && data.gif.size() <= 500))
+        && (!('attachment' in data) || (data.attachment is string && data.attachment.size() <= 5000000));
+    }
+
+    match /messages/{messageId} {
+      allow read: if true;
+      allow create: if isValidId(messageId) && isValidChatMessage(request.resource.data);
+      allow delete: if true;
+      allow update: if false;
+    }
+
+    function isValidSignal(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'type', 'data', 'timestamp'])
+        && data.senderId is string && data.senderId.size() <= 128
+        && data.receiverId is string && data.receiverId.size() <= 128
+        && data.type is string && (data.type == 'offer' || data.type == 'answer' || data.type == 'candidate')
+        && data.data is string && data.data.size() <= 10000
+        && data.timestamp is number;
+    }
+
+    match /signals/{signalId} {
+      // Signals are for WebRTC connection setup
+      allow read: if true;
+      allow create: if isValidId(signalId) && isValidSignal(request.resource.data);
+      allow delete: if true; // Allows cleanup of old signals
+      allow update: if false;
+    }
+    function isValidVoiceUser(data) {
+      return data.keys().hasAll(['uid', 'username', 'photoURL', 'timestamp'])
+        && data.uid is string && data.uid.size() <= 128
+        && data.username is string && data.username.size() <= 50
+        && data.photoURL is string && data.photoURL.size() <= 5000000
+        && data.timestamp is number;
+    }
+
+    match /voice_users/{userId} {
+      allow read: if true;
+      allow create, update: if isValidId(userId) && isValidVoiceUser(request.resource.data);
+      allow delete: if true;
+    }
+  }
+}

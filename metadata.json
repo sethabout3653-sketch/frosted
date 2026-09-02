@@ -1,6 +1,8 @@
 {
   "name": "frosted",
   "description": "A minimal, black-and-white unblocked games portal featuring games from RawGitHack and LuminSDK.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
