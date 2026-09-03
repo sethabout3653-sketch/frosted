@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Maximize2,
   RefreshCw,
+  Gamepad2,
 } from "lucide-react";
 
 interface GamePlayerProps {
@@ -19,6 +20,8 @@ export default function GamePlayer({
 }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +35,7 @@ export default function GamePlayer({
     if (iframeRef.current) {
       try {
         iframeRef.current.focus();
+        iframeRef.current.contentWindow?.focus();
       } catch {}
     }
 
@@ -49,6 +53,85 @@ export default function GamePlayer({
       }
     }
   }, []);
+
+  const handleOverlayClick = useCallback(() => {
+    setIsFocused(true);
+    if (iframeRef.current) {
+      try {
+        iframeRef.current.focus();
+        iframeRef.current.contentWindow?.focus();
+      } catch (err) {
+        console.warn("Error focusing iframe on click:", err);
+      }
+    }
+    // Delay slightly to ensure focus has shifted and event loop completes before locking
+    setTimeout(() => {
+      requestPointerLock();
+    }, 100);
+  }, [requestPointerLock]);
+
+  // Track parent window focus: when user clicks outside, show overlay to re-capture on return
+  useEffect(() => {
+    const handleWindowFocus = () => {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      // ONLY trigger focus-lost overlay if the game is NOT in fullscreen!
+      if (!isCurrentlyFullscreen) {
+        setIsFocused(false);
+      }
+    };
+
+    window.addEventListener("focus", handleWindowFocus);
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+    };
+  }, []);
+
+  // Monitor Fullscreen changes globally to auto-focus and auto-lock the mouse for 3D games
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      setIsFullscreen(isCurrentlyFullscreen);
+
+      if (isCurrentlyFullscreen) {
+        setIsFocused(true); // Keep the overlay hidden during fullscreen
+        
+        // Grant absolute focus to the game iframe
+        if (iframeRef.current) {
+          try {
+            iframeRef.current.focus();
+            iframeRef.current.contentWindow?.focus();
+          } catch {}
+        }
+
+        // Delay pointer lock request slightly to let the browser transition finish
+        setTimeout(() => {
+          requestPointerLock();
+        }, 300);
+      }
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+    document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
+    };
+  }, [requestPointerLock]);
 
   // Exit Pointer Lock
   const exitPointerLock = useCallback(() => {
@@ -171,6 +254,7 @@ export default function GamePlayer({
   };
 
   const handleReload = () => {
+    setIsFocused(false);
     if (isLuminGame && game.luminId) {
       if (gameUrl && iframeRef.current) {
         iframeRef.current.src = gameUrl;
@@ -252,12 +336,39 @@ export default function GamePlayer({
         onMouseDown={requestPointerLock}
         className="relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800 shadow-2xl transition-all duration-300 max-w-6xl mx-auto min-h-[70vh] mb-4 overflow-hidden"
       >
+        {/* Chromebook & Touch-Friendly Focus Bridge Overlay */}
+        {!isFocused && !isFullscreen && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOverlayClick();
+            }}
+            className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 backdrop-blur-xs cursor-pointer group transition-all duration-300"
+          >
+            <div className="flex flex-col items-center gap-4 p-6 rounded-2xl bg-neutral-900 border border-neutral-800 shadow-2xl transform transition-transform group-hover:scale-[1.02] duration-300 max-w-sm text-center">
+              <div className="w-14 h-14 rounded-full bg-white/5 flex items-center justify-center border border-white/10 text-white group-hover:bg-white/10 transition-all duration-300">
+                <Gamepad2 size={26} className="animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white tracking-wide">Click to Focus & Play</h3>
+                <p className="text-xs text-neutral-400 mt-1.5 px-2 leading-relaxed">
+                  Connects your keyboard and mouse controls for full movement and 360° cursor-lock.
+                </p>
+              </div>
+              <button className="px-5 py-2 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-bold shadow-lg transition-all pointer-events-none">
+                Start Playing
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Embedded Game frame */}
         {gameUrl && (
           <iframe
             id="game-iframe"
             ref={iframeRef}
             src={gameUrl}
+            tabIndex={0}
             className="w-full h-full rounded-2xl bg-black border-none"
             allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
             sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
