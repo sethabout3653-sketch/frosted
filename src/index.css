@@ -3,11 +3,15 @@
 .startup-splash { position: fixed; inset: 0; z-index: 100; display: flex; min-height: 100dvh; align-items: center; justify-content: center; overflow: hidden; background: #000; color: #fff; transition: opacity 420ms ease, visibility 420ms ease; }
 .startup-splash-visible { opacity: 1; visibility: visible; }
 .startup-splash-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-.startup-splash-glow { position: absolute; width: min(78vw, 24rem); height: min(78vw, 24rem); border-radius: 9999px; background: radial-gradient(circle, rgba(255,255,255,.1), transparent 68%); filter: blur(24px); animation: startup-pulse 1500ms ease-in-out both; }
-.startup-wordmark { position: relative; font-family: "Brush Script MT", "Segoe Script", cursive; font-size: clamp(4.8rem, 25vw, 9rem); font-weight: 600; letter-spacing: -.11em; line-height: 1; color: #fff; text-shadow: 0 0 24px rgba(255,255,255,.18); animation: startup-wordmark-in 900ms cubic-bezier(.2,.8,.2,1) both; }
-@keyframes startup-pulse { from { transform: scale(.82); opacity: .2; } to { transform: scale(1.08); opacity: 1; } }
-@keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@media (prefers-reduced-motion: reduce) { .startup-splash, .startup-splash-glow, .startup-wordmark { animation: none; transition: none; } }
+.startup-splash-glow { position: absolute; width: min(78vw, 24rem); height: min(78vw, 24rem); border-radius: 9999px; background: radial-gradient(circle, rgba(255,255,255,.1), transparent 68%); filter: blur(24px); animation: startup-pulse 1800ms ease-in-out both; }
+.startup-arc { position: absolute; width: min(128vw, 34rem); height: min(128vw, 34rem); border: 1px solid rgba(255,255,255,.58); border-radius: 50%; transform: rotate(-18deg); clip-path: inset(0 0 48% 0); opacity: 0; animation: startup-arc-in 1500ms 180ms ease-out both; }
+.startup-comet { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px 3px rgba(255,255,255,.85), 0 0 32px 10px rgba(255,255,255,.25); transform: translate(-42vw, 14vh); animation: startup-comet-flight 1500ms 180ms cubic-bezier(.2,.8,.2,1) both; }
+.startup-wordmark { position: relative; z-index: 1; font-family: "Brush Script MT", "Segoe Script", cursive; font-size: clamp(4.8rem, 25vw, 9rem); font-weight: 600; letter-spacing: -.11em; line-height: 1; color: #fff; text-shadow: 0 0 24px rgba(255,255,255,.18); opacity: 0; animation: startup-wordmark-in 700ms 900ms cubic-bezier(.2,.8,.2,1) both; }
+@keyframes startup-pulse { from { transform: scale(.82); opacity: .12; } to { transform: scale(1.08); opacity: 1; } }
+@keyframes startup-arc-in { 0% { opacity: 0; transform: rotate(-18deg) scale(.9); } 35%, 100% { opacity: .72; transform: rotate(-18deg) scale(1); } }
+@keyframes startup-comet-flight { 0% { opacity: 0; transform: translate(-42vw, 14vh); } 12% { opacity: 1; } 100% { opacity: 1; transform: translate(42vw, -12vh); } }
+@keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(10px) scale(.94); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .startup-splash, .startup-splash-glow, .startup-arc, .startup-comet, .startup-wordmark { animation: none; opacity: 1; transition: none; } }
 
 /* High-performance rendering optimizations for large game catalogs */
 .game-card-item {

@@ -69,7 +69,7 @@ export default function App() {
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setShowStartup(false), 1500);
+    const timeout = window.setTimeout(() => setShowStartup(false), 2400);
     return () => window.clearTimeout(timeout);
   }, []);
 
@@ -203,7 +203,9 @@ export default function App() {
         className={`startup-splash ${showStartup ? "startup-splash-visible" : "startup-splash-hidden"}`}
       >
         <div className="startup-splash-glow" />
-        <div className="startup-wordmark" aria-label="Disney">Disney</div>
+        <div className="startup-arc" aria-hidden="true" />
+        <div className="startup-comet" aria-hidden="true" />
+        <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
       <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
       
