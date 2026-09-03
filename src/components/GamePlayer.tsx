@@ -18,7 +18,6 @@ export default function GamePlayer({
   onBack,
 }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
-  const [isPointerLocked, setIsPointerLocked] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -26,32 +25,17 @@ export default function GamePlayer({
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
 
-  // Request Pointer Lock on container / iframe element
-  const requestPointerLock = useCallback(() => {
-    // Focus iframe so keyboard and mouse inputs route immediately to game
+  // Focus iframe so keyboard and mouse inputs route immediately to game
+  const focusGame = useCallback(() => {
     if (iframeRef.current) {
       try {
         iframeRef.current.focus();
         iframeRef.current.contentWindow?.focus();
       } catch {}
     }
-
-    const target = containerRef.current || iframeRef.current;
-    if (target) {
-      try {
-        const promise = target.requestPointerLock?.();
-        if (promise && typeof (promise as any).catch === "function") {
-          (promise as any).catch((e: any) => {
-            console.warn("Pointer lock request rejected:", e);
-          });
-        }
-      } catch (err) {
-        console.warn("Pointer lock error:", err);
-      }
-    }
   }, []);
 
-  // Monitor Fullscreen changes globally to auto-focus and auto-lock the mouse for 3D games
+  // Monitor Fullscreen changes globally to auto-focus the game iframe
   useEffect(() => {
     const handleFullscreenChange = () => {
       const isCurrentlyFullscreen = !!(
@@ -62,18 +46,10 @@ export default function GamePlayer({
       );
 
       if (isCurrentlyFullscreen) {
-        // Grant absolute focus to the game iframe
-        if (iframeRef.current) {
-          try {
-            iframeRef.current.focus();
-            iframeRef.current.contentWindow?.focus();
-          } catch {}
-        }
-
-        // Delay pointer lock request slightly to let the browser transition finish
+        // Delay focus slightly to let the browser transition finish, then focus the game iframe
         setTimeout(() => {
-          requestPointerLock();
-        }, 300);
+          focusGame();
+        }, 150);
       }
     };
 
@@ -88,58 +64,7 @@ export default function GamePlayer({
       document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
       document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
     };
-  }, [requestPointerLock]);
-
-  // Exit Pointer Lock
-  const exitPointerLock = useCallback(() => {
-    if (document.pointerLockElement) {
-      try {
-        document.exitPointerLock();
-      } catch (err) {
-        console.warn("Exit pointer lock error:", err);
-      }
-    }
-    setIsPointerLocked(false);
-  }, []);
-
-  // Synchronize pointer lock state with document and handle ESC key
-  useEffect(() => {
-    const handlePointerLockChange = () => {
-      const currentLock =
-        document.pointerLockElement === containerRef.current ||
-        (iframeRef.current && document.pointerLockElement === iframeRef.current) ||
-        !!document.pointerLockElement;
-      setIsPointerLocked(!!currentLock);
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.code === "Escape") {
-        if (document.pointerLockElement) {
-          try {
-            document.exitPointerLock();
-          } catch {}
-        }
-        setIsPointerLocked(false);
-      }
-    };
-
-    document.addEventListener("pointerlockchange", handlePointerLockChange);
-    document.addEventListener("mozpointerlockchange", handlePointerLockChange);
-    document.addEventListener("webkitpointerlockchange", handlePointerLockChange);
-    window.addEventListener("keydown", handleKeyDown, true);
-
-    return () => {
-      document.removeEventListener("pointerlockchange", handlePointerLockChange);
-      document.removeEventListener("mozpointerlockchange", handlePointerLockChange);
-      document.removeEventListener("webkitpointerlockchange", handlePointerLockChange);
-      window.removeEventListener("keydown", handleKeyDown, true);
-      if (document.pointerLockElement) {
-        try {
-          document.exitPointerLock();
-        } catch {}
-      }
-    };
-  }, []);
+  }, [focusGame]);
 
   // Initialize and load game normally
   useEffect(() => {
@@ -186,7 +111,6 @@ export default function GamePlayer({
   }, [game, isLuminGame]);
 
   const handleBack = () => {
-    exitPointerLock();
     if (isLuminGame) {
       closeLuminGame();
     }
@@ -206,8 +130,7 @@ export default function GamePlayer({
         (target as any).msRequestFullscreen();
       }
     }
-    // Also trigger pointer lock when entering fullscreen for 3D games
-    requestPointerLock();
+    focusGame();
   };
 
   const handleReload = () => {
@@ -288,8 +211,8 @@ export default function GamePlayer({
       <div
         id="player-frame-container"
         ref={containerRef}
-        onClick={requestPointerLock}
-        onMouseDown={requestPointerLock}
+        onClick={focusGame}
+        onMouseDown={focusGame}
         className="relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800 shadow-2xl transition-all duration-300 max-w-6xl mx-auto min-h-[70vh] mb-4 overflow-hidden"
       >
         {/* Embedded Game frame */}
