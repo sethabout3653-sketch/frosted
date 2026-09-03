@@ -105,9 +105,8 @@ async function startServer() {
       });
 
       if (!response.ok) {
-        const safeTarget = target.toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-        res.status(200).setHeader("Content-Type", "text/html; charset=utf-8");
-        return res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;background:#050505;color:#fff;font:600 16px system-ui;display:grid;place-items:center;text-align:center}main{max-width:26rem;padding:2rem}p{color:#999;font-size:13px;font-weight:400;line-height:1.5}a{display:inline-block;margin-top:1rem;background:#fff;color:#000;padding:.7rem 1rem;border-radius:.6rem;text-decoration:none;font-size:13px}</style><main><strong>This game host blocked the embedded request.</strong><p>Open the original game page in a new tab to continue.</p><a href="${safeTarget}" target="_blank" rel="noopener noreferrer">Open original</a></main>`);
+        res.setHeader("Content-Type", response.headers.get("content-type") || "text/html; charset=utf-8");
+        return res.status(response.status).send(await response.text());
       }
 
       const contentType = response.headers.get("content-type") || "";

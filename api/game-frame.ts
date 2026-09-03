@@ -20,9 +20,14 @@ export default async function handler(req: { method?: string; query: Record<stri
   try {
     const upstream = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html,application/xhtml+xml,*/*;q=0.8" } });
     const type = upstream.headers.get("content-type") || "";
-    if (!upstream.ok || !type.includes("text/html")) {
-      const safeTarget = escapeHtml(target.toString());
-      return res.status(200).setHeader("Content-Type", "text/html; charset=utf-8").send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;background:#050505;color:#fff;font:600 16px system-ui;display:grid;place-items:center;text-align:center}main{max-width:26rem;padding:2rem}p{color:#999;font-size:13px;font-weight:400;line-height:1.5}a{display:inline-block;margin-top:1rem;background:#fff;color:#000;padding:.7rem 1rem;border-radius:.6rem;text-decoration:none;font-size:13px}</style><main><strong>This game host blocked the embedded request.</strong><p>Open the original game page to continue.</p><a href="${safeTarget}" target="_blank" rel="noopener noreferrer">Open original</a></main>`);
+    if (!upstream.ok) {
+      const body = await upstream.text();
+      res.setHeader("Content-Type", type || "text/html; charset=utf-8");
+      return res.status(upstream.status).send(body);
+    }
+    if (!type.includes("text/html")) {
+      res.setHeader("Content-Type", type || "application/octet-stream");
+      return res.status(200).send(await upstream.text());
     }
     let html = await upstream.text();
     const base = target.toString().replace(/[^/]*$/, "");
