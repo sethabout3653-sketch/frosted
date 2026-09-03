@@ -260,12 +260,20 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        // The hosted preview does not expose Vite's HMR websocket endpoint.
-        // Disable it explicitly here so @vite/client never attempts a socket.
         hmr: false,
         watch: null,
       },
       appType: "spa",
+    });
+    // Vite can still inject /@vite/client while transforming the SPA entry.
+    // The hosted preview has no HMR websocket endpoint, so serve a no-op client
+    // before Vite handles the request. This removes the socket attempt instead
+    // of suppressing its errors after the connection has already failed.
+    app.get("/@vite/client", (_req, res) => {
+      res.type("application/javascript").send("// HMR disabled in hosted preview");
+    });
+    app.get("/@react-refresh", (_req, res) => {
+      res.type("application/javascript").send("// React refresh disabled in hosted preview");
     });
     app.use(vite.middlewares);
   } else {
