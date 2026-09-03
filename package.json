@@ -28,6 +28,9 @@
     "react-easy-crop": "^6.2.3",
     "vite": "^6.2.3"
   },
+  "overrides": {
+    "electron-to-chromium": "1.5.420"
+  },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
