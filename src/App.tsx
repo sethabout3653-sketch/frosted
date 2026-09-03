@@ -221,7 +221,7 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
-                  <span>Games </span>
+                  <span>Games ({processedGames.length})</span>
                 </h2>
                 {loadingLive && (
                   <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">

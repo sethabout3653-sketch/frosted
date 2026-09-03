@@ -6,10 +6,7 @@ import {
   ArrowLeft,
   Maximize2,
   RefreshCw,
-  ZoomIn,
-  ZoomOut,
   ExternalLink,
-  Tv,
   RotateCcw,
 } from "lucide-react";
 
@@ -48,13 +45,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     return 100;
   });
 
-  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem("frosted_theater_mode");
-      return saved === "true";
-    } catch {}
-    return false;
-  });
+  const isTheaterMode = false;
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -392,128 +383,17 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           </div>
         </div>
 
-        {/* Game Manipulation & Fit Controls (DO NOT DELETE - KEPT AS IN IMAGE) */}
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto">
-          {/* Fit Mode Switcher */}
-          <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
-            <button
-              onClick={() => handleSetFitMode("contain")}
-              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
-                fitMode === "contain"
-                  ? "bg-neutral-700 text-white shadow-sm"
-                  : "text-neutral-400 hover:text-white"
-              }`}
-              title="Automatically fit game on screen maintaining optimal aspect ratio"
-            >
-              Fit
-            </button>
-            <button
-              onClick={() => handleSetFitMode("fill")}
-              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
-                fitMode === "fill"
-                  ? "bg-neutral-700 text-white shadow-sm"
-                  : "text-neutral-400 hover:text-white"
-              }`}
-              title="Stretch to fill entire frame"
-            >
-              Fill
-            </button>
-            <button
-              onClick={() => handleSetFitMode("16-9")}
-              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
-                fitMode === "16-9"
-                  ? "bg-neutral-700 text-white shadow-sm"
-                  : "text-neutral-400 hover:text-white"
-              }`}
-              title="Lock 16:9 widescreen ratio"
-            >
-              16:9
-            </button>
-            <button
-              onClick={() => handleSetFitMode("4-3")}
-              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
-                fitMode === "4-3"
-                  ? "bg-neutral-700 text-white shadow-sm"
-                  : "text-neutral-400 hover:text-white"
-              }`}
-              title="Lock 4:3 classic ratio"
-            >
-              4:3
-            </button>
-          </div>
-
-          {/* Zoom / Scale Controls */}
-          <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
-            <button
-              onClick={handleZoomOut}
-              className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer"
-              title="Zoom out game (reduce scale)"
-            >
-              <ZoomOut size={13} />
-            </button>
-            <button
-              onClick={handleResetZoom}
-              className="px-1.5 text-[10px] font-bold text-neutral-300 hover:text-white min-w-[34px] text-center cursor-pointer"
-              title="Click to reset zoom to 100%"
-            >
-              {zoom}%
-            </button>
-            <button
-              onClick={handleZoomIn}
-              className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer"
-              title="Zoom in game (increase scale)"
-            >
-              <ZoomIn size={13} />
-            </button>
-          </div>
-
-          {/* Theater Mode Toggle */}
-          <button
-            id="player-theater-btn"
-            onClick={handleToggleTheater}
-            className={`flex items-center justify-center h-8 px-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
-              isTheaterMode
-                ? "bg-white text-black border-white shadow"
-                : "bg-neutral-800 border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white"
-            }`}
-            title={isTheaterMode ? "Exit Theater Mode" : "Theater Mode (Wide)"}
-          >
-            <Tv size={14} className="mr-0 sm:mr-1.5" />
-            <span className="hidden sm:inline">
-              {isTheaterMode ? "Wide On" : "Theater"}
-            </span>
-          </button>
-
-          {/* Open in New Tab Button */}
+        <div className="ml-auto flex items-center gap-2">
           {rawGameUrl && (
-            <button
-              id="player-external-btn"
-              onClick={handleOpenInNewTab}
-              className="flex items-center justify-center h-8 px-2 rounded-lg bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium transition-all cursor-pointer"
-              title="Open raw game in dedicated new tab"
-            >
+            <button id="player-external-btn" onClick={handleOpenInNewTab} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open game in a new tab">
               <ExternalLink size={14} />
             </button>
           )}
-
-          {/* Reload Button */}
-          <button
-            id="player-reload-btn"
-            onClick={handleReload}
-            className="flex items-center justify-center h-8 px-2.5 rounded-lg bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium transition-all cursor-pointer"
-            title="Reload Game"
-          >
+          <button id="player-reload-btn" onClick={handleReload} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Reload game">
             <RefreshCw size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Reload</span>
           </button>
-
-          {/* Fullscreen Button */}
-          <button
-            id="player-fullscreen-btn"
-            onClick={handleFullscreen}
-            className="flex items-center justify-center h-8 px-3 rounded-lg bg-white hover:bg-neutral-200 text-black text-xs font-bold shadow-md transition-all cursor-pointer"
-            title="Fullscreen"
-          >
+          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-white px-3 text-xs font-bold text-black shadow-md transition-all hover:bg-neutral-200" title="Fullscreen">
             <Maximize2 size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Fullscreen</span>
           </button>
