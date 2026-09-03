@@ -177,8 +177,6 @@ async function startServer() {
   }
   canvas, #unity-canvas, #canvas, .emscripten {
     display: block !important;
-    width: 100% !important;
-    height: 100% !important;
     max-width: 100vw !important;
     max-height: 100vh !important;
     object-fit: contain !important;
@@ -196,15 +194,33 @@ async function startServer() {
 (function() {
   function fitElements() {
     try {
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
       var canvases = document.querySelectorAll('canvas');
       for (var i = 0; i < canvases.length; i++) {
         var c = canvases[i];
         if (c) {
-          c.style.maxWidth = '100vw';
-          c.style.maxHeight = '100vh';
-          c.style.objectFit = 'contain';
-          c.style.display = 'block';
-          c.style.margin = 'auto';
+          var cw = c.width || c.clientWidth || 0;
+          var ch = c.height || c.clientHeight || 0;
+          if (cw > 0 && ch > 0) {
+            var ratio = cw / ch;
+            var targetW = vw;
+            var targetH = vw / ratio;
+            if (targetH > vh) {
+              targetH = vh;
+              targetW = vh * ratio;
+            }
+            c.style.setProperty('width', Math.floor(targetW) + 'px', 'important');
+            c.style.setProperty('height', Math.floor(targetH) + 'px', 'important');
+          } else {
+            c.style.setProperty('width', '100%', 'important');
+            c.style.setProperty('height', '100%', 'important');
+          }
+          c.style.setProperty('max-width', '100vw', 'important');
+          c.style.setProperty('max-height', '100vh', 'important');
+          c.style.setProperty('object-fit', 'contain', 'important');
+          c.style.setProperty('display', 'block', 'important');
+          c.style.setProperty('margin', 'auto', 'important');
         }
       }
     } catch(e) {}

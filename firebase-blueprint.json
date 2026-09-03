@@ -23,7 +23,7 @@
         "senderId": { "type": "string", "maxLength": 128 },
         "receiverId": { "type": "string", "maxLength": 128 },
         "type": { "type": "string", "enum": ["offer", "answer", "candidate"] },
-        "data": { "type": "string", "maxLength": 10000 },
+        "data": { "type": "string", "maxLength": 30000 },
         "timestamp": { "type": "number" }
       },
       "required": ["senderId", "receiverId", "type", "data", "timestamp"]

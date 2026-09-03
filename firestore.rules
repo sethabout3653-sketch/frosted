@@ -31,7 +31,7 @@ service cloud.firestore {
         && data.senderId is string && data.senderId.size() <= 128
         && data.receiverId is string && data.receiverId.size() <= 128
         && data.type is string && (data.type == 'offer' || data.type == 'answer' || data.type == 'candidate')
-        && data.data is string && data.data.size() <= 20000
+        && data.data is string && data.data.size() <= 35000
         && data.timestamp is number;
     }
 

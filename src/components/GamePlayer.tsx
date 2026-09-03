@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Game } from "../types";
 import { formatGameUrl, getRawGameUrl, isFnfGame, isFnfMod } from "../utils";
 import { getLuminGameUrl, embedLuminGame, closeLuminGame } from "../lumin";
@@ -23,16 +23,154 @@ type FitMode = "contain" | "fill" | "16-9" | "4-3";
 export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
   const [rawGameUrl, setRawGameUrl] = useState<string>("");
-  const [fitMode, setFitMode] = useState<FitMode>("contain");
-  const [zoom, setZoom] = useState<number>(100);
-  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(false);
+
+  // Load preferences from localStorage or default to automatic optimal fit
+  const [fitMode, setFitMode] = useState<FitMode>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_fit_mode");
+      if (saved === "contain" || saved === "fill" || saved === "16-9" || saved === "4-3") {
+        return saved;
+      }
+    } catch {}
+    return "contain";
+  });
+
+  const [zoom, setZoom] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_game_zoom");
+      if (saved) {
+        const val = parseInt(saved, 10);
+        if (!isNaN(val) && val >= 50 && val <= 150) return val;
+      }
+    } catch {}
+    return 100;
+  });
+
+  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_theater_mode");
+      return saved === "true";
+    } catch {}
+    return false;
+  });
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Dynamic real-time container dimensions for automatic fit math
+  const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+
   const isLuminGame = game.source === "luminsdk";
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
+
+  // Automatically detect the game's natural aspect ratio based on title, type, and source
+  const detectedRatio = useMemo(() => {
+    if (isFnf || isMod) return 16 / 9;
+    const nameLower = (game.name || "").toLowerCase();
+    // Baldi's Basics classic is 4:3
+    if (
+      nameLower.includes("baldi") &&
+      !nameLower.includes("remaster") &&
+      !nameLower.includes("plus")
+    ) {
+      return 4 / 3;
+    }
+    // Retro emulators and arcade classics
+    if (
+      nameLower.includes("retro") ||
+      nameLower.includes("arcade") ||
+      nameLower.includes("mario") ||
+      nameLower.includes("sonic") ||
+      nameLower.includes("nes") ||
+      nameLower.includes("snes") ||
+      nameLower.includes("gba") ||
+      nameLower.includes("pacman")
+    ) {
+      return 4 / 3;
+    }
+    // Default modern WebGL/HTML5 games to widescreen 16:9
+    return 16 / 9;
+  }, [game.name, isFnf, isMod]);
+
+  // Keep track of container bounds automatically with ResizeObserver
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const updateDims = () => {
+      if (el) {
+        setContainerDimensions({
+          width: el.clientWidth,
+          height: el.clientHeight,
+        });
+      }
+    };
+
+    updateDims();
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect) {
+          setContainerDimensions({
+            width: entry.contentRect.width,
+            height: entry.contentRect.height,
+          });
+        }
+      }
+    });
+
+    observer.observe(el);
+    window.addEventListener("resize", updateDims);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateDims);
+    };
+  }, []);
+
+  // Compute exact sizing style so game automatically fits container without clipping
+  const sizingStyle = useMemo(() => {
+    const { width: cW, height: cH } = containerDimensions;
+
+    if (fitMode === "fill") {
+      return { width: "100%", height: "100%" };
+    }
+
+    if (cW <= 0 || cH <= 0) {
+      return { width: "100%", height: "100%" };
+    }
+
+    let targetRatio = detectedRatio;
+    if (fitMode === "16-9") {
+      targetRatio = 16 / 9;
+    } else if (fitMode === "4-3") {
+      targetRatio = 4 / 3;
+    }
+
+    const containerRatio = cW / cH;
+    let targetW: number;
+    let targetH: number;
+
+    if (containerRatio > targetRatio) {
+      // Container is wider than the target aspect: height limits size
+      targetH = cH;
+      targetW = Math.round(cH * targetRatio);
+    } else {
+      // Container is taller than target aspect: width limits size
+      targetW = cW;
+      targetH = Math.round(cW / targetRatio);
+    }
+
+    return {
+      width: `${targetW}px`,
+      height: `${targetH}px`,
+      maxWidth: "100%",
+      maxHeight: "100%",
+    };
+  }, [containerDimensions, fitMode, detectedRatio]);
 
   // Focus iframe so keyboard and mouse inputs route immediately to game
   const focusGame = useCallback(() => {
@@ -156,15 +294,47 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   };
 
   const handleZoomOut = () => {
-    setZoom((prev) => Math.max(50, prev - 10));
+    setZoom((prev) => {
+      const next = Math.max(50, prev - 10);
+      try {
+        localStorage.setItem("frosted_game_zoom", next.toString());
+      } catch {}
+      return next;
+    });
   };
 
   const handleZoomIn = () => {
-    setZoom((prev) => Math.min(150, prev + 10));
+    setZoom((prev) => {
+      const next = Math.min(150, prev + 10);
+      try {
+        localStorage.setItem("frosted_game_zoom", next.toString());
+      } catch {}
+      return next;
+    });
   };
 
   const handleResetZoom = () => {
     setZoom(100);
+    try {
+      localStorage.setItem("frosted_game_zoom", "100");
+    } catch {}
+  };
+
+  const handleSetFitMode = (mode: FitMode) => {
+    setFitMode(mode);
+    try {
+      localStorage.setItem("frosted_fit_mode", mode);
+    } catch {}
+  };
+
+  const handleToggleTheater = () => {
+    setIsTheaterMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("frosted_theater_mode", next.toString());
+      } catch {}
+      return next;
+    });
   };
 
   const handleOpenInNewTab = () => {
@@ -217,23 +387,23 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           </div>
         </div>
 
-        {/* Game Manipulation & Fit Controls */}
+        {/* Game Manipulation & Fit Controls (DO NOT DELETE - KEPT AS IN IMAGE) */}
         <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto">
           {/* Fit Mode Switcher */}
           <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
             <button
-              onClick={() => setFitMode("contain")}
+              onClick={() => handleSetFitMode("contain")}
               className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
                 fitMode === "contain"
                   ? "bg-neutral-700 text-white shadow-sm"
                   : "text-neutral-400 hover:text-white"
               }`}
-              title="Fit entire game on screen (Aspect Contain)"
+              title="Automatically fit game on screen maintaining optimal aspect ratio"
             >
               Fit
             </button>
             <button
-              onClick={() => setFitMode("fill")}
+              onClick={() => handleSetFitMode("fill")}
               className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
                 fitMode === "fill"
                   ? "bg-neutral-700 text-white shadow-sm"
@@ -244,7 +414,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
               Fill
             </button>
             <button
-              onClick={() => setFitMode("16-9")}
+              onClick={() => handleSetFitMode("16-9")}
               className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
                 fitMode === "16-9"
                   ? "bg-neutral-700 text-white shadow-sm"
@@ -255,7 +425,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
               16:9
             </button>
             <button
-              onClick={() => setFitMode("4-3")}
+              onClick={() => handleSetFitMode("4-3")}
               className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
                 fitMode === "4-3"
                   ? "bg-neutral-700 text-white shadow-sm"
@@ -295,7 +465,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           {/* Theater Mode Toggle */}
           <button
             id="player-theater-btn"
-            onClick={() => setIsTheaterMode(!isTheaterMode)}
+            onClick={handleToggleTheater}
             className={`flex items-center justify-center h-8 px-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
               isTheaterMode
                 ? "bg-white text-black border-white shadow"
@@ -355,16 +525,11 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
         }`}
       >
-        {/* Sizing & Scaling Wrapper */}
+        {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
         <div
-          className={`relative flex items-center justify-center transition-transform duration-150 ${
-            fitMode === "16-9"
-              ? "aspect-video max-w-full max-h-full w-full h-auto"
-              : fitMode === "4-3"
-              ? "aspect-[4/3] max-w-full max-h-full w-full h-auto"
-              : "w-full h-full"
-          }`}
+          className="relative flex items-center justify-center transition-transform duration-150"
           style={{
+            ...sizingStyle,
             transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
             transformOrigin: "center center",
           }}
@@ -376,9 +541,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
               ref={iframeRef}
               src={gameUrl}
               tabIndex={0}
-              className={`w-full h-full rounded-xl bg-black border-none transition-all ${
-                fitMode === "fill" ? "object-fill" : "object-contain"
-              }`}
+              className="w-full h-full rounded-xl bg-black border-none"
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
