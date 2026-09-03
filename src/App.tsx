@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } from "react";
 import { Game } from "./types";
 import { fetchGamesList, getUniqueTags, isFnfGame, isFnfMod, deduplicateGames } from "./utils";
-import { fetchLuminGames, getLocalLuminGames } from "./lumin";
+import { fetchLuminGames, getLocalLuminGames, fetchLuminSessionId, getLocalLuminGamesWithSession } from "./lumin";
 import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
@@ -93,14 +93,23 @@ export default function App() {
           .filter((g) => g.id !== -1)
           .map((g) => prepareGame(g, "catalog"));
 
-        const luminList: Game[] = (
-          luminGamesResult.status === "fulfilled"
-            ? luminGamesResult.value
-            : []
-        ).map((g) => prepareGame(g, "luminsdk"));
+        let luminList: Game[] = [];
+        if (luminGamesResult.status === "fulfilled" && luminGamesResult.value.length > 0) {
+          luminList = luminGamesResult.value;
+        } else {
+          // If live fetch failed, attempt to fetch just a fresh session ID to rescue the local game covers
+          const freshSessionId = await fetchLuminSessionId();
+          if (freshSessionId) {
+            luminList = getLocalLuminGamesWithSession(freshSessionId);
+          } else {
+            luminList = getLocalLuminGames();
+          }
+        }
+
+        const luminPrepared = luminList.map((g) => prepareGame(g, "luminsdk"));
 
         // Deduplicate between gn-math catalog and Lumin, strictly preserving gn-math for Friday Night Funkin
-        const combined = deduplicateGames(baseList, luminList).sort((a, b) =>
+        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) =>
           a.name.localeCompare(b.name)
         );
 

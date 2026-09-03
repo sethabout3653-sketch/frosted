@@ -2,7 +2,7 @@ import { Game } from "./types";
 import localZones from "./zones.json";
 
 export const COVER_BASE = "https://raw.githubusercontent.com/gn-math/covers/main";
-export const HTML_BASE = "https://raw.githack.com/gn-math/html/main";
+export const HTML_BASE = "https://rawcdn.githack.com/gn-math/html/main";
 export const ASSETS_JSON_URL = "https://raw.githubusercontent.com/gn-math/assets/main/zones.json";
 
 /**
