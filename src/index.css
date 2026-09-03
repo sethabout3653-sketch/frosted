@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+.startup-splash { position: fixed; inset: 0; z-index: 100; display: flex; min-height: 100dvh; align-items: center; justify-content: center; overflow: hidden; background: #000; color: #fff; transition: opacity 420ms ease, visibility 420ms ease; }
+.startup-splash-visible { opacity: 1; visibility: visible; }
+.startup-splash-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+.startup-splash-glow { position: absolute; width: min(74vw, 22rem); height: min(74vw, 22rem); border-radius: 9999px; background: radial-gradient(circle, rgba(255,255,255,.14), transparent 68%); filter: blur(18px); animation: startup-pulse 1500ms ease-in-out both; }
+.startup-wordmark { position: relative; font-family: Georgia, "Times New Roman", serif; font-size: clamp(3.2rem, 16vw, 7rem); font-weight: 700; letter-spacing: -.08em; line-height: 1; text-transform: lowercase; text-shadow: 0 0 28px rgba(255,255,255,.24); animation: startup-wordmark-in 900ms cubic-bezier(.2,.8,.2,1) both; }
+.startup-rule { position: absolute; bottom: 22%; width: 3.5rem; height: 2px; background: #fff; animation: startup-rule-in 900ms 220ms ease both; }
+@keyframes startup-pulse { from { transform: scale(.82); opacity: .3; } to { transform: scale(1.08); opacity: 1; } }
+@keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes startup-rule-in { from { opacity: 0; transform: scaleX(0); } to { opacity: .7; transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .startup-splash, .startup-splash-glow, .startup-wordmark, .startup-rule { animation: none; transition: none; } }
+
 /* High-performance rendering optimizations for large game catalogs */
 .game-card-item {
   content-visibility: auto;

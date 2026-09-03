@@ -51,6 +51,7 @@ function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog")
 
 export default function App() {
   const [currentView, setCurrentView] = useState<"home" | "game" | "chat">("home");
+  const [showStartup, setShowStartup] = useState(true);
   // Core games list state seeded synchronously with ALL catalog and Lumin games combined,
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
@@ -66,6 +67,11 @@ export default function App() {
   });
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setShowStartup(false), 1500);
+    return () => window.clearTimeout(timeout);
+  }, []);
 
   // Filter states
   const [searchQuery, setSearchQuery] = useState("");
@@ -191,7 +197,16 @@ export default function App() {
   }, [games, selectedTag, deferredSearch]);
 
   return (
-    <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
+    <>
+      <div
+        aria-hidden={!showStartup}
+        className={`startup-splash ${showStartup ? "startup-splash-visible" : "startup-splash-hidden"}`}
+      >
+        <div className="startup-splash-glow" />
+        <div className="startup-wordmark" aria-label="Frosted">frosted</div>
+        <div className="startup-rule" />
+      </div>
+      <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -262,6 +277,7 @@ export default function App() {
           </div>
         </footer>
       )}
-    </div>
+      </div>
+    </>
   );
 }
