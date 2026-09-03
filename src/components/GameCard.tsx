@@ -1,4 +1,4 @@
-import React, { memo } from "react";
+import React, { memo, useState } from "react";
 import { Game } from "../types";
 import { formatCoverUrl, formatTagLabel, isFnfGame, isFnfMod } from "../utils";
 import { Gamepad2 } from "lucide-react";
@@ -47,6 +47,15 @@ const GameCard = memo(function GameCard({
   const isFnf = isFnfGame(game.name, game.special);
 
   const coverUrl = formatCoverUrl(game.cover);
+  const [coverSourceIndex, setCoverSourceIndex] = useState(0);
+  const [coverFailed, setCoverFailed] = useState(false);
+  const coverSources = coverUrl
+    ? [
+        coverUrl,
+        coverUrl.replace("raw.githubusercontent.com", "raw.githack.com"),
+        coverUrl.replace("raw.githubusercontent.com", "cdn.jsdelivr.net/gh"),
+      ].filter((url, index, all) => all.indexOf(url) === index)
+    : [];
   // Avoid duplicating FNF or FNF-mod in secondary tags since the primary badge handles it
   const rawTags = game.special
     ? game.special.filter((t) => {
@@ -68,10 +77,10 @@ const GameCard = memo(function GameCard({
     >
       {/* Cover Image Container */}
       <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-black">
-        {coverUrl ? (
+        {coverUrl && !coverFailed ? (
           <img
             id={`game-cover-img-${game.id}`}
-            src={coverUrl}
+            src={coverSources[coverSourceIndex] ?? coverUrl}
             alt={game.name}
             loading="lazy"
             decoding="async"
@@ -80,16 +89,11 @@ const GameCard = memo(function GameCard({
             onError={(e) => {
               const target = e.target as HTMLImageElement;
               
-              // If the local proxy failed, try direct CDN fallback first
-              if (target.src.includes("/api/lumin-icon/")) {
-                const parts = target.src.split("/api/lumin-icon/");
-                const token = parts[parts.length - 1];
-                if (token) {
-                  target.src = `https://a.luminsdk.com/api/v1/icon/${token}`;
-                  return;
-                }
+              if (coverSourceIndex + 1 < coverSources.length) {
+                setCoverSourceIndex((index) => index + 1);
+                return;
               }
-
+              setCoverFailed(true);
               target.style.display = "none";
               const parent = target.parentElement;
               if (parent) {
@@ -106,7 +110,9 @@ const GameCard = memo(function GameCard({
         {/* Fallback Icon Container */}
         <div
           id={`fallback-container-${game.id}`}
-          className={`fallback-icon-container ${coverUrl ? "hidden" : "flex"} h-full w-full flex-col items-center justify-center bg-gradient-to-br ${gradientClass} relative overflow-hidden`}
+          role="img"
+          aria-label={`${game.name} cover unavailable`}
+          className={`fallback-icon-container ${coverUrl && !coverFailed ? "hidden" : "flex"} h-full w-full flex-col items-center justify-center bg-gradient-to-br ${gradientClass} relative overflow-hidden`}
         >
           {/* Subtle background glow/noise simulation */}
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(255,255,255,0.15),transparent)] pointer-events-none" />
