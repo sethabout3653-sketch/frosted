@@ -55,6 +55,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const videoStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const sessionStartTimeRef = useRef<number>(Date.now());
+  const isMountedRef = useRef<boolean>(true);
+  const isVideoOnRef = useRef<boolean>(false);
 
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>(
@@ -63,8 +65,60 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
+  const stopAllMediaTracks = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+          t.enabled = false;
+        } catch (e) {}
+      });
+      localStreamRef.current = null;
+    }
+
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+          t.enabled = false;
+        } catch (e) {}
+      });
+      videoStreamRef.current = null;
+    }
+
+    Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => {
+      try {
+        pc.getSenders().forEach((s) => {
+          if (s.track) {
+            s.track.stop();
+            s.track.enabled = false;
+          }
+        });
+        pc.getReceivers().forEach((r) => {
+          if (r.track) {
+            r.track.stop();
+            r.track.enabled = false;
+          }
+        });
+        pc.close();
+      } catch (e) {}
+    });
+    peersRef.current = {};
+
+    Object.values(remoteStreamsRef.current).forEach((stream: MediaStream) => {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+          t.enabled = false;
+        } catch (e) {}
+      });
+    });
+    remoteStreamsRef.current = {};
+  };
+
   // Ensure local video element gets stream if camera is on
   useEffect(() => {
+    isVideoOnRef.current = isVideoOn;
     if (isVideoOn && localVideoRef.current && videoStreamRef.current) {
       localVideoRef.current.srcObject = videoStreamRef.current;
     }
@@ -72,9 +126,22 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
   // Clean up and register voice user state
   useEffect(() => {
+    isMountedRef.current = true;
     let unsubscribeSignals: () => void;
     let unsubscribeUsers: () => void;
     sessionStartTimeRef.current = Date.now();
+
+    const handleUnload = () => {
+      stopAllMediaTracks();
+      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+      updateDoc(doc(db, "presence", profile.uid), {
+        inVoice: false,
+        isMuted: false,
+      }).catch(() => {});
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
 
     async function initVoice() {
       try {
@@ -87,6 +154,16 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           },
           video: false,
         });
+
+        // If unmounted while waiting for microphone permission/stream
+        if (!isMountedRef.current) {
+          stream.getTracks().forEach((t) => {
+            t.stop();
+            t.enabled = false;
+          });
+          return;
+        }
+
         localStreamRef.current = stream;
 
         // Register self as online in voice_users
@@ -99,6 +176,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           timestamp: Date.now(),
         });
 
+        if (!isMountedRef.current) {
+          stopAllMediaTracks();
+          return;
+        }
+
         // Update presence
         await updateDoc(doc(db, "presence", profile.uid), {
           isMuted: false,
@@ -107,14 +189,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
         // Listen for other users in voice_users
         unsubscribeUsers = onSnapshot(collection(db, "voice_users"), (snapshot) => {
+          if (!isMountedRef.current) return;
           const users: Participant[] = [];
           snapshot.forEach((d) => {
             const u = d.data() as Participant;
             if (u.uid !== profile.uid) {
               users.push(u);
               // Deterministic offerer: peer with smaller UID initiates call
-              if (profile.uid < u.uid && !peersRef.current[u.uid]) {
-                initiateCall(u.uid, localStreamRef.current!);
+              if (profile.uid < u.uid && !peersRef.current[u.uid] && localStreamRef.current) {
+                initiateCall(u.uid, localStreamRef.current);
               }
             }
           });
@@ -128,6 +211,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         );
 
         unsubscribeSignals = onSnapshot(q, (snapshot) => {
+          if (!isMountedRef.current) return;
           snapshot.docChanges().forEach(async (change) => {
             if (change.type === "added") {
               const signal = {
@@ -138,28 +222,28 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               // Immediately delete received signal document from Firestore
               deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
 
-              if (localStreamRef.current) {
+              if (localStreamRef.current && isMountedRef.current) {
                 await handleSignal(signal, localStreamRef.current);
               }
             }
           });
         });
       } catch (err: any) {
-        console.error("Failed to access media devices", err);
-        setError("Failed to access microphone. Please allow access in browser settings.");
+        if (isMountedRef.current) {
+          console.error("Failed to access media devices", err);
+          setError("Failed to access microphone. Please allow access in browser settings.");
+        }
       }
     }
 
     initVoice();
 
     return () => {
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => t.stop());
-      }
-      if (videoStreamRef.current) {
-        videoStreamRef.current.getTracks().forEach((t) => t.stop());
-      }
-      Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => pc.close());
+      isMountedRef.current = false;
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+
+      stopAllMediaTracks();
 
       deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
       updateDoc(doc(db, "presence", profile.uid), {
@@ -297,24 +381,27 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         }
 
         const offerDescription = new RTCSessionDescription(JSON.parse(signal.data));
-        await pc.setRemoteDescription(offerDescription);
-        await processCandidateQueue(partnerUid, pc);
+        if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
+          await pc.setRemoteDescription(offerDescription).catch(() => {});
+          await processCandidateQueue(partnerUid, pc);
 
-        const answer = await pc.createAnswer();
-        const highQualityAnswer = new RTCSessionDescription({
-          type: answer.type,
-          sdp: optimizeAudioSdp(answer.sdp || ""),
-        });
-        await pc.setLocalDescription(highQualityAnswer);
-        sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+          if (pc.signalingState === "have-remote-offer") {
+            const answer = await pc.createAnswer();
+            const highQualityAnswer = new RTCSessionDescription({
+              type: answer.type,
+              sdp: optimizeAudioSdp(answer.sdp || ""),
+            });
+            await pc.setLocalDescription(highQualityAnswer).catch(() => {});
+            sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+          }
+        }
       } else if (signal.type === "answer") {
         const pc = peersRef.current[partnerUid];
-        // Strictly check signalingState to prevent 'Called in wrong state: stable'
         if (pc && pc.signalingState === "have-local-offer") {
           const answerDescription = new RTCSessionDescription(
             JSON.parse(signal.data)
           );
-          await pc.setRemoteDescription(answerDescription);
+          await pc.setRemoteDescription(answerDescription).catch(() => {});
           await processCandidateQueue(partnerUid, pc);
         }
       } else if (signal.type === "candidate") {
@@ -332,7 +419,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         }
       }
     } catch (err) {
-      console.warn(`Handled WebRTC signal (${signal.type}) safely:`, err);
+      // Ignore background signaling race conditions silently
     }
   };
 
@@ -379,6 +466,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const toggleVideo = async () => {
     const nextVideoState = !isVideoOn;
     setIsVideoOn(nextVideoState);
+    isVideoOnRef.current = nextVideoState;
 
     try {
       if (nextVideoState) {
@@ -386,6 +474,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480 },
         });
+
+        if (!isMountedRef.current || !isVideoOnRef.current) {
+          videoStream.getTracks().forEach((track) => {
+            track.stop();
+            track.enabled = false;
+          });
+          return;
+        }
+
         const videoTrack = videoStream.getVideoTracks()[0];
         videoStreamRef.current = videoStream;
 
@@ -408,7 +505,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       } else {
         // Disable camera video track
         if (videoStreamRef.current) {
-          videoStreamRef.current.getTracks().forEach((track) => track.stop());
+          videoStreamRef.current.getTracks().forEach((track) => {
+            track.stop();
+            track.enabled = false;
+          });
           videoStreamRef.current = null;
         }
         if (localVideoRef.current) {
@@ -434,7 +534,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     } catch (e) {
       console.error("Failed to toggle camera:", e);
       setIsVideoOn(false);
+      isVideoOnRef.current = false;
     }
+  };
+
+  const handleLeave = () => {
+    stopAllMediaTracks();
+    onLeave();
   };
 
   if (error) {
@@ -448,7 +554,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         </h3>
         <p className="text-sm text-neutral-400 mb-6">{error}</p>
         <button
-          onClick={onLeave}
+          onClick={handleLeave}
           className="px-6 py-2.5 rounded-xl bg-white text-black font-bold hover:bg-neutral-200 transition-colors"
         >
           Go Back
@@ -587,7 +693,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         </button>
 
         <button
-          onClick={onLeave}
+          onClick={handleLeave}
           className="p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white shadow-xl transition-all cursor-pointer active:scale-95"
           title="Disconnect from Voice"
         >

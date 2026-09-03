@@ -37,6 +37,12 @@
     "/signals/{signalId}": {
       "schema": { "$ref": "#/entities/VoiceSignal" },
       "description": "WebRTC signals for voice chat"
+    },
+    "/presence/{userId}": {
+      "description": "User presence status"
+    },
+    "/voice_users/{userId}": {
+      "description": "Voice room participants"
     }
   }
 }

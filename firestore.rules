@@ -55,5 +55,9 @@ service cloud.firestore {
       allow create, update: if isValidId(userId) && isValidVoiceUser(request.resource.data);
       allow delete: if true;
     }
+
+    match /presence/{userId} {
+      allow read, write, create, update, delete: if true;
+    }
   }
 }
