@@ -8,6 +8,16 @@ import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
 import localZones from "./zones.json";
 
+const SOUNDBOARD_GAME: Game = {
+  id: "soundboard",
+  name: "Soundboard",
+  cover: "https://myinstants.com/favicon.ico",
+  url: "https://myinstants.com/",
+  author: "MyInstants",
+  special: ["all genres", "soundboard"],
+  source: "catalog",
+};
+
 function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog"): Game {
   const isFnf = isFnfGame(g.name, g.special);
   const isMod = isFnf && isFnfMod(g.name, g.special);
@@ -61,9 +71,8 @@ export default function App() {
     const luminPrepared = getLocalLuminGames().map((g) =>
       prepareGame(g, "luminsdk")
     );
-    return deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) =>
-      a.name.localeCompare(b.name)
-    );
+    const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
+    return [SOUNDBOARD_GAME, ...catalog];
   });
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
@@ -115,11 +124,8 @@ export default function App() {
         const luminPrepared = luminList.map((g) => prepareGame(g, "luminsdk"));
 
         // Deduplicate between gn-math catalog and Lumin, strictly preserving gn-math for Friday Night Funkin
-        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) =>
-          a.name.localeCompare(b.name)
-        );
-
-        setGames(combined);
+        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
+        setGames([SOUNDBOARD_GAME, ...combined.filter((g) => g.id !== SOUNDBOARD_GAME.id)]);
         setLoadingLive(false);
       } catch {
         if (isMounted) {

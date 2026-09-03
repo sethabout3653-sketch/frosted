@@ -232,7 +232,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       } else {
         // Catalog games use their direct HTTPS URL; Vercel deployments do not
         // expose the local Express proxy route.
-        const catalogUrl = formatGameUrl(game.url, false);
+        const catalogUrl = formatGameUrl(game.url, true);
         const directRaw = getRawGameUrl(game.url);
         if (!isCancelled) {
           setGameUrl(catalogUrl);
@@ -321,16 +321,6 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     try {
       localStorage.setItem("frosted_fit_mode", mode);
     } catch {}
-  };
-
-  const handleToggleTheater = () => {
-    setIsTheaterMode((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("frosted_theater_mode", next.toString());
-      } catch {}
-      return next;
-    });
   };
 
   const handleOpenInNewTab = () => {
@@ -445,7 +435,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
               <p className="text-sm font-semibold text-white">This game could not be embedded here.</p>
               <p className="max-w-md text-xs text-neutral-400">The game host returned a 404 or blocked embedding. Open the original game page instead.</p>
               <button onClick={handleOpenInNewTab} className="rounded-lg bg-white px-4 py-2 text-xs font-bold text-black hover:bg-neutral-200">Open original game</button>
-              <button onClick={() => { setGameLoadError(false); setUsingDirectUrl(false); setGameUrl(formatGameUrl(game.url, false)); }} className="text-xs text-neutral-400 underline hover:text-white">Retry embed</button>
+              <button onClick={() => { setGameLoadError(false); setUsingDirectUrl(false); setGameUrl(formatGameUrl(game.url, true)); }} className="text-xs text-neutral-400 underline hover:text-white">Retry embed</button>
             </div>
           )}
         </div>

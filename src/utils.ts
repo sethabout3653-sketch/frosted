@@ -33,6 +33,9 @@ export function formatGameUrl(url: string, _useProxy: boolean = false): string {
     .replace(/{HTML_URL}/g, HTML_BASE)
     .replace(/{COVER_URL}/g, COVER_BASE);
 
+  if (_useProxy && typeof window !== "undefined") {
+    return `/api/game-frame?url=${encodeURIComponent(rawUrl)}`;
+  }
   return rawUrl;
 }
 
