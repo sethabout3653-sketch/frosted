@@ -1,0 +1,8 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/game-frame", "destination": "/api/game-frame" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
