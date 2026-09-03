@@ -1,15 +1,10 @@
 import tailwindcss from '@tailwindcss/vite';
-import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [
-      // Disable React Fast Refresh because the hosted preview has no HMR socket.
-      react({ fastRefresh: false }),
-      tailwindcss(),
-    ],
+    plugins: [tailwindcss()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
