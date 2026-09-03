@@ -47,11 +47,12 @@ async function startServer() {
     }
   });
 
-  // API Proxy Route: Resolve game details & direct URL
-  app.get("/api/lumin-game-url/:id", async (req, res) => {
+  // API Proxy Route: Resolve game details & direct URL (using wildcard to support slashes in game IDs)
+  app.get("/api/lumin-game-url/*", async (req, res) => {
     try {
-      const sessionHeader = req.headers["x-session"] as string || "";
-      const response = await fetch(`https://a.luminsdk.com/api/v1/games/${req.params.id}`, {
+      const gameId = req.params[0];
+      const sessionHeader = (req.headers["x-session"] as string) || "";
+      const response = await fetch(`https://a.luminsdk.com/api/v1/games/${gameId}`, {
         headers: { "X-Session": sessionHeader },
       });
       if (response.ok) {
@@ -65,10 +66,11 @@ async function startServer() {
     }
   });
 
-  // API Proxy Route: Stream and Cache game icons/covers
-  app.get("/api/lumin-icon/:token", async (req, res) => {
+  // API Proxy Route: Stream and Cache game icons/covers (using wildcard to support slashes in tokens)
+  app.get("/api/lumin-icon/*", async (req, res) => {
     try {
-      const response = await fetch(`https://a.luminsdk.com/api/v1/icon/${req.params.token}`);
+      const token = req.params[0];
+      const response = await fetch(`https://a.luminsdk.com/api/v1/icon/${token}`);
       if (response.ok && response.body) {
         res.setHeader("Content-Type", response.headers.get("Content-Type") || "image/png");
         res.setHeader("Cache-Control", "public, max-age=86400"); // Cache locally for 1 day
@@ -79,6 +81,156 @@ async function startServer() {
       }
     } catch (err) {
       res.status(500).end();
+    }
+  });
+
+  // API Proxy Route: Game Frame with Auto-Fit Responsive Engine
+  app.get("/api/game-frame", async (req, res) => {
+    try {
+      const rawUrl = req.query.url as string;
+      if (!rawUrl) {
+        return res.status(400).send("Missing url parameter");
+      }
+
+      const response = await fetch(rawUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      });
+
+      if (!response.ok) {
+        return res.redirect(rawUrl);
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/html")) {
+        // If not HTML, redirect directly to asset
+        return res.redirect(rawUrl);
+      }
+
+      let html = await response.text();
+
+      // Ensure <base> tag exists pointing to the origin directory of the file so relative paths resolve cleanly
+      if (!/<base\s/i.test(html)) {
+        const lastSlashIndex = rawUrl.lastIndexOf("/");
+        const baseDir = lastSlashIndex > 0 ? rawUrl.substring(0, lastSlashIndex + 1) : rawUrl;
+        if (/<head[^>]*>/i.test(html)) {
+          html = html.replace(/<head[^>]*>/i, `$&<base href="${baseDir}">`);
+        } else {
+          html = `<base href="${baseDir}">` + html;
+        }
+      }
+
+      // Auto-fit responsive injection for canvas, Unity containers, and loading elements
+      const fitInjection = `
+<style id="frosted-game-fit-engine">
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+    background: #000000 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  #loading-text {
+    position: fixed !important;
+    top: 14px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    color: #ffffff !important;
+    background: rgba(18, 18, 18, 0.88) !important;
+    padding: 6px 18px !important;
+    border-radius: 9999px !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    z-index: 999999 !important;
+    pointer-events: none !important;
+    margin: 0 !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+  #unity-container, .unity-desktop, #gameContainer, #canvas-container, #game-container, #c2canvasdiv, .emscripten_border, #player, #root {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transform: none !important;
+  }
+  canvas, #unity-canvas, #canvas, .emscripten {
+    display: block !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    object-fit: contain !important;
+    margin: auto !important;
+  }
+  #unity-loading-bar {
+    position: absolute !important;
+    left: 50% !important;
+    top: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    z-index: 99999 !important;
+  }
+</style>
+<script id="frosted-game-fit-script">
+(function() {
+  function fitElements() {
+    try {
+      var canvases = document.querySelectorAll('canvas');
+      for (var i = 0; i < canvases.length; i++) {
+        var c = canvases[i];
+        if (c) {
+          c.style.maxWidth = '100vw';
+          c.style.maxHeight = '100vh';
+          c.style.objectFit = 'contain';
+          c.style.display = 'block';
+          c.style.margin = 'auto';
+        }
+      }
+    } catch(e) {}
+  }
+  window.addEventListener('resize', fitElements);
+  window.addEventListener('DOMContentLoaded', fitElements);
+  setInterval(fitElements, 500);
+})();
+</script>
+`;
+
+      if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<\/head>/i, `${fitInjection}</head>`);
+      } else {
+        html = `${fitInjection}${html}`;
+      }
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.removeHeader("X-Frame-Options");
+      res.removeHeader("Content-Security-Policy");
+      res.send(html);
+    } catch (err: any) {
+      if (req.query.url) {
+        return res.redirect(req.query.url as string);
+      }
+      res.status(500).send("Game proxy error");
     }
   });
 

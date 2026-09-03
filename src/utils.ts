@@ -22,17 +22,29 @@ export function formatCoverUrl(cover: string): string {
 
 /**
  * Normalizes a game's play URL by replacing placeholders with raw.githack URLs.
+ * When useProxy is true and the target is an HTML game, routes through /api/game-frame to inject auto-fit responsive styles.
  */
-export function formatGameUrl(url: string): string {
+export function formatGameUrl(url: string, useProxy: boolean = true): string {
   if (!url) return "";
   let formattedUrl = url;
   if (formattedUrl.startsWith("http://")) formattedUrl = formattedUrl.replace("http://", "https://");
 
-  if (formattedUrl.startsWith("https://") || formattedUrl.startsWith("lumin:")) return formattedUrl;
-  
-  return formattedUrl
+  const rawUrl = formattedUrl
     .replace(/{HTML_URL}/g, HTML_BASE)
     .replace(/{COVER_URL}/g, COVER_BASE);
+
+  if (useProxy && (rawUrl.includes("rawcdn.githack.com") || rawUrl.endsWith(".html"))) {
+    return `/api/game-frame?url=${encodeURIComponent(rawUrl)}`;
+  }
+
+  return rawUrl;
+}
+
+/**
+ * Returns the raw direct URL without proxying (useful for opening in a dedicated new tab).
+ */
+export function getRawGameUrl(url: string): string {
+  return formatGameUrl(url, false);
 }
 
 /**

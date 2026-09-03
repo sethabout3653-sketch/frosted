@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Loader2 } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff } from "lucide-react";
 import {
   collection,
   doc,
@@ -48,10 +48,6 @@ function optimizeAudioSdp(sdp: string): string {
 export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
-  const [isVideoLoading, setIsVideoLoading] = useState(false);
-  const [remoteVideoLoaded, setRemoteVideoLoaded] = useState<
-    Record<string, boolean>
-  >({});
   const [, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -476,12 +472,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     setIsVideoOn(nextVideoState);
     isVideoOnRef.current = nextVideoState;
 
-    if (nextVideoState) {
-      setIsVideoLoading(true);
-    } else {
-      setIsVideoLoading(false);
-    }
-
     try {
       if (nextVideoState) {
         // Enable camera video track
@@ -494,7 +484,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             track.stop();
             track.enabled = false;
           });
-          setIsVideoLoading(false);
           return;
         }
 
@@ -571,7 +560,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       console.error("Failed to toggle camera:", e);
       setIsVideoOn(false);
       isVideoOnRef.current = false;
-      setIsVideoLoading(false);
     }
   };
 
@@ -619,27 +607,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
         {/* Local User Tile */}
         <div className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg group">
-          {isVideoLoading ? (
-            <div className="flex flex-col items-center justify-center gap-3 p-4">
-              <div className="relative flex items-center justify-center">
-                <div className="absolute w-20 h-20 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin" />
-                <img
-                  src={profile.photoURL}
-                  alt={profile.username}
-                  className="w-14 h-14 rounded-full object-cover border-2 border-neutral-700 shadow-md animate-pulse"
-                />
-              </div>
-              <span className="text-xs font-bold text-indigo-400 tracking-wide flex items-center gap-1.5 mt-2">
-                <Loader2 size={14} className="animate-spin" /> Starting Camera...
-              </span>
-            </div>
-          ) : isVideoOn ? (
+          {isVideoOn ? (
             <video
-              ref={localVideoRef}
+              ref={(el) => {
+                localVideoRef.current = el;
+                if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                  el.srcObject = videoStreamRef.current;
+                  el.play().catch(() => {});
+                }
+              }}
               autoPlay
               playsInline
               muted
-              onLoadedData={() => setIsVideoLoading(false)}
               className="w-full h-full object-cover transform -scale-x-100"
             />
           ) : (
@@ -674,7 +653,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         {/* Remote Participants Tiles */}
         {participants.map((p) => {
           const stream = remoteStreamsRef.current[p.uid];
-          const isLoaded = remoteVideoLoaded[p.uid];
 
           return (
             <div
@@ -682,51 +660,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
             >
               {p.isVideoOn ? (
-                <>
-                  {!isLoaded && (
-                    <div className="absolute inset-0 bg-[#0f0f0f] z-10 flex flex-col items-center justify-center gap-3 p-4">
-                      <div className="relative flex items-center justify-center">
-                        <div className="absolute w-20 h-20 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin" />
-                        {p.photoURL ? (
-                          <img
-                            src={p.photoURL}
-                            alt={p.username}
-                            className="w-14 h-14 rounded-full object-cover border-2 border-neutral-700 shadow-md animate-pulse"
-                          />
-                        ) : (
-                          <div className="w-14 h-14 rounded-full bg-neutral-800 border-2 border-neutral-700 flex items-center justify-center text-xl font-bold text-white animate-pulse">
-                            {p.username.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                      </div>
-                      <span className="text-xs font-bold text-indigo-400 tracking-wide flex items-center gap-1.5 mt-2">
-                        <Loader2 size={14} className="animate-spin" /> Loading Stream...
-                      </span>
-                    </div>
-                  )}
-                  <video
-                    ref={(el) => {
-                      remoteVideoRefs.current[p.uid] = el;
-                      if (el && stream) {
-                        if (el.srcObject !== stream) {
-                          el.srcObject = stream;
-                        }
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    onLoadedData={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                    }}
-                    onCanPlay={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                    }}
-                    className={`w-full h-full object-cover transition-opacity duration-300 ${
-                      isLoaded ? "opacity-100" : "opacity-0"
-                    }`}
-                  />
-                </>
+                <video
+                  ref={(el) => {
+                    remoteVideoRefs.current[p.uid] = el;
+                    if (el && stream && el.srcObject !== stream) {
+                      el.srcObject = stream;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
               ) : (
                 <div className="flex flex-col items-center gap-3">
                   <div className="relative">

@@ -29,12 +29,14 @@ async function fetchLuminProxyOrDirect(endpoint: string, options: RequestInit = 
     const proxyUrl = endpoint
       .replace(`${LUMIN_API_BASE}/api/v1/session`, "/api/lumin-session")
       .replace(`${LUMIN_API_BASE}/api/v1/games`, "/api/lumin-games")
-      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/games/([^/]+)`), "/api/lumin-game-url/$1")
-      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/icon/([^/]+)`), "/api/lumin-icon/$1");
+      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/games/(.+)`), "/api/lumin-game-url/$1")
+      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/icon/(.+)`), "/api/lumin-icon/$1");
 
     if (proxyUrl.startsWith("/api/")) {
       const res = await fetch(proxyUrl, options);
-      if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      // If server returned HTML (SPA fallback), do not use it
+      if (res.ok && !contentType.includes("text/html")) {
         return res;
       }
     }
@@ -52,7 +54,8 @@ if (typeof window !== "undefined") {
     body: "{}",
   })
     .then((res) => {
-      if (res.ok) return res.json();
+      const ct = res.headers.get("content-type") || "";
+      if (res.ok && ct.includes("application/json")) return res.json();
     })
     .then((data) => {
       if (data && data.session_id) {
@@ -118,8 +121,7 @@ export async function initLuminHeadless(): Promise<boolean> {
         return true;
       }
       return false;
-    } catch (err) {
-      console.warn("LuminSDK headless init notice:", err);
+    } catch {
       return false;
     }
   })();
@@ -208,12 +210,13 @@ export async function fetchLuminSessionId(): Promise<string | null> {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    if (sessionRes.ok) {
+    const ct = sessionRes.headers.get("content-type") || "";
+    if (sessionRes.ok && ct.includes("application/json")) {
       const { session_id } = await sessionRes.json();
       return session_id;
     }
-  } catch (err) {
-    console.warn("Lumin session fetch exception:", err);
+  } catch {
+    // Silently continue
   }
   return null;
 }
@@ -239,8 +242,9 @@ export async function fetchLuminGames(): Promise<Game[]> {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    if (!sessionRes.ok) {
-      throw new Error(`Failed to create Lumin session: ${sessionRes.statusText}`);
+    const sessionCt = sessionRes.headers.get("content-type") || "";
+    if (!sessionRes.ok || !sessionCt.includes("application/json")) {
+      return getLocalLuminGames();
     }
     const { session_id } = await sessionRes.json();
     globalSessionId = session_id; // Cache the fresh session ID for fallback covers
@@ -248,8 +252,9 @@ export async function fetchLuminGames(): Promise<Game[]> {
     const gamesRes = await fetchLuminProxyOrDirect(`${LUMIN_API_BASE}/api/v1/games?limit=5000`, {
       headers: { "X-Session": session_id },
     });
-    if (!gamesRes.ok) {
-      throw new Error(`Failed to fetch Lumin games: ${gamesRes.statusText}`);
+    const gamesCt = gamesRes.headers.get("content-type") || "";
+    if (!gamesRes.ok || !gamesCt.includes("application/json")) {
+      return getLocalLuminGames();
     }
     const data = await gamesRes.json();
     const rawGames = (data.games || []) as Array<{ id: string; name: string; image_token: string }>;
@@ -275,8 +280,7 @@ export async function fetchLuminGames(): Promise<Game[]> {
         _search: (g.name + " " + specialTags.join(" ")).toLowerCase(),
       };
     });
-  } catch (error) {
-    console.warn("Could not fetch Lumin games library directly, using bundled database:", error);
+  } catch {
     return getLocalLuminGames();
   }
 }
@@ -294,8 +298,8 @@ export async function getLuminGameUrl(luminId: string): Promise<string | null> {
       if (url && typeof url === "string" && url.trim().length > 0) {
         return url;
       }
-    } catch (err) {
-      console.warn("Lumin.getGameUrl notice:", err);
+    } catch {
+      // Silently continue
     }
   }
 
@@ -307,14 +311,16 @@ export async function getLuminGameUrl(luminId: string): Promise<string | null> {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    if (sessionRes.ok) {
+    const sessionCt = sessionRes.headers.get("content-type") || "";
+    if (sessionRes.ok && sessionCt.includes("application/json")) {
       const { session_id } = await sessionRes.json();
       globalSessionId = session_id; // Keep updated
       
       const gameRes = await fetchLuminProxyOrDirect(`${LUMIN_API_BASE}/api/v1/games/${luminId}`, {
         headers: { "X-Session": session_id },
       });
-      if (gameRes.ok) {
+      const gameCt = gameRes.headers.get("content-type") || "";
+      if (gameRes.ok && gameCt.includes("application/json")) {
         const gameData = await gameRes.json();
         const directUrl = gameData.url || gameData.play_url || gameData.game_url || (gameData.game && gameData.game.url);
         if (directUrl && typeof directUrl === "string") {
@@ -322,8 +328,8 @@ export async function getLuminGameUrl(luminId: string): Promise<string | null> {
         }
       }
     }
-  } catch (err) {
-    console.warn("REST API fallback for getLuminGameUrl failed:", err);
+  } catch {
+    // Silently continue without console warning
   }
 
   return null;
@@ -392,8 +398,7 @@ export async function embedLuminGame(
 
     await loadPromise.catch(() => {});
     return frame;
-  } catch (err) {
-    console.error("Failed to embed Lumin game:", err);
+  } catch {
     return null;
   }
 }
@@ -407,8 +412,7 @@ export async function launchLuminGame(luminId: string): Promise<boolean> {
     try {
       await window.Lumin.loadGame(luminId);
       return true;
-    } catch (err) {
-      console.error("Failed to launch game via LuminSDK:", err);
+    } catch {
       return false;
     }
   }
