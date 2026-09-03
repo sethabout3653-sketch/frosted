@@ -14,6 +14,7 @@ import {
   Check,
   X,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import {
   collection,
@@ -37,6 +38,7 @@ interface VoiceChannelProps {
 interface Participant extends ChatProfile {
   isMuted?: boolean;
   isVideoOn?: boolean;
+  isVideoLoading?: boolean;
 }
 
 const ICE_SERVERS: RTCConfiguration = {
@@ -70,6 +72,8 @@ function optimizeAudioSdp(sdp: string): string {
 export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isCameraLoading, setIsCameraLoading] = useState(false);
+  const [remoteVideoLoaded, setRemoteVideoLoaded] = useState<Record<string, boolean>>({});
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -369,6 +373,25 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     });
   }, [participants, trackTrigger]);
 
+  // Clean up remote video loaded state when participants leave or turn off camera
+  useEffect(() => {
+    const activeVideoUids = new Set(
+      participants.filter((p) => p.isVideoOn).map((p) => p.uid)
+    );
+    setRemoteVideoLoaded((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [uid, loaded] of Object.entries(prev) as [string, boolean][]) {
+        if (activeVideoUids.has(uid)) {
+          next[uid] = loaded;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [participants]);
+
   // Global user-gesture audio resume listener to handle strict browser autoplay policies
   useEffect(() => {
     const resumeAudio = () => {
@@ -667,6 +690,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           photoURL: profile.photoURL || "",
           isMuted: false,
           isVideoOn: false,
+          isVideoLoading: false,
           timestamp: Date.now(),
         });
 
@@ -846,14 +870,23 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
   // Toggle Video Camera
   const toggleVideo = async () => {
+    if (isCameraLoading) return;
     const nextVideoState = !isVideoOn;
-    setIsVideoOn(nextVideoState);
-    isVideoOnRef.current = nextVideoState;
     setCameraNotice(null);
 
     try {
       if (nextVideoState) {
-        // 1. Request camera stream
+        setIsCameraLoading(true);
+        setIsVideoOn(true);
+        isVideoOnRef.current = true;
+
+        // Broadcast to all other participants immediately that camera is loading
+        await updateDoc(doc(db, "voice_users", profile.uid), {
+          isVideoLoading: true,
+          isVideoOn: false,
+        }).catch((err) => console.warn("Error setting isVideoLoading:", err));
+
+        // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 640 },
@@ -868,6 +901,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             track.stop();
             track.enabled = false;
           });
+          setIsCameraLoading(false);
+          setIsVideoOn(false);
+          isVideoOnRef.current = false;
+          await updateDoc(doc(db, "voice_users", profile.uid), {
+            isVideoOn: false,
+            isVideoLoading: false,
+          }).catch(() => {});
           return;
         }
 
@@ -895,7 +935,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             }
           })
         );
+
+        // 3. Mark camera as active and ready in Firestore
+        setIsCameraLoading(false);
+        await updateDoc(doc(db, "voice_users", profile.uid), {
+          isVideoOn: true,
+          isVideoLoading: false,
+        });
       } else {
+        setIsVideoOn(false);
+        isVideoOnRef.current = false;
+        setIsCameraLoading(false);
+
         // 1. Swap back to dummy video track across peers
         const dummyTrack = getOrCreateDummyVideoTrack();
 
@@ -924,14 +975,16 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = null;
         }
-      }
 
-      await updateDoc(doc(db, "voice_users", profile.uid), {
-        isVideoOn: nextVideoState,
-      });
+        await updateDoc(doc(db, "voice_users", profile.uid), {
+          isVideoOn: false,
+          isVideoLoading: false,
+        });
+      }
     } catch (e: any) {
       console.error("Failed to toggle camera:", e);
       setIsVideoOn(false);
+      setIsCameraLoading(false);
       isVideoOnRef.current = false;
       setCameraNotice("Could not access camera. Please allow camera permissions in your browser.");
       setTimeout(() => setCameraNotice(null), 5000);
@@ -939,6 +992,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         videoStreamRef.current.getTracks().forEach((t) => t.stop());
         videoStreamRef.current = null;
       }
+      await updateDoc(doc(db, "voice_users", profile.uid), {
+        isVideoOn: false,
+        isVideoLoading: false,
+      }).catch(() => {});
     }
   };
 
@@ -1028,19 +1085,86 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           </div>
 
           {isVideoOn ? (
-            <video
-              ref={(el) => {
-                localVideoRef.current = el;
-                if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
-                  el.srcObject = videoStreamRef.current;
-                  el.play().catch(() => {});
-                }
-              }}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover transform -scale-x-100"
-            />
+            <div className="relative w-full h-full">
+              <video
+                ref={(el) => {
+                  localVideoRef.current = el;
+                  if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                    el.srcObject = videoStreamRef.current;
+                    el.play().catch(() => {});
+                  }
+                }}
+                autoPlay
+                playsInline
+                muted
+                onLoadedData={() => setIsCameraLoading(false)}
+                className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
+                  isCameraLoading ? "opacity-0" : "opacity-100"
+                }`}
+              />
+
+              {isCameraLoading && (
+                <div className="absolute inset-0 bg-[#0f0f0f]/95 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-10 animate-in fade-in duration-200">
+                  <div className="relative flex items-center justify-center">
+                    {profile.photoURL ? (
+                      <img
+                        src={profile.photoURL}
+                        alt={profile.username}
+                        className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
+                      />
+                    ) : (
+                      <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
+                        {profile.username.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+                        <Loader2 size={24} className="animate-spin" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
+                      <Video size={13} className="text-cyan-400 animate-pulse" />
+                      <span>Starting your camera...</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-400 font-mono">
+                      Initializing video feed
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : isCameraLoading ? (
+            <div className="relative w-full h-full bg-[#0f0f0f] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-200">
+              <div className="relative flex items-center justify-center">
+                {profile.photoURL ? (
+                  <img
+                    src={profile.photoURL}
+                    alt={profile.username}
+                    className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
+                    {profile.username.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+                    <Loader2 size={24} className="animate-spin" />
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
+                  <Video size={13} className="text-cyan-400 animate-pulse" />
+                  <span>Starting your camera...</span>
+                </span>
+                <span className="text-[10px] text-neutral-400 font-mono">
+                  Requesting camera permissions
+                </span>
+              </div>
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
               <div className="relative">
@@ -1078,6 +1202,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             <span className="text-xs font-bold text-white">
               {profile.username} (You)
             </span>
+            {isCameraLoading && (
+              <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 flex items-center gap-1">
+                <Loader2 size={10} className="animate-spin" />
+                <span>Camera Loading</span>
+              </span>
+            )}
             {isMuted && (
               <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
                 Muted
@@ -1132,19 +1262,93 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
               {/* Video Element rendered when remote user enabled their camera */}
               {p.isVideoOn ? (
-                <video
-                  ref={(el) => {
-                    remoteVideoRefs.current[p.uid] = el;
-                    if (el && stream && el.srcObject !== stream) {
-                      el.srcObject = stream;
-                      el.play().catch(() => {});
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover"
-                />
+                <div className="relative w-full h-full">
+                  <video
+                    ref={(el) => {
+                      remoteVideoRefs.current[p.uid] = el;
+                      if (el && stream && el.srcObject !== stream) {
+                        el.srcObject = stream;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    onLoadedData={() => {
+                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                    }}
+                    onPlaying={() => {
+                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                    }}
+                    className={`w-full h-full object-cover transition-opacity duration-300 ${
+                      remoteVideoLoaded[p.uid] && !p.isVideoLoading ? "opacity-100" : "opacity-0"
+                    }`}
+                  />
+
+                  {/* Loading screen while remote video is connecting or buffering */}
+                  {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
+                    <div className="absolute inset-0 bg-[#0f0f0f]/95 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-10 animate-in fade-in duration-200">
+                      <div className="relative flex items-center justify-center">
+                        {p.photoURL ? (
+                          <img
+                            src={p.photoURL}
+                            alt={p.username}
+                            className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
+                          />
+                        ) : (
+                          <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
+                            {p.username.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+                            <Loader2 size={24} className="animate-spin" />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-center gap-1">
+                        <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
+                          <Video size={13} className="text-cyan-400 animate-pulse" />
+                          <span>{p.username} is loading camera...</span>
+                        </span>
+                        <span className="text-[10px] text-neutral-400 font-mono">
+                          Connecting video stream
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : p.isVideoLoading ? (
+                /* Loading screen when remote user is starting camera (before isVideoOn is set) */
+                <div className="relative w-full h-full bg-[#0f0f0f] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-200">
+                  <div className="relative flex items-center justify-center">
+                    {p.photoURL ? (
+                      <img
+                        src={p.photoURL}
+                        alt={p.username}
+                        className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
+                      />
+                    ) : (
+                      <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
+                        {p.username.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+                        <Loader2 size={24} className="animate-spin" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
+                      <Video size={13} className="text-cyan-400 animate-pulse" />
+                      <span>{p.username} is starting camera...</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-400 font-mono">
+                      Initializing video feed
+                    </span>
+                  </div>
+                </div>
               ) : (
                 <div className="flex flex-col items-center gap-3">
                   <div className="relative">
@@ -1170,6 +1374,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
               <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
                 <span className="text-xs font-bold text-white">{p.username}</span>
+                {((!remoteVideoLoaded[p.uid] && p.isVideoOn) || p.isVideoLoading) && (
+                  <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 flex items-center gap-1">
+                    <Loader2 size={10} className="animate-spin" />
+                    <span>Camera Loading</span>
+                  </span>
+                )}
                 {p.isMuted && (
                   <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
                     Muted
@@ -1377,14 +1587,29 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
         <button
           onClick={toggleVideo}
+          disabled={isCameraLoading}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
-            isVideoOn
+            isCameraLoading
+              ? "bg-neutral-800 text-cyan-400 border border-cyan-500/40 animate-pulse cursor-wait"
+              : isVideoOn
               ? "bg-white text-black font-bold shadow-lg"
               : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
           }`}
-          title={isVideoOn ? "Turn Off Camera" : "Turn On Camera (Video Chat)"}
+          title={
+            isCameraLoading
+              ? "Starting camera..."
+              : isVideoOn
+              ? "Turn Off Camera"
+              : "Turn On Camera (Video Chat)"
+          }
         >
-          {isVideoOn ? <Video size={20} /> : <VideoOff size={20} />}
+          {isCameraLoading ? (
+            <Loader2 size={20} className="animate-spin" />
+          ) : isVideoOn ? (
+            <Video size={20} />
+          ) : (
+            <VideoOff size={20} />
+          )}
         </button>
 
         <button

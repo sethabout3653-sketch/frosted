@@ -21,6 +21,7 @@ export interface ChatProfile {
   photoURL: string;
   isMuted?: boolean;
   isVideoOn?: boolean;
+  isVideoLoading?: boolean;
   status?: "online" | "left" | "offline";
 }
 
