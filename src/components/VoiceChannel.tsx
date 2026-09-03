@@ -52,7 +52,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [error, setError] = useState<string | null>(null);
 
   const localStreamRef = useRef<MediaStream | null>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const sessionStartTimeRef = useRef<number>(Date.now());
+
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>(
     {}
@@ -60,10 +63,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
+  // Ensure local video element gets stream if camera is on
+  useEffect(() => {
+    if (isVideoOn && localVideoRef.current && videoStreamRef.current) {
+      localVideoRef.current.srcObject = videoStreamRef.current;
+    }
+  }, [isVideoOn]);
+
   // Clean up and register voice user state
   useEffect(() => {
     let unsubscribeSignals: () => void;
     let unsubscribeUsers: () => void;
+    sessionStartTimeRef.current = Date.now();
 
     async function initVoice() {
       try {
@@ -78,7 +89,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         });
         localStreamRef.current = stream;
 
-        // Register self as online in voice_users with muted and video states
+        // Register self as online in voice_users
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
           username: profile.username,
@@ -88,20 +99,21 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           timestamp: Date.now(),
         });
 
-        // Also update main presence document
+        // Update presence
         await updateDoc(doc(db, "presence", profile.uid), {
           isMuted: false,
           inVoice: true,
         }).catch(() => {});
 
-        // Listen for other users in voice_users collection
+        // Listen for other users in voice_users
         unsubscribeUsers = onSnapshot(collection(db, "voice_users"), (snapshot) => {
           const users: Participant[] = [];
           snapshot.forEach((d) => {
             const u = d.data() as Participant;
             if (u.uid !== profile.uid) {
               users.push(u);
-              if (u.uid > profile.uid && !peersRef.current[u.uid]) {
+              // Deterministic offerer: peer with smaller UID initiates call
+              if (profile.uid < u.uid && !peersRef.current[u.uid]) {
                 initiateCall(u.uid, localStreamRef.current!);
               }
             }
@@ -109,11 +121,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           setParticipants(users);
         });
 
-        // Listen for WebRTC signaling (offers, answers, candidates)
+        // Listen for WebRTC signals
         const q = query(
           collection(db, "signals"),
           where("receiverId", "==", profile.uid)
         );
+
         unsubscribeSignals = onSnapshot(q, (snapshot) => {
           snapshot.docChanges().forEach(async (change) => {
             if (change.type === "added") {
@@ -121,10 +134,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 id: change.doc.id,
                 ...change.doc.data(),
               } as VoiceSignal;
+
+              // Immediately delete received signal document from Firestore
+              deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
+
               if (localStreamRef.current) {
                 await handleSignal(signal, localStreamRef.current);
               }
-              deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
             }
           });
         });
@@ -137,9 +153,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     initVoice();
 
     return () => {
-      // Cleanup tracks and connections
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (videoStreamRef.current) {
+        videoStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => pc.close());
 
@@ -164,9 +182,26 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     peersRef.current[partnerUid] = pc;
     iceCandidateQueuesRef.current[partnerUid] = [];
 
-    stream.getTracks().forEach((track) => {
+    // 1. Add audio tracks
+    stream.getAudioTracks().forEach((track) => {
       pc.addTrack(track, stream);
     });
+
+    // 2. Add video transceiver so SDP m-lines are fixed (m=audio index 0, m=video index 1)
+    pc.addTransceiver("video", { direction: "sendrecv" });
+
+    // If video is active locally, set track on transceiver
+    if (videoStreamRef.current) {
+      const videoTrack = videoStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        const videoSender = pc.getSenders().find(
+          (s) => s.track?.kind === "video" || pc.getTransceivers().some((t) => t.sender === s)
+        );
+        if (videoSender) {
+          videoSender.replaceTrack(videoTrack).catch(() => {});
+        }
+      }
+    }
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -178,9 +213,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       if (!remoteStreamsRef.current[partnerUid]) {
         remoteStreamsRef.current[partnerUid] = new MediaStream();
       }
-      event.streams[0].getTracks().forEach((t) => {
-        remoteStreamsRef.current[partnerUid].addTrack(t);
-      });
+
+      if (event.track) {
+        if (!remoteStreamsRef.current[partnerUid].getTracks().some((t) => t.id === event.track.id)) {
+          remoteStreamsRef.current[partnerUid].addTrack(event.track);
+        }
+      }
 
       const videoEl = remoteVideoRefs.current[partnerUid];
       if (videoEl) {
@@ -215,7 +253,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       await pc.setLocalDescription(highQualityOffer);
       sendSignal(partnerUid, "offer", JSON.stringify(highQualityOffer));
     } catch (err) {
-      console.error("Error initiating call:", err);
+      console.warn("Error initiating call:", err);
     }
   };
 
@@ -237,14 +275,28 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   };
 
   const handleSignal = async (signal: VoiceSignal, stream: MediaStream) => {
+    // Ignore signals from previous sessions or older than 10s
+    if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 5000) {
+      return;
+    }
+
     const partnerUid = signal.senderId;
 
     try {
       if (signal.type === "offer") {
-        const offerDescription = new RTCSessionDescription(
-          JSON.parse(signal.data)
-        );
-        const pc = createPeerConnection(partnerUid, stream);
+        let pc = peersRef.current[partnerUid];
+
+        if (!pc || pc.connectionState === "closed" || pc.signalingState === "closed") {
+          pc = createPeerConnection(partnerUid, stream);
+        } else if (pc.signalingState !== "stable") {
+          // Glare collision handling: impolite peer ignores duplicate offer
+          if (profile.uid > partnerUid) {
+            return;
+          }
+          await pc.setLocalDescription({ type: "rollback" }).catch(() => {});
+        }
+
+        const offerDescription = new RTCSessionDescription(JSON.parse(signal.data));
         await pc.setRemoteDescription(offerDescription);
         await processCandidateQueue(partnerUid, pc);
 
@@ -257,6 +309,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
       } else if (signal.type === "answer") {
         const pc = peersRef.current[partnerUid];
+        // Strictly check signalingState to prevent 'Called in wrong state: stable'
         if (pc && pc.signalingState === "have-local-offer") {
           const answerDescription = new RTCSessionDescription(
             JSON.parse(signal.data)
@@ -279,7 +332,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         }
       }
     } catch (err) {
-      console.error(`Error handling WebRTC signal (${signal.type}):`, err);
+      console.warn(`Handled WebRTC signal (${signal.type}) safely:`, err);
     }
   };
 
@@ -312,7 +365,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       });
     }
 
-    // Sync muted state to Firestore so everyone sees red mic mute badge!
     try {
       await updateDoc(doc(db, "voice_users", profile.uid), {
         isMuted: nextMuted,
@@ -330,37 +382,50 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
     try {
       if (nextVideoState) {
-        // Enable video track
+        // Enable camera video track
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480 },
         });
         const videoTrack = videoStream.getVideoTracks()[0];
-
-        if (localStreamRef.current) {
-          localStreamRef.current.addTrack(videoTrack);
-        }
+        videoStreamRef.current = videoStream;
 
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current;
+          localVideoRef.current.srcObject = videoStream;
         }
 
-        // Add video track to existing peer connections
+        // Replace track across peer connections seamlessly
         Object.keys(peersRef.current).forEach((pUid) => {
           const pc = peersRef.current[pUid];
-          pc.addTrack(videoTrack, localStreamRef.current!);
-          initiateCall(pUid, localStreamRef.current!);
+          if (pc && pc.connectionState !== "closed") {
+            const videoSender = pc.getSenders().find(
+              (s) => s.track?.kind === "video" || pc.getTransceivers().some((t) => t.sender === s)
+            );
+            if (videoSender) {
+              videoSender.replaceTrack(videoTrack).catch(() => {});
+            }
+          }
         });
       } else {
-        // Disable video track
-        if (localStreamRef.current) {
-          localStreamRef.current.getVideoTracks().forEach((track) => {
-            track.stop();
-            localStreamRef.current?.removeTrack(track);
-          });
+        // Disable camera video track
+        if (videoStreamRef.current) {
+          videoStreamRef.current.getTracks().forEach((track) => track.stop());
+          videoStreamRef.current = null;
         }
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = null;
         }
+
+        Object.keys(peersRef.current).forEach((pUid) => {
+          const pc = peersRef.current[pUid];
+          if (pc && pc.connectionState !== "closed") {
+            const videoSender = pc.getSenders().find(
+              (s) => s.track?.kind === "video" || pc.getTransceivers().some((t) => t.sender === s)
+            );
+            if (videoSender) {
+              videoSender.replaceTrack(null).catch(() => {});
+            }
+          }
+        });
       }
 
       await updateDoc(doc(db, "voice_users", profile.uid), {
@@ -394,7 +459,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
   return (
     <div className="flex-1 flex flex-col h-full w-full bg-black text-white min-h-0 overflow-hidden">
-      {/* Top Header Bar matching Image 2 */}
+      {/* Top Header Bar */}
       <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -407,7 +472,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         </span>
       </div>
 
-      {/* Main Grid: User & Remote Video / Avatar Tiles */}
+      {/* Main Grid: Local User & Remote Participants */}
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
         {/* Local User Tile */}
         <div className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg group">
@@ -436,7 +501,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             </div>
           )}
 
-          {/* User Name Tag overlay */}
           <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
             <span className="text-xs font-bold text-white">
               {profile.username} (You)
@@ -484,7 +548,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               </div>
             )}
 
-            {/* Remote User Name Tag & Muted Indicator */}
             <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
               <span className="text-xs font-bold text-white">{p.username}</span>
               {p.isMuted && (
@@ -497,9 +560,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         ))}
       </div>
 
-      {/* Bottom Controls Bar matching Image 2 EXACTLY (no headphone, no mic level, adding video chat) */}
+      {/* Bottom Controls Bar */}
       <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-5 flex-shrink-0">
-        {/* Mic Toggle Button */}
         <button
           onClick={toggleMute}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
@@ -512,7 +574,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
 
-        {/* Video Chat Toggle Button */}
         <button
           onClick={toggleVideo}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
@@ -525,7 +586,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           {isVideoOn ? <Video size={20} /> : <VideoOff size={20} />}
         </button>
 
-        {/* Leave Voice Button (Red Squircle PhoneOff button matching Image 2) */}
         <button
           onClick={onLeave}
           className="p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white shadow-xl transition-all cursor-pointer active:scale-95"

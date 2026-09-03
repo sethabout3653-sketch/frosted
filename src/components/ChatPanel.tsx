@@ -22,6 +22,8 @@ import {
   Search,
   Hash,
   MicOff,
+  Volume2,
+  Video,
 } from "lucide-react";
 
 // Giphy imports
@@ -56,12 +58,34 @@ export default function ChatPanel({
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
+  const [activeVoiceUsers, setActiveVoiceUsers] = useState<
+    Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
+  >({});
   const [text, setText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showGiphy, setShowGiphy] = useState(false);
   const [attachment, setAttachment] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Subscribe to active voice users
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        const map: Record<
+          string,
+          { isMuted?: boolean; isVideoOn?: boolean }
+        > = {};
+        snapshot.forEach((d) => {
+          map[d.id] = d.data() as any;
+        });
+        setActiveVoiceUsers(map);
+      },
+      () => setActiveVoiceUsers({})
+    );
+    return () => unsubscribe();
+  }, []);
 
   // Presence & Left Website tracking
   useEffect(() => {
@@ -530,6 +554,9 @@ export default function ChatPanel({
               <div className="space-y-1">
                 {activeOnlineUsers.map((user) => {
                   const isCurrentUser = user.uid === profile.uid;
+                  const voiceInfo = activeVoiceUsers[user.uid];
+                  const isInVoice = !!voiceInfo;
+
                   return (
                     <div
                       key={user.uid}
@@ -563,11 +590,16 @@ export default function ChatPanel({
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1.5">
                           <span className="text-[10px] text-neutral-500 font-medium">
                             Online
                           </span>
-                          {user.isMuted && (
+                          {isInVoice && (
+                            <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-1 py-0.2 rounded">
+                              <Volume2 size={9} /> In Voice
+                            </span>
+                          )}
+                          {isInVoice && voiceInfo?.isMuted && (
                             <span className="flex items-center gap-0.5 text-[9px] font-bold text-red-400 bg-red-950/80 border border-red-800/60 px-1 rounded">
                               <MicOff size={9} /> Muted
                             </span>

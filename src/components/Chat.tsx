@@ -4,6 +4,8 @@ import {
   Gamepad2,
   Volume2,
   Mic,
+  MicOff,
+  Video,
   ChevronDown,
   Search,
   LogOut,
@@ -23,6 +25,8 @@ import {
   getDocs,
   where,
   writeBatch,
+  deleteDoc,
+  doc,
 } from "firebase/firestore";
 import { db, handleFirestoreError, OperationType } from "../firebase";
 
@@ -48,11 +52,41 @@ export default function Chat({
   const [channelSearch, setChannelSearch] = useState<string>("");
   const [showMembersSidebar, setShowMembersSidebar] = useState<boolean>(true);
   const [notification, setNotification] = useState<ChatMessage | null>(null);
-  const [inVoice, setInVoice] = useState(false);
+  const [voiceUsers, setVoiceUsers] = useState<
+    Array<{
+      uid: string;
+      username: string;
+      photoURL: string;
+      isMuted?: boolean;
+      isVideoOn?: boolean;
+    }>
+  >([]);
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
+
+  // Subscribe to active voice channel users
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        const users: Array<{
+          uid: string;
+          username: string;
+          photoURL: string;
+          isMuted?: boolean;
+          isVideoOn?: boolean;
+        }> = [];
+        snapshot.forEach((d) => {
+          users.push(d.data() as any);
+        });
+        setVoiceUsers(users);
+      },
+      () => setVoiceUsers([])
+    );
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     isOpenRef.current = isOpen;
@@ -304,15 +338,68 @@ export default function Chat({
                 <div className="space-y-0.5 mt-0.5">
                   <button
                     onClick={() => setActiveTab("voice")}
-                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                       activeTab === "voice"
                         ? "bg-neutral-800/90 text-white"
                         : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
                     }`}
                   >
-                    <Volume2 size={15} className="text-neutral-400" />
-                    <span>General Voice</span>
+                    <div className="flex items-center gap-2">
+                      <Volume2
+                        size={15}
+                        className={
+                          activeTab === "voice"
+                            ? "text-emerald-400"
+                            : "text-neutral-400"
+                        }
+                      />
+                      <span>General Voice</span>
+                    </div>
+                    {voiceUsers.length > 0 && (
+                      <span className="text-[10px] font-bold bg-neutral-800 text-neutral-300 px-1.5 py-0.2 rounded-full border border-neutral-700">
+                        {voiceUsers.length}
+                      </span>
+                    )}
                   </button>
+
+                  {/* Users currently in General Voice */}
+                  {voiceUsers.length > 0 && (
+                    <div className="ml-4 pl-2 border-l border-neutral-800/80 my-1 space-y-1">
+                      {voiceUsers.map((vUser) => (
+                        <div
+                          key={vUser.uid}
+                          className="flex items-center justify-between py-1 px-1.5 rounded text-xs text-neutral-300 hover:bg-neutral-900/60 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            {vUser.photoURL ? (
+                              <img
+                                src={vUser.photoURL}
+                                alt={vUser.username}
+                                className="w-4 h-4 rounded-full object-cover border border-neutral-700 flex-shrink-0"
+                              />
+                            ) : (
+                              <div className="w-4 h-4 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
+                                {vUser.username.charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <span className="truncate text-[11px] font-medium text-neutral-300">
+                              {vUser.username}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {vUser.isVideoOn && (
+                              <Video size={11} className="text-emerald-400" />
+                            )}
+                            {vUser.isMuted ? (
+                              <MicOff size={11} className="text-red-400" />
+                            ) : (
+                              <Mic size={11} className="text-emerald-400" />
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
