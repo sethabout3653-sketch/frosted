@@ -1,5 +1,5 @@
 import React, { useState, useEffect, memo } from "react";
-import { Search, Snowflake } from "lucide-react";
+import { Search, Snowflake, MessageSquare } from "lucide-react";
 import { formatTagLabel } from "../utils";
 
 interface HeaderProps {
@@ -94,10 +94,13 @@ const Header = memo(function Header({
               ))}
             </select>
             <button
+              id="frosted-chat-tab-btn"
               onClick={onChatClick}
-              className="h-9 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-1 text-xs text-neutral-300 hover:border-white hover:text-white transition-colors cursor-pointer"
+              className="h-9 rounded-full border border-neutral-800 bg-neutral-900/90 hover:bg-neutral-800 px-4 py-1 text-xs font-bold text-white transition-all cursor-pointer flex items-center gap-2 shadow-sm hover:border-neutral-700 active:scale-95"
+              title="Open Frosted Chat"
             >
-              Chat
+              <MessageSquare size={15} className="text-white" />
+              <span>Frosted Chat</span>
             </button>
           </div>
         </div>

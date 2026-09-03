@@ -1,15 +1,23 @@
 import React, { useState, useRef } from "react";
 import Cropper from "react-easy-crop";
-import { Camera, Check, X } from "lucide-react";
+import { MessageSquare, User, Camera, Check, X, ArrowRight } from "lucide-react";
 
-const DEFAULT_AVATARS = [
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted1",
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted2",
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted3",
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted4",
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted5",
-  "https://api.dicebear.com/7.x/bottts/svg?seed=frosted6",
+// Pre-defined color swatches matching Image 3
+const COLOR_SWATCHES = [
+  { name: "Blue", color: "#5b6cf6" },
+  { name: "Green", color: "#4ade80" },
+  { name: "Yellow", color: "#eab308" },
+  { name: "Magenta", color: "#d946ef" },
+  { name: "Red", color: "#ef4444" },
+  { name: "Purple", color: "#8b5cf6" },
+  { name: "Teal", color: "#14b8a6" },
+  { name: "Orange", color: "#d97706" },
 ];
+
+function createColorAvatarSvg(color: string) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" rx="50" fill="${color}"/><path d="M50 28 a16 16 0 1 0 0.1 0 Z M22 78 a28 28 0 0 1 56 0 Z" fill="#ffffff" opacity="0.95"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
 
 interface ProfileSetupProps {
   initialUsername?: string;
@@ -18,16 +26,23 @@ interface ProfileSetupProps {
   onCancel?: () => void;
 }
 
-export default function ProfileSetup({ initialUsername = "", initialPhotoURL = DEFAULT_AVATARS[0], onComplete, onCancel }: ProfileSetupProps) {
+export default function ProfileSetup({
+  initialUsername = "",
+  initialPhotoURL = createColorAvatarSvg("#5b6cf6"),
+  onComplete,
+  onCancel,
+}: ProfileSetupProps) {
   const [username, setUsername] = useState(initialUsername);
   const [photoURL, setPhotoURL] = useState(initialPhotoURL);
-  
+  const [selectedColor, setSelectedColor] = useState<string>("#5b6cf6");
+  const [isCustomPhoto, setIsCustomPhoto] = useState<boolean>(false);
+
   // Cropper state
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -41,13 +56,13 @@ export default function ProfileSetup({ initialUsername = "", initialPhotoURL = D
     }
   };
 
-  const onCropComplete = (croppedArea: any, croppedAreaPixels: any) => {
+  const onCropComplete = (_croppedArea: any, croppedAreaPixels: any) => {
     setCroppedAreaPixels(croppedAreaPixels);
   };
 
   const createCroppedImage = async () => {
     if (!imageToCrop || !croppedAreaPixels) return;
-    
+
     const image = new Image();
     image.src = imageToCrop;
     await new Promise((resolve) => (image.onload = resolve));
@@ -72,7 +87,14 @@ export default function ProfileSetup({ initialUsername = "", initialPhotoURL = D
 
     const base64Image = canvas.toDataURL("image/jpeg", 0.9);
     setPhotoURL(base64Image);
+    setIsCustomPhoto(true);
     setImageToCrop(null);
+  };
+
+  const handleSelectColor = (color: string) => {
+    setSelectedColor(color);
+    setIsCustomPhoto(false);
+    setPhotoURL(createColorAvatarSvg(color));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -83,9 +105,9 @@ export default function ProfileSetup({ initialUsername = "", initialPhotoURL = D
 
   if (imageToCrop) {
     return (
-      <div className="flex flex-col h-full items-center justify-center p-4">
+      <div className="flex flex-col h-full items-center justify-center p-6 w-full max-w-md mx-auto">
         <h3 className="text-xl font-bold mb-4 text-white">Crop Profile Picture</h3>
-        <div className="relative w-full h-64 bg-black rounded-lg overflow-hidden mb-4">
+        <div className="relative w-full h-64 bg-black rounded-2xl overflow-hidden mb-4 border border-neutral-800">
           <Cropper
             image={imageToCrop}
             crop={crop}
@@ -105,18 +127,20 @@ export default function ProfileSetup({ initialUsername = "", initialPhotoURL = D
           step={0.1}
           aria-labelledby="Zoom"
           onChange={(e) => setZoom(Number(e.target.value))}
-          className="w-full mb-6 accent-white"
+          className="w-full mb-6 accent-white cursor-pointer"
         />
         <div className="flex gap-3 w-full">
           <button
+            type="button"
             onClick={() => setImageToCrop(null)}
-            className="flex-1 py-2 rounded-lg bg-neutral-800 text-white font-semibold flex items-center justify-center gap-2"
+            className="flex-1 py-3 rounded-xl bg-neutral-800 text-white font-semibold flex items-center justify-center gap-2 hover:bg-neutral-700 transition-colors"
           >
             <X size={18} /> Cancel
           </button>
           <button
+            type="button"
             onClick={createCroppedImage}
-            className="flex-1 py-2 rounded-lg bg-white text-black font-semibold flex items-center justify-center gap-2"
+            className="flex-1 py-3 rounded-xl bg-white text-black font-semibold flex items-center justify-center gap-2 hover:bg-neutral-200 transition-colors"
           >
             <Check size={18} /> Save Crop
           </button>
@@ -128,72 +152,128 @@ export default function ProfileSetup({ initialUsername = "", initialPhotoURL = D
   const isEditMode = !!onCancel;
 
   return (
-    <div className="flex flex-col items-center justify-center p-6 h-full max-w-sm mx-auto w-full">
-      <h2 className="text-2xl font-bold text-white mb-2">{isEditMode ? "Edit Profile" : "Join Chat"}</h2>
-      <p className="text-neutral-400 text-sm mb-8 text-center">{isEditMode ? "Update your username and profile picture." : "Pick a username and profile picture to start chatting."}</p>
+    <div className="flex flex-col items-center justify-center p-4 min-h-full w-full py-8">
+      {/* Centered Modal Box matching Image 3 */}
+      <div className="w-full max-w-md bg-[#121212] border border-neutral-800/90 rounded-3xl p-8 shadow-2xl flex flex-col items-center text-center">
+        {/* White squircle with speech bubble icon */}
+        <div className="w-16 h-16 rounded-2xl bg-white text-black flex items-center justify-center shadow-xl mb-5">
+          <MessageSquare size={32} strokeWidth={2.2} />
+        </div>
 
-      <form onSubmit={handleSubmit} className="w-full flex flex-col gap-6">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative group">
-            <img src={photoURL} alt="Avatar" className="w-24 h-24 rounded-full object-cover border-2 border-neutral-700 group-hover:border-white transition-colors" />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="absolute bottom-0 right-0 bg-neutral-800 p-2 rounded-full border border-neutral-600 text-white hover:bg-neutral-700 transition-colors shadow-lg"
-            >
-              <Camera size={14} />
-            </button>
-            <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
+        {/* Heading */}
+        <h2 className="text-2xl font-extrabold text-white tracking-tight mb-2">
+          {isEditMode ? "Edit Profile" : "Join Community Chat"}
+        </h2>
+
+        {/* Subtitle */}
+        <p className="text-neutral-400 text-xs mb-6 max-w-xs leading-relaxed">
+          Real-time messaging &amp; voice rooms powered by Cloud Firestore.
+        </p>
+
+        <form onSubmit={handleSubmit} className="w-full flex flex-col gap-5 text-left">
+          {/* USERNAME field */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-bold text-neutral-400 tracking-wider uppercase">
+              USERNAME
+            </label>
+            <div className="relative flex items-center">
+              <User size={16} className="absolute left-3.5 text-neutral-500" />
+              <input
+                id="chat-username-input"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="e.g. MasterGamer99"
+                maxLength={20}
+                required
+                className="w-full bg-[#0a0a0a] border border-neutral-800 focus:border-white text-white rounded-xl pl-10 pr-4 py-3 text-sm placeholder-neutral-600 focus:outline-none transition-colors"
+              />
+            </div>
           </div>
 
-          <div className="grid grid-cols-6 gap-2 w-full">
-            {DEFAULT_AVATARS.map((avatar, i) => (
+          {/* PICK AVATAR COLOR section */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold text-neutral-400 tracking-wider uppercase">
+                PICK AVATAR COLOR
+              </label>
               <button
-                key={i}
                 type="button"
-                onClick={() => setPhotoURL(avatar)}
-                className={`w-full aspect-square rounded-full overflow-hidden border-2 transition-all ${
-                  photoURL === avatar ? "border-white scale-110" : "border-transparent opacity-50 hover:opacity-100"
-                }`}
+                onClick={() => fileInputRef.current?.click()}
+                className="text-[11px] font-semibold text-neutral-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer bg-neutral-900 border border-neutral-800 px-2.5 py-1 rounded-lg"
               >
-                <img src={avatar} alt={`Avatar ${i}`} className="w-full h-full object-cover bg-neutral-800" />
+                <Camera size={12} />
+                <span>Custom Image</span>
               </button>
-            ))}
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none">
+              {COLOR_SWATCHES.map((item) => {
+                const isSelected = selectedColor === item.color && !isCustomPhoto;
+                return (
+                  <button
+                    key={item.color}
+                    type="button"
+                    onClick={() => handleSelectColor(item.color)}
+                    className={`w-9 h-9 rounded-xl flex-shrink-0 transition-all cursor-pointer ${
+                      isSelected
+                        ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#121212]"
+                        : "opacity-80 hover:opacity-100"
+                    }`}
+                    style={{ backgroundColor: item.color }}
+                    title={item.name}
+                  />
+                );
+              })}
+
+              {/* Custom Image Avatar Swatch */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className={`w-9 h-9 rounded-xl flex-shrink-0 bg-neutral-900 border border-neutral-700 flex items-center justify-center text-neutral-300 hover:text-white transition-all cursor-pointer overflow-hidden ${
+                  isCustomPhoto ? "ring-2 ring-white ring-offset-2 ring-offset-[#121212]" : ""
+                }`}
+                title="Upload Custom Profile Picture"
+              >
+                {isCustomPhoto ? (
+                  <img src={photoURL} alt="Custom" className="w-full h-full object-cover" />
+                ) : (
+                  <Camera size={16} />
+                )}
+              </button>
+            </div>
+            <input
+              type="file"
+              accept="image/*"
+              ref={fileInputRef}
+              className="hidden"
+              onChange={handleFileChange}
+            />
           </div>
-        </div>
 
-        <div className="flex flex-col gap-2">
-          <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">Username</label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="CoolGamer99"
-            maxLength={20}
-            required
-            className="w-full bg-neutral-900 border border-neutral-800 text-white rounded-lg px-4 py-3 outline-none focus:border-white transition-colors"
-          />
-        </div>
-
-        <div className="flex gap-3 pt-4">
-          {onCancel && (
+          {/* Submit Button */}
+          <div className="flex gap-2 pt-2">
+            {onCancel && (
+              <button
+                type="button"
+                onClick={onCancel}
+                className="py-3.5 px-4 rounded-xl bg-neutral-900 text-white font-bold text-sm hover:bg-neutral-800 transition-colors"
+              >
+                Cancel
+              </button>
+            )}
             <button
-              type="button"
-              onClick={onCancel}
-              className="px-4 py-3 rounded-lg bg-neutral-900 text-white font-bold hover:bg-neutral-800 transition-colors"
+              id="enter-chat-submit-btn"
+              type="submit"
+              disabled={!username.trim()}
+              className="flex-1 py-3.5 rounded-xl bg-neutral-300 hover:bg-white text-black font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Cancel
+              <span>{isEditMode ? "Save Changes" : "Enter Chat"}</span>
+              <ArrowRight size={16} />
             </button>
-          )}
-          <button
-            type="submit"
-            disabled={!username.trim()}
-            className="flex-1 py-3 rounded-lg bg-white text-black font-bold hover:bg-neutral-200 transition-colors disabled:opacity-50"
-          >
-            {isEditMode ? "Save Changes" : "Let's Go!"}
-          </button>
-        </div>
-      </form>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

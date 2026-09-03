@@ -19,6 +19,9 @@ export interface ChatProfile {
   uid: string;
   username: string;
   photoURL: string;
+  isMuted?: boolean;
+  isVideoOn?: boolean;
+  status?: "online" | "left" | "offline";
 }
 
 export interface ChatMessage {

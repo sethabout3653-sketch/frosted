@@ -1,12 +1,27 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Mic, MicOff, PhoneOff, User } from "lucide-react";
-import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where, addDoc } from "firebase/firestore";
+import { Mic, MicOff, Video, VideoOff, PhoneOff } from "lucide-react";
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  where,
+  addDoc,
+  updateDoc,
+} from "firebase/firestore";
 import { db } from "../firebase";
 import { ChatProfile, VoiceSignal } from "../types";
 
 interface VoiceChannelProps {
   profile: ChatProfile;
   onLeave: () => void;
+}
+
+interface Participant extends ChatProfile {
+  isMuted?: boolean;
+  isVideoOn?: boolean;
 }
 
 const ICE_SERVERS = {
@@ -17,13 +32,13 @@ const ICE_SERVERS = {
   ],
 };
 
-// Modifies SDP to force Opus to run at maximum bitrate (510kbps), stereo, CBR, without compression/suppression loss
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
       if (!lines[i].includes("maxaveragebitrate")) {
-        lines[i] += ";maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0";
+        lines[i] +=
+          ";maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0";
       }
     }
   }
@@ -32,94 +47,108 @@ function optimizeAudioSdp(sdp: string): string {
 
 export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
-  const [participants, setParticipants] = useState<ChatProfile[]>([]);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
-  const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
-  const audioElementsRef = useRef<{ [uid: string]: HTMLAudioElement }>({});
 
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
+  const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>(
+    {}
+  );
+  const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+
+  // Clean up and register voice user state
   useEffect(() => {
     let unsubscribeSignals: () => void;
     let unsubscribeUsers: () => void;
 
     async function initVoice() {
       try {
-        // High quality uncompressed mic settings: disable aggressive noise suppression and dynamic gain compression
+        // Initial audio stream
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
-            noiseSuppression: false, // Turn off heavy compression/noise gate
-            autoGainControl: false,  // Turn off dynamic amplitude compression
-            channelCount: { ideal: 2 },
-            sampleRate: { ideal: 48000, min: 44100 },
-            sampleSize: { ideal: 16 },
+            noiseSuppression: false,
+            autoGainControl: false,
           },
           video: false,
         });
         localStreamRef.current = stream;
 
-        // Register self as online
+        // Register self as online in voice_users with muted and video states
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
           username: profile.username,
           photoURL: profile.photoURL || "",
+          isMuted: false,
+          isVideoOn: false,
           timestamp: Date.now(),
         });
 
-        // Listen for other users
+        // Also update main presence document
+        await updateDoc(doc(db, "presence", profile.uid), {
+          isMuted: false,
+          inVoice: true,
+        }).catch(() => {});
+
+        // Listen for other users in voice_users collection
         unsubscribeUsers = onSnapshot(collection(db, "voice_users"), (snapshot) => {
-          const users: ChatProfile[] = [];
+          const users: Participant[] = [];
           snapshot.forEach((d) => {
-            const u = d.data() as ChatProfile;
+            const u = d.data() as Participant;
             if (u.uid !== profile.uid) {
               users.push(u);
-              // If their UID is greater, we initiate the call to avoid race conditions
               if (u.uid > profile.uid && !peersRef.current[u.uid]) {
-                initiateCall(u.uid, stream);
+                initiateCall(u.uid, localStreamRef.current!);
               }
             }
           });
           setParticipants(users);
         });
 
-        // Listen for WebRTC signals (Offers, Answers, Candidates)
-        const q = query(collection(db, "signals"), where("receiverId", "==", profile.uid));
+        // Listen for WebRTC signaling (offers, answers, candidates)
+        const q = query(
+          collection(db, "signals"),
+          where("receiverId", "==", profile.uid)
+        );
         unsubscribeSignals = onSnapshot(q, (snapshot) => {
           snapshot.docChanges().forEach(async (change) => {
             if (change.type === "added") {
-              const signal = { id: change.doc.id, ...change.doc.data() } as VoiceSignal;
-              await handleSignal(signal, stream);
-              // Clean up signal after processing
+              const signal = {
+                id: change.doc.id,
+                ...change.doc.data(),
+              } as VoiceSignal;
+              if (localStreamRef.current) {
+                await handleSignal(signal, localStreamRef.current);
+              }
               deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
             }
           });
         });
-
       } catch (err: any) {
-        console.error("Failed to access microphone", err);
-        if (err.name === 'NotAllowedError' || err.name === 'SecurityError' || err.message?.includes('Permission denied')) {
-          setError("Microphone permission was denied. Please allow microphone access in your browser settings to use voice chat.");
-        } else {
-          setError("Failed to access microphone. Please make sure you have a microphone connected.");
-        }
+        console.error("Failed to access media devices", err);
+        setError("Failed to access microphone. Please allow access in browser settings.");
       }
     }
 
     initVoice();
 
     return () => {
-      // Cleanup
+      // Cleanup tracks and connections
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(t => t.stop());
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => pc.close());
-      Object.values(audioElementsRef.current).forEach((audio: HTMLAudioElement) => {
-        audio.pause();
-        audio.srcObject = null;
-      });
+
       deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+      updateDoc(doc(db, "presence", profile.uid), {
+        inVoice: false,
+        isMuted: false,
+      }).catch(() => {});
+
       if (unsubscribeSignals) unsubscribeSignals();
       if (unsubscribeUsers) unsubscribeUsers();
     };
@@ -139,20 +168,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       pc.addTrack(track, stream);
     });
 
-    // Set maximum audio bitrate on senders
-    pc.getSenders().forEach((sender) => {
-      if (sender.track && sender.track.kind === "audio") {
-        try {
-          const params = sender.getParameters();
-          if (!params.encodings) params.encodings = [{}];
-          params.encodings[0].maxBitrate = 510000; // 510 kbps maximum Opus audio quality
-          sender.setParameters(params).catch(() => {});
-        } catch (e) {
-          // Ignore if setParameters is unsupported
-        }
-      }
-    });
-
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         sendSignal(partnerUid, "candidate", JSON.stringify(event.candidate));
@@ -160,19 +175,29 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     };
 
     pc.ontrack = (event) => {
-      if (!audioElementsRef.current[partnerUid]) {
-        const audio = new Audio();
-        audio.autoplay = true;
-        audioElementsRef.current[partnerUid] = audio;
+      if (!remoteStreamsRef.current[partnerUid]) {
+        remoteStreamsRef.current[partnerUid] = new MediaStream();
       }
-      audioElementsRef.current[partnerUid].srcObject = event.streams[0];
+      event.streams[0].getTracks().forEach((t) => {
+        remoteStreamsRef.current[partnerUid].addTrack(t);
+      });
+
+      const videoEl = remoteVideoRefs.current[partnerUid];
+      if (videoEl) {
+        videoEl.srcObject = remoteStreamsRef.current[partnerUid];
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
+      if (
+        pc.iceConnectionState === "disconnected" ||
+        pc.iceConnectionState === "failed" ||
+        pc.iceConnectionState === "closed"
+      ) {
         pc.close();
         delete peersRef.current[partnerUid];
         delete iceCandidateQueuesRef.current[partnerUid];
+        delete remoteStreamsRef.current[partnerUid];
       }
     };
 
@@ -190,11 +215,14 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       await pc.setLocalDescription(highQualityOffer);
       sendSignal(partnerUid, "offer", JSON.stringify(highQualityOffer));
     } catch (err) {
-      console.error("Error initiating voice call:", err);
+      console.error("Error initiating call:", err);
     }
   };
 
-  const processCandidateQueue = async (partnerUid: string, pc: RTCPeerConnection) => {
+  const processCandidateQueue = async (
+    partnerUid: string,
+    pc: RTCPeerConnection
+  ) => {
     const queue = iceCandidateQueuesRef.current[partnerUid] || [];
     while (queue.length > 0) {
       const candidateData = queue.shift();
@@ -202,7 +230,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidateData));
         } catch (e) {
-          console.warn("Error processing queued ICE candidate:", e);
+          console.warn("Error processing candidate:", e);
         }
       }
     }
@@ -213,10 +241,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
     try {
       if (signal.type === "offer") {
-        const offerDescription = new RTCSessionDescription(JSON.parse(signal.data));
+        const offerDescription = new RTCSessionDescription(
+          JSON.parse(signal.data)
+        );
         const pc = createPeerConnection(partnerUid, stream);
         await pc.setRemoteDescription(offerDescription);
-        
         await processCandidateQueue(partnerUid, pc);
 
         const answer = await pc.createAnswer();
@@ -226,29 +255,23 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         });
         await pc.setLocalDescription(highQualityAnswer);
         sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
-      } 
-      else if (signal.type === "answer") {
+      } else if (signal.type === "answer") {
         const pc = peersRef.current[partnerUid];
-        if (pc) {
-          // CRITICAL FIX: Only set remote answer SDP if RTCPeerConnection is expecting an answer (have-local-offer state)
-          if (pc.signalingState === "have-local-offer") {
-            const answerDescription = new RTCSessionDescription(JSON.parse(signal.data));
-            await pc.setRemoteDescription(answerDescription);
-            await processCandidateQueue(partnerUid, pc);
-          } else {
-            console.warn(`Skipped setting remote answer for ${partnerUid} as connection state is '${pc.signalingState}' (expected 'have-local-offer')`);
-          }
+        if (pc && pc.signalingState === "have-local-offer") {
+          const answerDescription = new RTCSessionDescription(
+            JSON.parse(signal.data)
+          );
+          await pc.setRemoteDescription(answerDescription);
+          await processCandidateQueue(partnerUid, pc);
         }
-      } 
-      else if (signal.type === "candidate") {
+      } else if (signal.type === "candidate") {
         const candidateData = JSON.parse(signal.data);
         const pc = peersRef.current[partnerUid];
         if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch((e) => {
-            console.warn("Error adding ICE candidate:", e);
-          });
+          await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch(
+            () => {}
+          );
         } else {
-          // Queue candidate until remote description is ready
           if (!iceCandidateQueuesRef.current[partnerUid]) {
             iceCandidateQueuesRef.current[partnerUid] = [];
           }
@@ -260,7 +283,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     }
   };
 
-  const sendSignal = async (receiverId: string, type: "offer" | "answer" | "candidate", data: string) => {
+  const sendSignal = async (
+    receiverId: string,
+    type: "offer" | "answer" | "candidate",
+    data: string
+  ) => {
     try {
       await addDoc(collection(db, "signals"), {
         senderId: profile.uid,
@@ -274,24 +301,91 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     }
   };
 
-  const toggleMute = () => {
+  // Toggle Mute
+  const toggleMute = async () => {
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
-        track.enabled = isMuted;
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
       });
-      setIsMuted(!isMuted);
+    }
+
+    // Sync muted state to Firestore so everyone sees red mic mute badge!
+    try {
+      await updateDoc(doc(db, "voice_users", profile.uid), {
+        isMuted: nextMuted,
+      });
+      await updateDoc(doc(db, "presence", profile.uid), {
+        isMuted: nextMuted,
+      });
+    } catch (e) {}
+  };
+
+  // Toggle Video Chat
+  const toggleVideo = async () => {
+    const nextVideoState = !isVideoOn;
+    setIsVideoOn(nextVideoState);
+
+    try {
+      if (nextVideoState) {
+        // Enable video track
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480 },
+        });
+        const videoTrack = videoStream.getVideoTracks()[0];
+
+        if (localStreamRef.current) {
+          localStreamRef.current.addTrack(videoTrack);
+        }
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+
+        // Add video track to existing peer connections
+        Object.keys(peersRef.current).forEach((pUid) => {
+          const pc = peersRef.current[pUid];
+          pc.addTrack(videoTrack, localStreamRef.current!);
+          initiateCall(pUid, localStreamRef.current!);
+        });
+      } else {
+        // Disable video track
+        if (localStreamRef.current) {
+          localStreamRef.current.getVideoTracks().forEach((track) => {
+            track.stop();
+            localStreamRef.current?.removeTrack(track);
+          });
+        }
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = null;
+        }
+      }
+
+      await updateDoc(doc(db, "voice_users", profile.uid), {
+        isVideoOn: nextVideoState,
+      });
+    } catch (e) {
+      console.error("Failed to toggle camera:", e);
+      setIsVideoOn(false);
     }
   };
 
   if (error) {
     return (
-      <div className="flex flex-col h-full bg-black/95 backdrop-blur-xl border-l border-neutral-800 items-center justify-center p-6 text-center">
-        <div className="w-16 h-16 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center mb-4">
+      <div className="flex flex-col h-full bg-black items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-red-500/20 text-red-500 flex items-center justify-center mb-4">
           <MicOff size={32} />
         </div>
-        <h3 className="text-xl font-bold text-white mb-2">Microphone Blocked</h3>
+        <h3 className="text-xl font-bold text-white mb-2">
+          Microphone Permission Required
+        </h3>
         <p className="text-sm text-neutral-400 mb-6">{error}</p>
-        <button onClick={onLeave} className="px-6 py-2 rounded-full bg-white text-black font-bold hover:scale-105 transition-transform">
+        <button
+          onClick={onLeave}
+          className="px-6 py-2.5 rounded-xl bg-white text-black font-bold hover:bg-neutral-200 transition-colors"
+        >
           Go Back
         </button>
       </div>
@@ -299,56 +393,147 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-black/95 backdrop-blur-xl border-l border-neutral-800">
-      <div className="p-4 border-b border-neutral-800 flex flex-col items-center justify-center pt-8">
-        <div className="relative mb-4">
-          <img src={profile.photoURL} alt="Me" className="w-24 h-24 rounded-full border-2 border-green-500 object-cover" />
-          {isMuted && (
-            <div className="absolute bottom-0 right-0 bg-red-500 p-1.5 rounded-full border-2 border-black text-white">
-              <MicOff size={14} />
-            </div>
-          )}
+    <div className="flex-1 flex flex-col h-full w-full bg-black text-white min-h-0 overflow-hidden">
+      {/* Top Header Bar matching Image 2 */}
+      <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-sm font-extrabold text-emerald-400 tracking-wide">
+            Voice Connected
+          </span>
         </div>
-        <h2 className="text-lg font-bold text-white">General Voice</h2>
-        <div className="flex items-center gap-2 mt-1">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-          <p className="text-xs text-green-400 font-semibold uppercase tracking-wider">Connected • Studio Quality Audio</p>
-        </div>
+        <span className="text-sm font-semibold text-neutral-400">
+          General Voice
+        </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-4">Other Participants ({participants.length})</h3>
-        <div className="grid grid-cols-3 gap-4">
-          {participants.map((p) => (
-            <div key={p.uid} className="flex flex-col items-center gap-2">
-              <img src={p.photoURL} alt={p.username} className="w-14 h-14 rounded-full object-cover border border-neutral-700" />
-              <span className="text-xs text-neutral-300 font-medium truncate w-full text-center">{p.username}</span>
-            </div>
-          ))}
-          {participants.length === 0 && (
-            <div className="col-span-3 text-center py-8 text-neutral-600 text-sm">
-              It's quiet here. Wait for others to join.
+      {/* Main Grid: User & Remote Video / Avatar Tiles */}
+      <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
+        {/* Local User Tile */}
+        <div className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg group">
+          {isVideoOn ? (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover transform -scale-x-100"
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <div className="relative">
+                <img
+                  src={profile.photoURL}
+                  alt={profile.username}
+                  className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
+                />
+                {isMuted && (
+                  <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                    <MicOff size={14} />
+                  </div>
+                )}
+              </div>
             </div>
           )}
+
+          {/* User Name Tag overlay */}
+          <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
+            <span className="text-xs font-bold text-white">
+              {profile.username} (You)
+            </span>
+            {isMuted && (
+              <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                Muted
+              </span>
+            )}
+          </div>
         </div>
+
+        {/* Remote Participants Tiles */}
+        {participants.map((p) => (
+          <div
+            key={p.uid}
+            className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
+          >
+            {p.isVideoOn ? (
+              <video
+                ref={(el) => {
+                  remoteVideoRefs.current[p.uid] = el;
+                  if (el && remoteStreamsRef.current[p.uid]) {
+                    el.srcObject = remoteStreamsRef.current[p.uid];
+                  }
+                }}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-3">
+                <div className="relative">
+                  <img
+                    src={p.photoURL}
+                    alt={p.username}
+                    className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
+                  />
+                  {p.isMuted && (
+                    <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                      <MicOff size={14} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Remote User Name Tag & Muted Indicator */}
+            <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
+              <span className="text-xs font-bold text-white">{p.username}</span>
+              {p.isMuted && (
+                <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                  Muted
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
 
-      <div className="p-6 border-t border-neutral-800 flex justify-center gap-6">
+      {/* Bottom Controls Bar matching Image 2 EXACTLY (no headphone, no mic level, adding video chat) */}
+      <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-5 flex-shrink-0">
+        {/* Mic Toggle Button */}
         <button
           onClick={toggleMute}
-          className={`p-4 rounded-full transition-colors shadow-lg ${isMuted ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30' : 'bg-neutral-800 text-white hover:bg-neutral-700'}`}
+          className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
+            isMuted
+              ? "bg-red-600/20 text-red-500 border border-red-800/80 hover:bg-red-600/30"
+              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+          }`}
+          title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
         >
-          {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
+          {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
-        
+
+        {/* Video Chat Toggle Button */}
+        <button
+          onClick={toggleVideo}
+          className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
+            isVideoOn
+              ? "bg-white text-black font-bold shadow-lg"
+              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+          }`}
+          title={isVideoOn ? "Turn Off Camera" : "Turn On Camera (Video Chat)"}
+        >
+          {isVideoOn ? <Video size={20} /> : <VideoOff size={20} />}
+        </button>
+
+        {/* Leave Voice Button (Red Squircle PhoneOff button matching Image 2) */}
         <button
           onClick={onLeave}
-          className="p-4 rounded-full bg-red-500 text-white hover:bg-red-600 shadow-lg transition-colors"
+          className="p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white shadow-xl transition-all cursor-pointer active:scale-95"
+          title="Disconnect from Voice"
         >
-          <PhoneOff size={24} />
+          <PhoneOff size={20} className="text-white stroke-[2.5]" />
         </button>
       </div>
     </div>
   );
 }
-
