@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Mic, MicOff, Video, VideoOff, PhoneOff } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Loader2 } from "lucide-react";
 import {
   collection,
   doc,
@@ -48,6 +48,11 @@ function optimizeAudioSdp(sdp: string): string {
 export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
+  const [remoteVideoLoaded, setRemoteVideoLoaded] = useState<
+    Record<string, boolean>
+  >({});
+  const [, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -307,7 +312,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       const videoEl = remoteVideoRefs.current[partnerUid];
       if (videoEl) {
         videoEl.srcObject = remoteStreamsRef.current[partnerUid];
+        videoEl.play().catch(() => {});
       }
+
+      setTrackTrigger((v) => v + 1);
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -468,6 +476,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     setIsVideoOn(nextVideoState);
     isVideoOnRef.current = nextVideoState;
 
+    if (nextVideoState) {
+      setIsVideoLoading(true);
+    } else {
+      setIsVideoLoading(false);
+    }
+
     try {
       if (nextVideoState) {
         // Enable camera video track
@@ -480,6 +494,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             track.stop();
             track.enabled = false;
           });
+          setIsVideoLoading(false);
           return;
         }
 
@@ -488,17 +503,28 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = videoStream;
+          localVideoRef.current.play().catch(() => {});
         }
 
         // Replace track across peer connections seamlessly
         Object.keys(peersRef.current).forEach((pUid) => {
           const pc = peersRef.current[pUid];
           if (pc && pc.connectionState !== "closed") {
-            const videoSender = pc.getSenders().find(
-              (s) => s.track?.kind === "video" || pc.getTransceivers().some((t) => t.sender === s)
+            const transceivers = pc.getTransceivers();
+            const videoTransceiver = transceivers.find(
+              (t) =>
+                t.receiver.track?.kind === "video" ||
+                t.sender.track?.kind === "video"
             );
-            if (videoSender) {
-              videoSender.replaceTrack(videoTrack).catch(() => {});
+            if (videoTransceiver && videoTransceiver.sender) {
+              videoTransceiver.sender.replaceTrack(videoTrack).catch(() => {});
+            } else {
+              const videoSender = pc
+                .getSenders()
+                .find((s) => s.track?.kind === "video");
+              if (videoSender) {
+                videoSender.replaceTrack(videoTrack).catch(() => {});
+              }
             }
           }
         });
@@ -518,11 +544,21 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         Object.keys(peersRef.current).forEach((pUid) => {
           const pc = peersRef.current[pUid];
           if (pc && pc.connectionState !== "closed") {
-            const videoSender = pc.getSenders().find(
-              (s) => s.track?.kind === "video" || pc.getTransceivers().some((t) => t.sender === s)
+            const transceivers = pc.getTransceivers();
+            const videoTransceiver = transceivers.find(
+              (t) =>
+                t.receiver.track?.kind === "video" ||
+                t.sender.track?.kind === "video"
             );
-            if (videoSender) {
-              videoSender.replaceTrack(null).catch(() => {});
+            if (videoTransceiver && videoTransceiver.sender) {
+              videoTransceiver.sender.replaceTrack(null).catch(() => {});
+            } else {
+              const videoSender = pc
+                .getSenders()
+                .find((s) => s.track?.kind === "video");
+              if (videoSender) {
+                videoSender.replaceTrack(null).catch(() => {});
+              }
             }
           }
         });
@@ -535,6 +571,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       console.error("Failed to toggle camera:", e);
       setIsVideoOn(false);
       isVideoOnRef.current = false;
+      setIsVideoLoading(false);
     }
   };
 
@@ -582,12 +619,27 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
         {/* Local User Tile */}
         <div className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg group">
-          {isVideoOn ? (
+          {isVideoLoading ? (
+            <div className="flex flex-col items-center justify-center gap-3 p-4">
+              <div className="relative flex items-center justify-center">
+                <div className="absolute w-20 h-20 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+                <img
+                  src={profile.photoURL}
+                  alt={profile.username}
+                  className="w-14 h-14 rounded-full object-cover border-2 border-neutral-700 shadow-md animate-pulse"
+                />
+              </div>
+              <span className="text-xs font-bold text-indigo-400 tracking-wide flex items-center gap-1.5 mt-2">
+                <Loader2 size={14} className="animate-spin" /> Starting Camera...
+              </span>
+            </div>
+          ) : isVideoOn ? (
             <video
               ref={localVideoRef}
               autoPlay
               playsInline
               muted
+              onLoadedData={() => setIsVideoLoading(false)}
               className="w-full h-full object-cover transform -scale-x-100"
             />
           ) : (
@@ -607,7 +659,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             </div>
           )}
 
-          <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
+          <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
             <span className="text-xs font-bold text-white">
               {profile.username} (You)
             </span>
@@ -620,50 +672,95 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         </div>
 
         {/* Remote Participants Tiles */}
-        {participants.map((p) => (
-          <div
-            key={p.uid}
-            className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
-          >
-            {p.isVideoOn ? (
-              <video
-                ref={(el) => {
-                  remoteVideoRefs.current[p.uid] = el;
-                  if (el && remoteStreamsRef.current[p.uid]) {
-                    el.srcObject = remoteStreamsRef.current[p.uid];
-                  }
-                }}
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="flex flex-col items-center gap-3">
-                <div className="relative">
-                  <img
-                    src={p.photoURL}
-                    alt={p.username}
-                    className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
-                  />
-                  {p.isMuted && (
-                    <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
-                      <MicOff size={14} />
+        {participants.map((p) => {
+          const stream = remoteStreamsRef.current[p.uid];
+          const isLoaded = remoteVideoLoaded[p.uid];
+
+          return (
+            <div
+              key={p.uid}
+              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
+            >
+              {p.isVideoOn ? (
+                <>
+                  {!isLoaded && (
+                    <div className="absolute inset-0 bg-[#0f0f0f] z-10 flex flex-col items-center justify-center gap-3 p-4">
+                      <div className="relative flex items-center justify-center">
+                        <div className="absolute w-20 h-20 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+                        {p.photoURL ? (
+                          <img
+                            src={p.photoURL}
+                            alt={p.username}
+                            className="w-14 h-14 rounded-full object-cover border-2 border-neutral-700 shadow-md animate-pulse"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 rounded-full bg-neutral-800 border-2 border-neutral-700 flex items-center justify-center text-xl font-bold text-white animate-pulse">
+                            {p.username.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs font-bold text-indigo-400 tracking-wide flex items-center gap-1.5 mt-2">
+                        <Loader2 size={14} className="animate-spin" /> Loading Stream...
+                      </span>
                     </div>
                   )}
+                  <video
+                    ref={(el) => {
+                      remoteVideoRefs.current[p.uid] = el;
+                      if (el && stream) {
+                        if (el.srcObject !== stream) {
+                          el.srcObject = stream;
+                        }
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    onLoadedData={() => {
+                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                    }}
+                    onCanPlay={() => {
+                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                    }}
+                    className={`w-full h-full object-cover transition-opacity duration-300 ${
+                      isLoaded ? "opacity-100" : "opacity-0"
+                    }`}
+                  />
+                </>
+              ) : (
+                <div className="flex flex-col items-center gap-3">
+                  <div className="relative">
+                    {p.photoURL ? (
+                      <img
+                        src={p.photoURL}
+                        alt={p.username}
+                        className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
+                      />
+                    ) : (
+                      <div className="w-20 h-20 rounded-full bg-neutral-800 border-2 border-neutral-700 flex items-center justify-center text-2xl font-bold text-white">
+                        {p.username.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    {p.isMuted && (
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                        <MicOff size={14} />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-
-            <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2">
-              <span className="text-xs font-bold text-white">{p.username}</span>
-              {p.isMuted && (
-                <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
-                  Muted
-                </span>
               )}
+
+              <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
+                <span className="text-xs font-bold text-white">{p.username}</span>
+                {p.isMuted && (
+                  <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                    Muted
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Bottom Controls Bar */}

@@ -611,48 +611,6 @@ export default function ChatPanel({
                 })}
               </div>
             </div>
-
-            {/* OFFLINE / LEFT WEBSITE SECTION */}
-            {leftUsers.length > 0 && (
-              <div>
-                <h3 className="text-[10px] font-bold text-neutral-500 tracking-wider uppercase mb-2 px-1">
-                  OFFLINE / LEFT — {leftUsers.length}
-                </h3>
-                <div className="space-y-1">
-                  {leftUsers.map((user) => (
-                    <div
-                      key={user.uid}
-                      className="flex items-center gap-2.5 p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-neutral-900/60 transition-all"
-                    >
-                      {/* Avatar with Gray Left Dot Badge */}
-                      <div className="relative">
-                        <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex items-center justify-center text-xs font-bold text-neutral-400">
-                          {user.photoURL ? (
-                            <img
-                              src={user.photoURL}
-                              alt={user.username}
-                              className="w-full h-full object-cover grayscale"
-                            />
-                          ) : (
-                            <span>{user.username.charAt(0).toUpperCase()}</span>
-                          )}
-                        </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-neutral-600 border-2 border-[#080808]" />
-                      </div>
-
-                      <div className="flex-1 min-w-0 flex flex-col">
-                        <span className="text-xs font-bold text-neutral-400 truncate">
-                          {user.username}
-                        </span>
-                        <span className="text-[10px] text-neutral-500 font-medium italic">
-                          Left website
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </aside>
       )}
