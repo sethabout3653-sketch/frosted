@@ -79,36 +79,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
 
-  // Uncapped audio settings state (default: raw unfiltered uncapped output - zero gates)
-  const [isRawAudio, setIsRawAudio] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem("frosted_raw_mic");
-      return saved !== null ? saved === "true" : true;
-    } catch {
-      return true;
-    }
-  });
-
-  const [isEchoCancellation, setIsEchoCancellation] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("frosted_mic_echo") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const [micGain, setMicGain] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("frosted_mic_gain");
-      if (saved) {
-        const val = parseFloat(saved);
-        if (!isNaN(val) && val >= 0.5 && val <= 3.0) return val;
-      }
-    } catch {}
-    return 1.0;
-  });
-
-  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  // Audio level and remote volume states
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
 
@@ -135,40 +106,31 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
-  // Acquire raw or filtered microphone media stream
-  const acquireMicrophoneStream = useCallback(
-    async (raw: boolean, echo: boolean): Promise<MediaStream> => {
-      try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: raw
-            ? {
-                echoCancellation: echo ? { ideal: true } : false,
-                noiseSuppression: false,
-                autoGainControl: false,
-                channelCount: { ideal: 2 },
-                sampleRate: { ideal: 48000 },
-              }
-            : {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
-          video: false,
-        });
-      } catch (err) {
-        console.warn("Primary mic constraints failed, using fallback:", err);
-        return await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false,
-        });
-      }
-    },
-    []
-  );
+  // Automatically acquire studio uncapped microphone stream (no noise gate, no AGC, no compression cutoff)
+  const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: false },
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: { ideal: 2 },
+          sampleRate: { ideal: 48000 },
+        },
+        video: false,
+      });
+    } catch (err) {
+      console.warn("Uncapped mic constraints failed, using fallback:", err);
+      return await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+    }
+  }, []);
 
-  // Connect microphone to live Web Audio pipeline for gain boost and live meter
+  // Connect microphone to live Web Audio pipeline for real-time level metering
   const setupAudioPipeline = useCallback(
-    async (sourceStream: MediaStream, currentGain: number): Promise<MediaStream> => {
+    async (sourceStream: MediaStream): Promise<MediaStream> => {
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
         animFrameRef.current = null;
@@ -217,24 +179,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
 
-        let finalStream: MediaStream;
-        if (currentGain > 1.0) {
-          // Route through clean Web Audio GainNode without limiters/compressors
-          const gainNode = ctx.createGain();
-          gainNode.gain.value = currentGain;
-          gainNodeRef.current = gainNode;
-
-          const dest = ctx.createMediaStreamDestination();
-          source.connect(gainNode);
-          gainNode.connect(dest);
-          finalStream = dest.stream;
-        } else {
-          gainNodeRef.current = null;
-          finalStream = sourceStream;
-        }
-
-        localStreamRef.current = finalStream;
-        return finalStream;
+        localStreamRef.current = sourceStream;
+        return sourceStream;
       } catch (err) {
         console.warn("AudioContext setup fallback to raw stream:", err);
         localStreamRef.current = sourceStream;
@@ -664,7 +610,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
     async function initVoice() {
       try {
-        const rawStream = await acquireMicrophoneStream(isRawAudio, isEchoCancellation);
+        const rawStream = await acquireMicrophoneStream();
 
         if (!isMountedRef.current) {
           rawStream.getTracks().forEach((t) => {
@@ -674,7 +620,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           return;
         }
 
-        const stream = await setupAudioPipeline(rawStream, micGain);
+        const stream = await setupAudioPipeline(rawStream);
 
         if (!isMountedRef.current) {
           stopAllMediaTracks();
@@ -800,72 +746,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         isMuted: nextMuted,
       });
     } catch (e) {}
-  };
-
-  // Dynamically apply audio settings (mode, echo cancellation, gain boost)
-  const applyAudioSettings = async (
-    newRaw: boolean,
-    newEcho: boolean,
-    newGain: number
-  ) => {
-    const prevRaw = isRawAudio;
-    const prevEcho = isEchoCancellation;
-    setIsRawAudio(newRaw);
-    setIsEchoCancellation(newEcho);
-    setMicGain(newGain);
-
-    try {
-      localStorage.setItem("frosted_raw_mic", newRaw.toString());
-      localStorage.setItem("frosted_mic_echo", newEcho.toString());
-      localStorage.setItem("frosted_mic_gain", newGain.toString());
-    } catch {}
-
-    // If only gain changed and gainNode already active, update in real-time
-    if (
-      newRaw === prevRaw &&
-      newEcho === prevEcho &&
-      gainNodeRef.current &&
-      newGain > 1.0
-    ) {
-      gainNodeRef.current.gain.value = newGain;
-      return;
-    }
-
-    try {
-      if (rawStreamRef.current) {
-        rawStreamRef.current.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
-        });
-      }
-
-      const freshRawStream = await acquireMicrophoneStream(newRaw, newEcho);
-      if (!isMountedRef.current) {
-        freshRawStream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-
-      const newStream = await setupAudioPipeline(freshRawStream, newGain);
-      const newAudioTrack = newStream.getAudioTracks()[0];
-      if (newAudioTrack) {
-        newAudioTrack.enabled = !isMuted;
-      }
-
-      // Hot-swap audio track on all established peer connections
-      await Promise.all(
-        Object.values(peersRef.current).map(async (pc: RTCPeerConnection) => {
-          if (pc && pc.connectionState !== "closed") {
-            const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-            if (sender && newAudioTrack) {
-              await sender.replaceTrack(newAudioTrack).catch(() => {});
-            }
-          }
-        })
-      );
-    } catch (err) {
-      console.error("Failed to hot-update microphone settings:", err);
-    }
   };
 
   // Toggle Video Camera
@@ -1057,7 +937,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               : "border-neutral-800/90"
           }`}
         >
-          {/* Uncapped Status Badge */}
+          {/* Audio Status Badge */}
           <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
             <div
               className={`w-2 h-2 rounded-full transition-colors ${
@@ -1065,21 +945,19 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   ? "bg-red-500"
                   : audioLevel > 5
                   ? "bg-emerald-400 animate-pulse"
-                  : isRawAudio
-                  ? "bg-cyan-400"
-                  : "bg-neutral-500"
+                  : "bg-cyan-400"
               }`}
             />
             <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
               {isMuted ? (
                 "MUTED"
-              ) : isRawAudio ? (
+              ) : audioLevel > 5 ? (
+                "SPEAKING"
+              ) : (
                 <>
                   <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
-                  UNCAPPED {micGain > 1.0 && `(${Math.round(micGain * 100)}%)`}
+                  UNCAPPED
                 </>
-              ) : (
-                "FILTERED"
               )}
             </span>
           </div>
@@ -1404,186 +1282,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         >
           {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
-
-        {/* Uncapped Mic Settings Trigger Button & Popover */}
-        <div className="relative">
-          <button
-            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-            className={`p-3.5 rounded-2xl transition-all cursor-pointer flex items-center gap-2.5 border ${
-              isRawAudio
-                ? "bg-cyan-950/40 text-cyan-400 border-cyan-700/60 hover:bg-cyan-900/50 shadow-[0_0_15px_rgba(6,182,212,0.2)]"
-                : "bg-neutral-900 text-neutral-400 border-neutral-800 hover:bg-neutral-800 hover:text-white"
-            }`}
-            title="Mic Limiter & Output Settings (Outputs Anything)"
-          >
-            <Zap
-              size={19}
-              className={isRawAudio ? "text-cyan-400 fill-cyan-400/40 animate-pulse" : ""}
-            />
-            <span className="text-xs font-bold hidden sm:inline">
-              {isRawAudio ? "Uncapped Mic" : "Filtered Mic"}
-            </span>
-
-            {/* Live Input Mini-Bar */}
-            {!isMuted && (
-              <div className="w-1.5 h-4 bg-neutral-800 rounded-full overflow-hidden flex flex-col justify-end">
-                <div
-                  className="w-full bg-cyan-400 transition-all duration-75"
-                  style={{ height: `${Math.min(100, audioLevel * 1.2)}%` }}
-                />
-              </div>
-            )}
-          </button>
-
-          {/* Settings Popover */}
-          {isSettingsOpen && (
-            <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 w-84 bg-[#121212] border border-neutral-800 rounded-2xl p-4 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-center justify-between pb-3 border-b border-neutral-800/80 mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                    <Zap size={16} />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                      Mic Output Engine
-                    </h4>
-                    <p className="text-[10px] text-neutral-400">
-                      Unconstrained high-fidelity audio
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 cursor-pointer"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              {/* Real-time input level meter */}
-              <div className="mb-3.5 bg-black/60 rounded-xl p-2.5 border border-neutral-800/60">
-                <div className="flex justify-between items-center text-[10px] font-semibold text-neutral-400 mb-1">
-                  <span>LIVE INPUT LEVEL</span>
-                  <span
-                    className={
-                      audioLevel > 5 ? "text-cyan-400 font-mono font-bold" : "text-neutral-500 font-mono"
-                    }
-                  >
-                    {isMuted ? "MUTED" : `${audioLevel}%`}
-                  </span>
-                </div>
-                <div className="w-full h-2 bg-neutral-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-75 ${
-                      isMuted
-                        ? "w-0"
-                        : audioLevel > 80
-                        ? "bg-red-500"
-                        : audioLevel > 50
-                        ? "bg-yellow-400"
-                        : "bg-emerald-400"
-                    }`}
-                    style={{ width: isMuted ? "0%" : `${Math.min(100, audioLevel)}%` }}
-                  />
-                </div>
-                <p className="text-[9px] text-neutral-500 mt-1.5 leading-tight">
-                  Captures soundboards, instruments, yells, whispers & music without gate cutoff.
-                </p>
-              </div>
-
-              {/* Toggle 1: Uncapped Mode (Output Anything) */}
-              <div className="flex items-start justify-between gap-3 mb-3 p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
-                <div className="flex-1">
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <span>Uncapped Mode</span>
-                    <span className="text-[9px] bg-cyan-950 text-cyan-300 border border-cyan-800/60 px-1.5 py-0.5 rounded font-mono font-bold">
-                      Outputs Anything
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-neutral-400 leading-tight mt-1">
-                    Disables noise gate, AGC limiter & voice compressor. Transmits full dynamic range.
-                  </p>
-                </div>
-                <button
-                  onClick={() => applyAudioSettings(!isRawAudio, isEchoCancellation, micGain)}
-                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer flex-shrink-0 mt-0.5 ${
-                    isRawAudio ? "bg-cyan-500" : "bg-neutral-800"
-                  }`}
-                >
-                  <div
-                    className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
-                      isRawAudio ? "left-6" : "left-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {/* Toggle 2: Echo Cancellation */}
-              <div className="flex items-start justify-between gap-3 mb-3 p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
-                <div className="flex-1">
-                  <div className="text-xs font-bold text-white">Echo Cancellation</div>
-                  <p className="text-[10px] text-neutral-400 leading-tight mt-1">
-                    Keep off for 100% pure audio. Turn on if using laptop speakers without headphones.
-                  </p>
-                </div>
-                <button
-                  onClick={() => applyAudioSettings(isRawAudio, !isEchoCancellation, micGain)}
-                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer flex-shrink-0 mt-0.5 ${
-                    isEchoCancellation ? "bg-cyan-500" : "bg-neutral-800"
-                  }`}
-                >
-                  <div
-                    className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
-                      isEchoCancellation ? "left-6" : "left-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {/* Mic Gain Boost */}
-              <div className="p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
-                <div className="flex justify-between items-center mb-1.5">
-                  <div className="text-xs font-bold text-white">Mic Output Boost</div>
-                  <span className="text-[10px] font-mono text-cyan-400 font-bold">
-                    {Math.round(micGain * 100)}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="100"
-                  max="300"
-                  step="10"
-                  value={Math.round(micGain * 100)}
-                  onChange={(e) => {
-                    const newG = parseInt(e.target.value, 10) / 100;
-                    applyAudioSettings(isRawAudio, isEchoCancellation, newG);
-                  }}
-                  className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
-                />
-                <div className="flex justify-between items-center mt-2 gap-1">
-                  {[
-                    { label: "100%", val: 1.0 },
-                    { label: "150%", val: 1.5 },
-                    { label: "200%", val: 2.0 },
-                    { label: "300%", val: 3.0 },
-                  ].map((preset) => (
-                    <button
-                      key={preset.val}
-                      onClick={() => applyAudioSettings(isRawAudio, isEchoCancellation, preset.val)}
-                      className={`text-[9px] px-2 py-0.5 rounded cursor-pointer transition-all ${
-                        Math.abs(micGain - preset.val) < 0.05
-                          ? "bg-cyan-500 text-black font-bold"
-                          : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                      }`}
-                    >
-                      {preset.val * 100}%
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
 
         <button
           onClick={toggleVideo}
