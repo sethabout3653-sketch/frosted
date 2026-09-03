@@ -203,8 +203,7 @@ export default function App() {
         className={`startup-splash ${showStartup ? "startup-splash-visible" : "startup-splash-hidden"}`}
       >
         <div className="startup-splash-glow" />
-        <div className="startup-wordmark" aria-label="Frosted">frosted</div>
-        <div className="startup-rule" />
+        <div className="startup-wordmark" aria-label="Disney">Disney</div>
       </div>
       <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
       
