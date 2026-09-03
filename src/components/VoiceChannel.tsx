@@ -21,7 +21,7 @@ import {
   doc,
   setDoc,
   deleteDoc,
-  onSnapshot,
+  getDocs,
   query,
   where,
   addDoc,
@@ -650,25 +650,27 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           inVoice: true,
         }).catch(() => {});
 
-        // Listen for participants
-        unsubscribeUsers = onSnapshot(collection(db, "voice_users"), (snapshot) => {
-          if (!isMountedRef.current) return;
-          const users: Participant[] = [];
-          snapshot.forEach((d) => {
-            const u = d.data() as Participant;
-            if (u.uid !== profile.uid) {
-              users.push(u);
-              const pc = peersRef.current[u.uid];
-              const isDead =
-                !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
-              // Deterministic offerer: peer with smaller UID initiates call
-              if (profile.uid < u.uid && isDead && localStreamRef.current) {
-                initiateCall(u.uid, localStreamRef.current);
+        // Poll participants over HTTPS instead of opening a Firestore realtime socket.
+        const pollParticipants = async () => {
+          try {
+            const snapshot = await getDocs(collection(db, "voice_users"));
+            if (!isMountedRef.current) return;
+            const users: Participant[] = [];
+            snapshot.forEach((d) => {
+              const u = d.data() as Participant;
+              if (u.uid !== profile.uid) {
+                users.push(u);
+                const pc = peersRef.current[u.uid];
+                const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
+                if (profile.uid < u.uid && isDead && localStreamRef.current) initiateCall(u.uid, localStreamRef.current);
               }
-            }
-          });
-          setParticipants(users);
-        });
+            });
+            setParticipants(users);
+          } catch {}
+        };
+        pollParticipants();
+        const participantInterval = window.setInterval(pollParticipants, 5000);
+        unsubscribeUsers = () => window.clearInterval(participantInterval);
 
         // Listen for signals directed to current user
         const q = query(
@@ -676,24 +678,21 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           where("receiverId", "==", profile.uid)
         );
 
-        unsubscribeSignals = onSnapshot(q, (snapshot) => {
-          if (!isMountedRef.current) return;
-          snapshot.docChanges().forEach(async (change) => {
-            if (change.type === "added") {
-              const signal = {
-                id: change.doc.id,
-                ...change.doc.data(),
-              } as VoiceSignal;
-
-              // Immediately clean up processed signal from Firestore
-              deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
-
-              if (localStreamRef.current && isMountedRef.current) {
-                await handleSignal(signal, localStreamRef.current);
-              }
+        // Poll signaling messages over HTTPS and delete each one after handling it.
+        const pollSignals = async () => {
+          try {
+            const snapshot = await getDocs(q);
+            if (!isMountedRef.current) return;
+            for (const signalDoc of snapshot.docs) {
+              const signal = { id: signalDoc.id, ...signalDoc.data() } as VoiceSignal;
+              await deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
+              if (localStreamRef.current && isMountedRef.current) await handleSignal(signal, localStreamRef.current);
             }
-          });
-        });
+          } catch {}
+        };
+        pollSignals();
+        const signalInterval = window.setInterval(pollSignals, 1500);
+        unsubscribeSignals = () => window.clearInterval(signalInterval);
       } catch (err: any) {
         if (isMountedRef.current) {
           console.error("Failed to access microphone", err);

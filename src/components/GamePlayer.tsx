@@ -23,6 +23,8 @@ type FitMode = "contain" | "fill" | "16-9" | "4-3";
 export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
   const [rawGameUrl, setRawGameUrl] = useState<string>("");
+  const [usingDirectUrl, setUsingDirectUrl] = useState(false);
+  const [gameLoadError, setGameLoadError] = useState(false);
 
   // Load preferences from localStorage or default to automatic optimal fit
   const [fitMode, setFitMode] = useState<FitMode>(() => {
@@ -243,6 +245,8 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
         if (!isCancelled) {
           setGameUrl(catalogUrl);
           setRawGameUrl(directRaw);
+          setUsingDirectUrl(false);
+          setGameLoadError(false);
         }
       }
     }
@@ -535,16 +539,33 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           }}
         >
           {/* Embedded Game iframe */}
-          {gameUrl && (
+          {gameUrl && !gameLoadError && (
             <iframe
               id="game-iframe"
+              key={gameUrl}
               ref={iframeRef}
               src={gameUrl}
+              onError={() => {
+                if (!usingDirectUrl && rawGameUrl && rawGameUrl !== gameUrl) {
+                  setUsingDirectUrl(true);
+                  setGameUrl(rawGameUrl);
+                } else {
+                  setGameLoadError(true);
+                }
+              }}
               tabIndex={0}
               className="w-full h-full rounded-xl bg-black border-none"
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
+          )}
+          {gameLoadError && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 p-6 text-center">
+              <p className="text-sm font-semibold text-white">This game could not be embedded here.</p>
+              <p className="max-w-md text-xs text-neutral-400">The game host returned a 404 or blocked embedding. Open the original game page instead.</p>
+              <button onClick={handleOpenInNewTab} className="rounded-lg bg-white px-4 py-2 text-xs font-bold text-black hover:bg-neutral-200">Open original game</button>
+              <button onClick={() => { setGameLoadError(false); setUsingDirectUrl(false); setGameUrl(formatGameUrl(game.url, true)); }} className="text-xs text-neutral-400 underline hover:text-white">Retry embed</button>
+            </div>
           )}
         </div>
       </div>

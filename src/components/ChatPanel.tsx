@@ -4,7 +4,7 @@ import {
   query,
   orderBy,
   limit,
-  onSnapshot,
+  getDocs,
   addDoc,
   deleteDoc,
   doc,
@@ -64,23 +64,18 @@ export default function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Subscribe to active voice users
+  // Poll presence over HTTPS rather than opening Firestore realtime sockets.
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "voice_users"),
-      (snapshot) => {
-        const map: Record<
-          string,
-          { isMuted?: boolean; isVideoOn?: boolean }
-        > = {};
-        snapshot.forEach((d) => {
-          map[d.id] = d.data() as any;
-        });
-        setActiveVoiceUsers(map);
-      },
-      () => setActiveVoiceUsers({})
-    );
-    return () => unsubscribe();
+    let cancelled = false;
+    const loadVoiceUsers = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, "voice_users"));
+        if (!cancelled) setActiveVoiceUsers(Object.fromEntries(snapshot.docs.map((d) => [d.id, d.data() as any])));
+      } catch { if (!cancelled) setActiveVoiceUsers({}); }
+    };
+    loadVoiceUsers();
+    const interval = window.setInterval(loadVoiceUsers, 10000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
 
   // Presence & Left Website tracking
@@ -137,12 +132,14 @@ export default function ChatPanel({
     };
   }, [profile]);
 
-  // Subscribe to member presence
+  // Poll member presence over normal HTTPS.
   useEffect(() => {
     const q = query(collection(db, "presence"), limit(40));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+    let cancelled = false;
+    const loadPresence = async () => {
+      try {
+        const snapshot = await getDocs(q);
+        if (cancelled) return;
         const users: MemberUser[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as MemberUser;
@@ -169,21 +166,13 @@ export default function ChatPanel({
         }
 
         setMemberUsers(users);
-      },
-      () => {
-        setMemberUsers([
-          {
-            uid: profile.uid,
-            username: profile.username,
-            photoURL: profile.photoURL,
-            status: "online",
-            lastSeen: Date.now(),
-          },
-        ]);
+      } catch {
+        if (!cancelled) setMemberUsers([{ uid: profile.uid, username: profile.username, photoURL: profile.photoURL, status: "online", lastSeen: Date.now() }]);
       }
-    );
-
-    return () => unsubscribe();
+    };
+    loadPresence();
+    const interval = window.setInterval(loadPresence, 10000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, [profile]);
 
   // Subscribe to messages
@@ -194,20 +183,24 @@ export default function ChatPanel({
       limit(50)
     );
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+    let cancelled = false;
+    const loadMessages = async () => {
+      try {
+        const snapshot = await getDocs(q);
+        if (cancelled) return;
         const newMessages: ChatMessage[] = [];
         snapshot.forEach((docSnap) => {
           newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
         });
         setMessages(newMessages.reverse());
-        setTimeout(() => scrollToBottom(), 100);
-      },
-      (error) => handleFirestoreError(error, OperationType.LIST, "messages")
-    );
-
-    return () => unsubscribe();
+        window.setTimeout(() => scrollToBottom(), 100);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, "messages");
+      }
+    };
+    loadMessages();
+    const interval = window.setInterval(loadMessages, 5000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
 
   const scrollToBottom = () => {

@@ -21,7 +21,6 @@ import {
   query,
   orderBy,
   limit,
-  onSnapshot,
   getDocs,
   where,
   writeBatch,
@@ -66,26 +65,20 @@ export default function Chat({
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
 
-  // Subscribe to active voice channel users
+  // Poll voice presence over normal HTTPS instead of opening a realtime socket.
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "voice_users"),
-      (snapshot) => {
-        const users: Array<{
-          uid: string;
-          username: string;
-          photoURL: string;
-          isMuted?: boolean;
-          isVideoOn?: boolean;
-        }> = [];
-        snapshot.forEach((d) => {
-          users.push(d.data() as any);
-        });
-        setVoiceUsers(users);
-      },
-      () => setVoiceUsers([])
-    );
-    return () => unsubscribe();
+    let cancelled = false;
+    const loadVoiceUsers = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, "voice_users"));
+        if (!cancelled) setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
+      } catch {
+        if (!cancelled) setVoiceUsers([]);
+      }
+    };
+    loadVoiceUsers();
+    const interval = window.setInterval(loadVoiceUsers, 10000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
 
   useEffect(() => {
@@ -103,29 +96,27 @@ export default function Chat({
       orderBy("timestamp", "desc"),
       limit(1)
     );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === "added") {
-          const msg = { id: change.doc.id, ...change.doc.data() } as ChatMessage;
-
-          // Only notify for messages sent AFTER session started
-          if (msg.timestamp < sessionStartRef.current) return;
-
-          const currentProfile = profileRef.current;
-          const isMe =
-            currentProfile &&
-            (msg.uid === currentProfile.uid ||
-              (msg.username === currentProfile.username &&
-                msg.photoURL === currentProfile.photoURL));
-
-          if (!isOpenRef.current && !isMe) {
-            setNotification(msg);
-            setTimeout(() => setNotification(null), 4000);
-          }
+    let cancelled = false;
+    let lastMessageId: string | null = null;
+    const checkForMessage = async () => {
+      try {
+        const snapshot = await getDocs(q);
+        const newest = snapshot.docs[0];
+        if (!newest || cancelled || newest.id === lastMessageId) return;
+        lastMessageId = newest.id;
+        const msg = { id: newest.id, ...newest.data() } as ChatMessage;
+        if (msg.timestamp < sessionStartRef.current) return;
+        const currentProfile = profileRef.current;
+        const isMe = currentProfile && (msg.uid === currentProfile.uid || (msg.username === currentProfile.username && msg.photoURL === currentProfile.photoURL));
+        if (!isOpenRef.current && !isMe) {
+          setNotification(msg);
+          setTimeout(() => setNotification(null), 4000);
         }
-      });
-    });
-    return () => unsubscribe();
+      } catch {}
+    };
+    checkForMessage();
+    const interval = window.setInterval(checkForMessage, 5000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
 
   const handleProfileComplete = async (p: {
