@@ -1,5 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, AlertCircle } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  PhoneOff,
+  AlertCircle,
+  Zap,
+  Sliders,
+  Volume2,
+  VolumeX,
+  Radio,
+  Check,
+  X,
+  Sparkles,
+} from "lucide-react";
 import {
   collection,
   doc,
@@ -35,13 +50,18 @@ const ICE_SERVERS: RTCConfiguration = {
   ],
 };
 
+// Studio quality uncapped audio SDP optimizer:
+// - 510000 bps maximum Opus bitrate (no artificial compression)
+// - Stereo enabled (stereo=1, sprop-stereo=1) for music, soundboards, and rich audio
+// - usedtx=0 completely disables discontinuous transmission / voice-activity gating (never cuts off quiet/sustained sounds)
+// - maxplaybackrate=48000 for full 48kHz frequency spectrum
+// - cbr=1 (constant bitrate transmission, no ducking or compression drops)
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
-      if (!lines[i].includes("maxaveragebitrate")) {
-        lines[i] += ";maxaveragebitrate=128000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0";
-      }
+      const base = lines[i].split(";")[0];
+      lines[i] = `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0;maxplaybackrate=48000;minptime=10;useinbandfec=1`;
     }
   }
   return lines.join("\r\n");
@@ -55,7 +75,46 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
 
+  // Uncapped audio settings state (default: raw unfiltered uncapped output - zero gates)
+  const [isRawAudio, setIsRawAudio] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_raw_mic");
+      return saved !== null ? saved === "true" : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [isEchoCancellation, setIsEchoCancellation] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("frosted_mic_echo") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const [micGain, setMicGain] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_mic_gain");
+      if (saved) {
+        const val = parseFloat(saved);
+        if (!isNaN(val) && val >= 0.5 && val <= 3.0) return val;
+      }
+    } catch {}
+    return 1.0;
+  });
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
+
   const localStreamRef = useRef<MediaStream | null>(null);
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+
   const videoStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const sessionStartTimeRef = useRef<number>(Date.now());
@@ -71,6 +130,115 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+
+  // Acquire raw or filtered microphone media stream
+  const acquireMicrophoneStream = useCallback(
+    async (raw: boolean, echo: boolean): Promise<MediaStream> => {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: raw
+            ? {
+                echoCancellation: echo ? { ideal: true } : false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: { ideal: 2 },
+                sampleRate: { ideal: 48000 },
+              }
+            : {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              },
+          video: false,
+        });
+      } catch (err) {
+        console.warn("Primary mic constraints failed, using fallback:", err);
+        return await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+      }
+    },
+    []
+  );
+
+  // Connect microphone to live Web Audio pipeline for gain boost and live meter
+  const setupAudioPipeline = useCallback(
+    async (sourceStream: MediaStream, currentGain: number): Promise<MediaStream> => {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+
+      rawStreamRef.current = sourceStream;
+
+      try {
+        const AudioContextClass =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
+        if (!AudioContextClass) {
+          localStreamRef.current = sourceStream;
+          return sourceStream;
+        }
+
+        if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+          audioCtxRef.current = new AudioContextClass();
+        }
+        const ctx = audioCtxRef.current;
+        if (ctx.state === "suspended") {
+          await ctx.resume().catch(() => {});
+        }
+
+        const source = ctx.createMediaStreamSource(sourceStream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.3;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        // Monitor real-time volume levels for live UI feedback
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const updateLevel = () => {
+          if (!isMountedRef.current) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          const normalized = Math.min(100, Math.round((avg / 128) * 100));
+          setAudioLevel(normalized);
+          animFrameRef.current = requestAnimationFrame(updateLevel);
+        };
+        animFrameRef.current = requestAnimationFrame(updateLevel);
+
+        let finalStream: MediaStream;
+        if (currentGain > 1.0) {
+          // Route through clean Web Audio GainNode without limiters/compressors
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = currentGain;
+          gainNodeRef.current = gainNode;
+
+          const dest = ctx.createMediaStreamDestination();
+          source.connect(gainNode);
+          gainNode.connect(dest);
+          finalStream = dest.stream;
+        } else {
+          gainNodeRef.current = null;
+          finalStream = sourceStream;
+        }
+
+        localStreamRef.current = finalStream;
+        return finalStream;
+      } catch (err) {
+        console.warn("AudioContext setup fallback to raw stream:", err);
+        localStreamRef.current = sourceStream;
+        return sourceStream;
+      }
+    },
+    []
+  );
 
   const getOrCreateDummyVideoTrack = useCallback((): MediaStreamTrack => {
     if (dummyTrackRef.current && dummyTrackRef.current.readyState === "live") {
@@ -96,12 +264,34 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   }, []);
 
   const stopAllMediaTracks = useCallback(() => {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    if (audioCtxRef.current) {
+      try {
+        audioCtxRef.current.close().catch(() => {});
+      } catch {}
+      audioCtxRef.current = null;
+    }
+
+    if (rawStreamRef.current) {
+      rawStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+          t.enabled = false;
+        } catch {}
+      });
+      rawStreamRef.current = null;
+    }
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => {
         try {
           t.stop();
           t.enabled = false;
-        } catch (e) {}
+        } catch {}
       });
       localStreamRef.current = null;
     }
@@ -111,7 +301,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         try {
           t.stop();
           t.enabled = false;
-        } catch (e) {}
+        } catch {}
       });
       videoStreamRef.current = null;
     }
@@ -119,7 +309,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     if (dummyTrackRef.current) {
       try {
         dummyTrackRef.current.stop();
-      } catch (e) {}
+      } catch {}
       dummyTrackRef.current = null;
     }
 
@@ -129,11 +319,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           if (s.track) {
             try {
               s.track.stop();
-            } catch (e) {}
+            } catch {}
           }
         });
         pc.close();
-      } catch (e) {}
+      } catch {}
     });
     peersRef.current = {};
     iceCandidateQueuesRef.current = {};
@@ -142,7 +332,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       stream.getTracks().forEach((t) => {
         try {
           t.stop();
-        } catch (e) {}
+        } catch {}
       });
     });
     remoteStreamsRef.current = {};
@@ -254,6 +444,21 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       micStream.getAudioTracks().forEach((track) => {
         pc.addTrack(track, micStream);
       });
+
+      // Maximize audio sender encoding bitrate to 510kbps uncapped
+      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (audioSender && audioSender.setParameters) {
+        try {
+          const params = audioSender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 510000;
+          params.encodings[0].priority = "high";
+          params.encodings[0].networkPriority = "high";
+          audioSender.setParameters(params).catch(() => {});
+        } catch (e) {}
+      }
 
       // 2. Add video track (webcam if active, otherwise dummy video canvas track)
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
@@ -436,20 +641,20 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
     async function initVoice() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: false,
-        });
+        const rawStream = await acquireMicrophoneStream(isRawAudio, isEchoCancellation);
 
         if (!isMountedRef.current) {
-          stream.getTracks().forEach((t) => {
+          rawStream.getTracks().forEach((t) => {
             t.stop();
             t.enabled = false;
           });
+          return;
+        }
+
+        const stream = await setupAudioPipeline(rawStream, micGain);
+
+        if (!isMountedRef.current) {
+          stopAllMediaTracks();
           return;
         }
 
@@ -557,6 +762,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         track.enabled = !nextMuted;
       });
     }
+    if (rawStreamRef.current) {
+      rawStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
+      });
+    }
 
     try {
       await updateDoc(doc(db, "voice_users", profile.uid), {
@@ -566,6 +776,72 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         isMuted: nextMuted,
       });
     } catch (e) {}
+  };
+
+  // Dynamically apply audio settings (mode, echo cancellation, gain boost)
+  const applyAudioSettings = async (
+    newRaw: boolean,
+    newEcho: boolean,
+    newGain: number
+  ) => {
+    const prevRaw = isRawAudio;
+    const prevEcho = isEchoCancellation;
+    setIsRawAudio(newRaw);
+    setIsEchoCancellation(newEcho);
+    setMicGain(newGain);
+
+    try {
+      localStorage.setItem("frosted_raw_mic", newRaw.toString());
+      localStorage.setItem("frosted_mic_echo", newEcho.toString());
+      localStorage.setItem("frosted_mic_gain", newGain.toString());
+    } catch {}
+
+    // If only gain changed and gainNode already active, update in real-time
+    if (
+      newRaw === prevRaw &&
+      newEcho === prevEcho &&
+      gainNodeRef.current &&
+      newGain > 1.0
+    ) {
+      gainNodeRef.current.gain.value = newGain;
+      return;
+    }
+
+    try {
+      if (rawStreamRef.current) {
+        rawStreamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+      }
+
+      const freshRawStream = await acquireMicrophoneStream(newRaw, newEcho);
+      if (!isMountedRef.current) {
+        freshRawStream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const newStream = await setupAudioPipeline(freshRawStream, newGain);
+      const newAudioTrack = newStream.getAudioTracks()[0];
+      if (newAudioTrack) {
+        newAudioTrack.enabled = !isMuted;
+      }
+
+      // Hot-swap audio track on all established peer connections
+      await Promise.all(
+        Object.values(peersRef.current).map(async (pc: RTCPeerConnection) => {
+          if (pc && pc.connectionState !== "closed") {
+            const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+            if (sender && newAudioTrack) {
+              await sender.replaceTrack(newAudioTrack).catch(() => {});
+            }
+          }
+        })
+      );
+    } catch (err) {
+      console.error("Failed to hot-update microphone settings:", err);
+    }
   };
 
   // Toggle Video Camera
@@ -717,7 +993,40 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       {/* Main Grid: Local User & Remote Participants */}
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
         {/* Local User Tile */}
-        <div className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg group">
+        <div
+          className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-150 ${
+            audioLevel > 5 && !isMuted
+              ? "border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+              : "border-neutral-800/90"
+          }`}
+        >
+          {/* Uncapped Status Badge */}
+          <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+            <div
+              className={`w-2 h-2 rounded-full transition-colors ${
+                isMuted
+                  ? "bg-red-500"
+                  : audioLevel > 5
+                  ? "bg-emerald-400 animate-pulse"
+                  : isRawAudio
+                  ? "bg-cyan-400"
+                  : "bg-neutral-500"
+              }`}
+            />
+            <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
+              {isMuted ? (
+                "MUTED"
+              ) : isRawAudio ? (
+                <>
+                  <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
+                  UNCAPPED {micGain > 1.0 && `(${Math.round(micGain * 100)}%)`}
+                </>
+              ) : (
+                "FILTERED"
+              )}
+            </span>
+          </div>
+
           {isVideoOn ? (
             <video
               ref={(el) => {
@@ -739,10 +1048,20 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   <img
                     src={profile.photoURL}
                     alt={profile.username}
-                    className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
+                    className={`w-20 h-20 rounded-full object-cover border-2 shadow-md transition-all duration-150 ${
+                      audioLevel > 5 && !isMuted
+                        ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
+                        : "border-neutral-700"
+                    }`}
                   />
                 ) : (
-                  <div className="w-20 h-20 rounded-full bg-neutral-800 border-2 border-neutral-700 flex items-center justify-center text-2xl font-bold text-white">
+                  <div
+                    className={`w-20 h-20 rounded-full bg-neutral-800 border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150 ${
+                      audioLevel > 5 && !isMuted
+                        ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
+                        : "border-neutral-700"
+                    }`}
+                  >
                     {profile.username.charAt(0).toUpperCase()}
                   </div>
                 )}
@@ -788,6 +1107,28 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 autoPlay
                 playsInline
               />
+
+              {/* Volume Slider for Remote User */}
+              <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+                <Volume2 size={12} className="text-neutral-400" />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10) / 100;
+                    setParticipantVolumes((prev) => ({ ...prev, [p.uid]: val }));
+                    const audioEl = remoteAudioRefs.current[p.uid];
+                    if (audioEl) audioEl.volume = Math.max(0, Math.min(1.0, val));
+                  }}
+                  className="w-14 h-1 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  title={`Volume: ${Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}%`}
+                />
+                <span className="text-[9px] text-neutral-300 font-mono w-6 text-right">
+                  {Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}%
+                </span>
+              </div>
 
               {/* Video Element rendered when remote user enabled their camera */}
               {p.isVideoOn ? (
@@ -841,7 +1182,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       </div>
 
       {/* Bottom Controls Bar */}
-      <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-5 flex-shrink-0">
+      <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-4 flex-shrink-0 relative">
         <button
           onClick={toggleMute}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
@@ -853,6 +1194,186 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         >
           {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
+
+        {/* Uncapped Mic Settings Trigger Button & Popover */}
+        <div className="relative">
+          <button
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className={`p-3.5 rounded-2xl transition-all cursor-pointer flex items-center gap-2.5 border ${
+              isRawAudio
+                ? "bg-cyan-950/40 text-cyan-400 border-cyan-700/60 hover:bg-cyan-900/50 shadow-[0_0_15px_rgba(6,182,212,0.2)]"
+                : "bg-neutral-900 text-neutral-400 border-neutral-800 hover:bg-neutral-800 hover:text-white"
+            }`}
+            title="Mic Limiter & Output Settings (Outputs Anything)"
+          >
+            <Zap
+              size={19}
+              className={isRawAudio ? "text-cyan-400 fill-cyan-400/40 animate-pulse" : ""}
+            />
+            <span className="text-xs font-bold hidden sm:inline">
+              {isRawAudio ? "Uncapped Mic" : "Filtered Mic"}
+            </span>
+
+            {/* Live Input Mini-Bar */}
+            {!isMuted && (
+              <div className="w-1.5 h-4 bg-neutral-800 rounded-full overflow-hidden flex flex-col justify-end">
+                <div
+                  className="w-full bg-cyan-400 transition-all duration-75"
+                  style={{ height: `${Math.min(100, audioLevel * 1.2)}%` }}
+                />
+              </div>
+            )}
+          </button>
+
+          {/* Settings Popover */}
+          {isSettingsOpen && (
+            <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 w-84 bg-[#121212] border border-neutral-800 rounded-2xl p-4 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-neutral-800/80 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                    <Zap size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Mic Output Engine
+                    </h4>
+                    <p className="text-[10px] text-neutral-400">
+                      Unconstrained high-fidelity audio
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Real-time input level meter */}
+              <div className="mb-3.5 bg-black/60 rounded-xl p-2.5 border border-neutral-800/60">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-neutral-400 mb-1">
+                  <span>LIVE INPUT LEVEL</span>
+                  <span
+                    className={
+                      audioLevel > 5 ? "text-cyan-400 font-mono font-bold" : "text-neutral-500 font-mono"
+                    }
+                  >
+                    {isMuted ? "MUTED" : `${audioLevel}%`}
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-neutral-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-75 ${
+                      isMuted
+                        ? "w-0"
+                        : audioLevel > 80
+                        ? "bg-red-500"
+                        : audioLevel > 50
+                        ? "bg-yellow-400"
+                        : "bg-emerald-400"
+                    }`}
+                    style={{ width: isMuted ? "0%" : `${Math.min(100, audioLevel)}%` }}
+                  />
+                </div>
+                <p className="text-[9px] text-neutral-500 mt-1.5 leading-tight">
+                  Captures soundboards, instruments, yells, whispers & music without gate cutoff.
+                </p>
+              </div>
+
+              {/* Toggle 1: Uncapped Mode (Output Anything) */}
+              <div className="flex items-start justify-between gap-3 mb-3 p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
+                <div className="flex-1">
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span>Uncapped Mode</span>
+                    <span className="text-[9px] bg-cyan-950 text-cyan-300 border border-cyan-800/60 px-1.5 py-0.5 rounded font-mono font-bold">
+                      Outputs Anything
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-neutral-400 leading-tight mt-1">
+                    Disables noise gate, AGC limiter & voice compressor. Transmits full dynamic range.
+                  </p>
+                </div>
+                <button
+                  onClick={() => applyAudioSettings(!isRawAudio, isEchoCancellation, micGain)}
+                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer flex-shrink-0 mt-0.5 ${
+                    isRawAudio ? "bg-cyan-500" : "bg-neutral-800"
+                  }`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
+                      isRawAudio ? "left-6" : "left-1"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Toggle 2: Echo Cancellation */}
+              <div className="flex items-start justify-between gap-3 mb-3 p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
+                <div className="flex-1">
+                  <div className="text-xs font-bold text-white">Echo Cancellation</div>
+                  <p className="text-[10px] text-neutral-400 leading-tight mt-1">
+                    Keep off for 100% pure audio. Turn on if using laptop speakers without headphones.
+                  </p>
+                </div>
+                <button
+                  onClick={() => applyAudioSettings(isRawAudio, !isEchoCancellation, micGain)}
+                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer flex-shrink-0 mt-0.5 ${
+                    isEchoCancellation ? "bg-cyan-500" : "bg-neutral-800"
+                  }`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
+                      isEchoCancellation ? "left-6" : "left-1"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Mic Gain Boost */}
+              <div className="p-2.5 rounded-xl bg-neutral-900/50 border border-neutral-800/50">
+                <div className="flex justify-between items-center mb-1.5">
+                  <div className="text-xs font-bold text-white">Mic Output Boost</div>
+                  <span className="text-[10px] font-mono text-cyan-400 font-bold">
+                    {Math.round(micGain * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="100"
+                  max="300"
+                  step="10"
+                  value={Math.round(micGain * 100)}
+                  onChange={(e) => {
+                    const newG = parseInt(e.target.value, 10) / 100;
+                    applyAudioSettings(isRawAudio, isEchoCancellation, newG);
+                  }}
+                  className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                />
+                <div className="flex justify-between items-center mt-2 gap-1">
+                  {[
+                    { label: "100%", val: 1.0 },
+                    { label: "150%", val: 1.5 },
+                    { label: "200%", val: 2.0 },
+                    { label: "300%", val: 3.0 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.val}
+                      onClick={() => applyAudioSettings(isRawAudio, isEchoCancellation, preset.val)}
+                      className={`text-[9px] px-2 py-0.5 rounded cursor-pointer transition-all ${
+                        Math.abs(micGain - preset.val) < 0.05
+                          ? "bg-cyan-500 text-black font-bold"
+                          : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+                      }`}
+                    >
+                      {preset.val * 100}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           onClick={toggleVideo}

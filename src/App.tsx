@@ -191,7 +191,7 @@ export default function App() {
   }, [games, selectedTag, deferredSearch]);
 
   return (
-    <div id="app-root" className="min-h-screen bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white">
+    <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -246,24 +246,25 @@ export default function App() {
         </div>
       </main>
 
-      {/* Footer Branding Area */}
-      <footer id="app-footer" className="border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
-
-        <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="font-medium">
-            &copy; 2026 frosted. Fast, unblocked browser games library.
-          </p>
-          <div className="flex flex-wrap gap-4 font-semibold">
-            <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
-              Community
-            </a>
-            <span className="text-neutral-800">|</span>
-            <a href="https://github.com/gn-math" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
-              GitHub Repositories
-            </a>
+      {/* Footer Branding Area (Home view only) */}
+      {currentView === "home" && (
+        <footer id="app-footer" className="border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
+          <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p className="font-medium">
+              &copy; 2026 frosted. Fast, unblocked browser games library.
+            </p>
+            <div className="flex flex-wrap gap-4 font-semibold">
+              <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
+                Community
+              </a>
+              <span className="text-neutral-800">|</span>
+              <a href="https://github.com/gn-math" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
+                GitHub Repositories
+              </a>
+            </div>
           </div>
-        </div>
-      </footer>
+        </footer>
+      )}
     </div>
   );
 }

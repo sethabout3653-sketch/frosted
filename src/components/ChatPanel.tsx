@@ -26,11 +26,7 @@ import {
   Video,
 } from "lucide-react";
 
-// Giphy imports
-import { GiphyFetch } from "@giphy/js-fetch-api";
-import { Grid } from "@giphy/react-components";
-
-const gf = new GiphyFetch("sXpGFDGpz0Dv1BASECkiIylQzntcxJW6");
+import GiphyPicker from "./GiphyPicker";
 
 interface ChatPanelProps {
   profile: ChatProfile;
@@ -245,17 +241,14 @@ export default function ChatPanel({
     }
   };
 
-  const handleSendGif = async (
-    gif: any,
-    e: React.SyntheticEvent<HTMLElement, Event>
-  ) => {
-    e.preventDefault();
+  const handleSendGif = async (gifUrl: string) => {
     try {
+      if (!gifUrl) return;
       const msgData: Record<string, any> = {
         uid: profile.uid,
         username: profile.username,
         photoURL: profile.photoURL || "",
-        gif: gif.images.fixed_height.url || "",
+        gif: gifUrl,
         timestamp: Date.now(),
       };
 
@@ -288,8 +281,6 @@ export default function ChatPanel({
       handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }
   };
-
-  const fetchGifs = (offset: number) => gf.trending({ offset, limit: 10 });
 
   const formatTimestamp = (ts: number) => {
     if (!ts) return "";
@@ -456,14 +447,10 @@ export default function ChatPanel({
 
         {/* Giphy Picker Drawer */}
         {showGiphy && (
-          <div className="h-56 overflow-y-auto border-t border-neutral-800 bg-neutral-950 p-2 flex-shrink-0">
-            <Grid
-              width={320}
-              columns={3}
-              fetchGifs={fetchGifs}
-              onGifClick={handleSendGif}
-            />
-          </div>
+          <GiphyPicker
+            onSelectGif={handleSendGif}
+            onClose={() => setShowGiphy(false)}
+          />
         )}
 
         {/* Attachment Preview Drawer */}
@@ -489,7 +476,7 @@ export default function ChatPanel({
         )}
 
         {/* Bottom Message Input Bar matching Image 2 */}
-        <div className="p-4 bg-black border-t border-neutral-900 flex-shrink-0">
+        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
           <form
             onSubmit={handleSendMessage}
             className="bg-neutral-900/90 border border-neutral-800 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-neutral-700 transition-colors"
