@@ -1,23 +1,14 @@
 @import "tailwindcss";
 
-.startup-splash { position: fixed; inset: 0; z-index: 100; display: flex; min-height: 100dvh; align-items: center; justify-content: center; overflow: hidden; background: radial-gradient(ellipse at 50% 64%, #111d49 0%, #07102e 38%, #020516 78%, #000 100%); color: #fff; transition: opacity 520ms ease, visibility 520ms ease; }
+.startup-splash { position: fixed; inset: 0; z-index: 100; display: flex; min-height: 100dvh; align-items: center; justify-content: center; overflow: hidden; background: #050a43; color: #fff; transition: opacity 520ms ease, visibility 520ms ease; }
 .startup-splash-visible { opacity: 1; visibility: visible; }
 .startup-splash-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-.startup-splash-glow { position: absolute; width: min(86vw, 30rem); height: min(86vw, 30rem); border-radius: 50%; background: radial-gradient(circle, rgba(64,102,205,.38), transparent 68%); filter: blur(28px); animation: startup-pulse 2800ms ease-in-out both; }
-.startup-stars { position: absolute; inset: 0; opacity: 0; animation: startup-stars-in 2600ms 200ms ease-out both; }
-.startup-stars i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff; box-shadow: 0 0 7px 2px rgba(255,255,255,.8); }
-.startup-stars i:nth-child(1) { left: 18%; top: 29%; } .startup-stars i:nth-child(2) { left: 31%; top: 18%; } .startup-stars i:nth-child(3) { left: 72%; top: 25%; } .startup-stars i:nth-child(4) { left: 84%; top: 39%; } .startup-stars i:nth-child(5) { left: 13%; top: 58%; } .startup-stars i:nth-child(6) { left: 89%; top: 64%; }
-.startup-arc { position: absolute; width: min(185vw, 54rem); height: min(185vw, 54rem); border: 1px solid rgba(190,210,255,.62); border-radius: 50%; transform: translateY(29%) rotate(-23deg); clip-path: inset(0 0 49% 0); opacity: 0; filter: drop-shadow(0 0 8px rgba(150,190,255,.7)); animation: startup-arc-in 2400ms 120ms cubic-bezier(.2,.7,.2,1) both; }
-.startup-comet { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px 3px #fff, 0 0 28px 9px rgba(143,186,255,.8); transform: translate(-54vw, 28vh); animation: startup-comet-flight 2100ms 160ms cubic-bezier(.2,.75,.2,1) both; }
-.startup-wordmark { position: relative; z-index: 1; font-family: "Brush Script MT", "Segoe Script", cursive; font-size: clamp(4.5rem, 24vw, 9rem); font-weight: 600; letter-spacing: -.1em; line-height: 1; color: #fff; text-shadow: 0 2px 18px rgba(0,0,0,.25), 0 0 28px rgba(255,255,255,.18); opacity: 0; animation: startup-wordmark-in 800ms 1750ms cubic-bezier(.2,.8,.2,1) both; }
-.startup-wordmark span { display: block; animation: startup-wordmark-shimmer 1400ms 2050ms ease-out both; }
-@keyframes startup-pulse { from { transform: scale(.7); opacity: .1; } 55% { opacity: .72; } to { transform: scale(1.14); opacity: .95; } }
-@keyframes startup-stars-in { 0%, 55% { opacity: 0; } to { opacity: .8; } }
-@keyframes startup-arc-in { 0% { opacity: 0; transform: translateY(29%) rotate(-23deg) scale(.72); } 35% { opacity: .72; } to { opacity: .54; transform: translateY(29%) rotate(-23deg) scale(1); } }
-@keyframes startup-comet-flight { 0% { opacity: 0; transform: translate(-54vw, 28vh); } 8% { opacity: 1; } 72% { opacity: 1; } to { opacity: .15; transform: translate(54vw, -29vh); } }
-@keyframes startup-wordmark-in { from { opacity: 0; transform: scale(.72) translateY(16px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-@keyframes startup-wordmark-shimmer { from { filter: brightness(1); } 45% { filter: brightness(1.7); } to { filter: brightness(1); } }
-@media (prefers-reduced-motion: reduce) { .startup-splash, .startup-splash-glow, .startup-stars, .startup-arc, .startup-comet, .startup-wordmark, .startup-wordmark span { animation: none; opacity: 1; transition: none; } }
+.startup-arc { position: absolute; width: min(178vw, 52rem); height: min(178vw, 52rem); top: 7%; left: 50%; border: 2px solid rgba(255,255,255,.95); border-radius: 50%; transform: translateX(-50%) rotate(-12deg); clip-path: inset(0 0 50% 0); opacity: 0; filter: drop-shadow(0 0 3px rgba(255,255,255,.35)); animation: startup-arc-draw 1900ms 120ms ease-out both; }
+.startup-wordmark { position: relative; z-index: 1; margin-top: 10%; font-family: "Brush Script MT", "Segoe Script", cursive; font-size: clamp(4.2rem, 22vw, 8rem); font-weight: 600; letter-spacing: -.1em; line-height: 1; color: #fff; text-shadow: 0 1px 8px rgba(0,0,0,.18); opacity: 0; animation: startup-wordmark-in 720ms 1050ms cubic-bezier(.2,.8,.2,1) both; }
+.startup-wordmark span { display: block; }
+@keyframes startup-arc-draw { 0% { opacity: 0; clip-path: inset(0 100% 50% 0); } 12% { opacity: 1; } 100% { opacity: 1; clip-path: inset(0 0 50% 0); } }
+@keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(12px) scale(.9); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .startup-splash, .startup-arc, .startup-wordmark, .startup-wordmark span { animation: none; opacity: 1; transition: none; } }
 
 /* High-performance rendering optimizations for large game catalogs */
 .game-card-item {
