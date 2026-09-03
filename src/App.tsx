@@ -221,10 +221,7 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
-                  <span>Unblocked Games</span>
-                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/10 text-white border border-white/20">
-                    {totalPlayableCount}
-                  </span>
+                  <span>Games ({totalPlayableCount})</span>
                 </h2>
                 {loadingLive && (
                   <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
