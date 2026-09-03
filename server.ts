@@ -258,7 +258,13 @@ async function startServer() {
   // Vite integration and static asset serving
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // The hosted preview does not expose Vite's HMR websocket endpoint.
+        // Disable it explicitly here so @vite/client never attempts a socket.
+        hmr: false,
+        watch: null,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
