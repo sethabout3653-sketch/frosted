@@ -22,7 +22,6 @@ export function formatCoverUrl(cover: string): string {
 
 /**
  * Normalizes a game's play URL by replacing placeholders with raw.githack URLs.
- * Games load directly so static Vercel deployments do not depend on an API proxy.
  */
 export function formatGameUrl(url: string, _useProxy: boolean = false): string {
   if (!url) return "";
@@ -33,9 +32,6 @@ export function formatGameUrl(url: string, _useProxy: boolean = false): string {
     .replace(/{HTML_URL}/g, HTML_BASE)
     .replace(/{COVER_URL}/g, COVER_BASE);
 
-  if (_useProxy && typeof window !== "undefined") {
-    return `/api/game-frame?url=${encodeURIComponent(rawUrl)}`;
-  }
   return rawUrl;
 }
 

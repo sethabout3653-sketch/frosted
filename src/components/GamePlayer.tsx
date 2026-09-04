@@ -232,7 +232,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       } else {
         // Catalog games use their direct HTTPS URL; Vercel deployments do not
         // expose the local Express proxy route.
-        const catalogUrl = formatGameUrl(game.url, true);
+        const catalogUrl = formatGameUrl(game.url, false);
         const directRaw = getRawGameUrl(game.url);
         if (!isCancelled) {
           setGameUrl(catalogUrl);
