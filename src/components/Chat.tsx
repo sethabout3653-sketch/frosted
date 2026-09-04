@@ -325,8 +325,6 @@ export default function Chat({
                 </div>
               </div>
 
-              {!persistent && (
-              <>
               {/* VOICE Section */}
               <div>
                 <div className="flex items-center gap-1 text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
@@ -400,8 +398,6 @@ export default function Chat({
                   )}
                 </div>
               </div>
-              </>
-              )}
             </div>
 
             {/* Bottom User Bar matching Image 2 */}
