@@ -11,6 +11,8 @@ import {
   Volume2,
   VolumeX,
   Radio,
+  MonitorUp,
+  MonitorStop,
   Check,
   X,
   Sparkles,
@@ -91,6 +93,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const animFrameRef = useRef<number | null>(null);
 
   const videoStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const localScreenRef = useRef<HTMLVideoElement | null>(null);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const sessionStartTimeRef = useRef<number>(Date.now());
   const isMountedRef = useRef<boolean>(true);
@@ -105,6 +110,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+  const remoteScreenRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
   // Automatically acquire studio uncapped microphone stream (no noise gate, no AGC, no compression cutoff)
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
@@ -883,7 +889,30 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     }
   };
 
+  const stopScreenSharing = useCallback(() => {
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    setIsScreenSharing(false);
+    setTrackTrigger((value) => value + 1);
+  }, []);
+
+  const startScreenSharing = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      screenStreamRef.current = stream;
+      setIsScreenSharing(true);
+      if (localScreenRef.current) { localScreenRef.current.srcObject = stream; localScreenRef.current.play().catch(() => {}); }
+      stream.getVideoTracks()[0]?.addEventListener("ended", stopScreenSharing, { once: true });
+      (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
+        const sender = pc.getSenders().find((item: RTCRtpSender) => item.track?.kind === "video");
+        if (sender) pc.addTrack(stream.getVideoTracks()[0], stream);
+      });
+      setTrackTrigger((value) => value + 1);
+    } catch { setCameraNotice("Screen sharing was cancelled or unavailable."); }
+  }, [stopScreenSharing]);
+
   const handleLeave = () => {
+    stopScreenSharing();
     stopAllMediaTracks();
     onLeave();
   };
@@ -966,6 +995,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             </span>
           </div>
 
+          {isScreenSharing && (
+            <div className="absolute inset-2 z-10 overflow-hidden rounded-xl border border-cyan-400/70 bg-black shadow-xl">
+              <video ref={(el) => { localScreenRef.current = el; if (el && screenStreamRef.current) { el.srcObject = screenStreamRef.current; el.play().catch(() => {}); } }} autoPlay playsInline muted className="h-full w-full object-contain" />
+              <span className="absolute left-2 top-2 rounded bg-cyan-500 px-2 py-1 text-[10px] font-bold text-black">YOUR SCREEN</span>
+            </div>
+          )}
           {isVideoOn ? (
             <div className="relative w-full h-full">
               <video
@@ -1119,6 +1154,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 autoPlay
                 playsInline
               />
+
+              {stream && stream.getVideoTracks().length > 1 && (
+                <div className="absolute right-2 top-2 z-10 h-28 w-44 overflow-hidden rounded-lg border border-cyan-400/70 bg-black shadow-xl">
+                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; if (el) { const screen = new MediaStream([stream.getVideoTracks()[1]]); el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline className="h-full w-full object-contain" />
+                  <span className="absolute left-1 top-1 rounded bg-cyan-500 px-1.5 py-0.5 text-[9px] font-bold text-black">SCREEN</span>
+                </div>
+              )}
 
               {/* Volume Slider for Remote User */}
               <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
@@ -1312,6 +1354,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           ) : (
             <VideoOff size={20} />
           )}
+        </button>
+
+        <button
+          onClick={isScreenSharing ? stopScreenSharing : startScreenSharing}
+          className={`flex items-center gap-2 rounded-2xl px-3.5 py-3.5 text-sm font-semibold transition-all cursor-pointer ${isScreenSharing ? "bg-cyan-500 text-black" : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"}`}
+          title={isScreenSharing ? "Stop Sharing" : "Share Screen"}
+        >
+          {isScreenSharing ? <MonitorStop size={20} /> : <MonitorUp size={20} />}
+          <span className="hidden sm:inline">{isScreenSharing ? "Stop Sharing" : "Share Screen"}</span>
         </button>
 
         <button

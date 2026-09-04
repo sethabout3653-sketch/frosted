@@ -8,16 +8,18 @@ import {
   RefreshCw,
   ExternalLink,
   RotateCcw,
+  Mic,
 } from "lucide-react";
 
 interface GamePlayerProps {
   game: Game;
   onBack: () => void;
+  onVoiceChat?: () => void;
 }
 
 type FitMode = "contain" | "fill" | "16-9" | "4-3";
 
-export default function GamePlayer({ game, onBack }: GamePlayerProps) {
+export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
   const [rawGameUrl, setRawGameUrl] = useState<string>("");
   const [usingDirectUrl, setUsingDirectUrl] = useState(false);
@@ -373,8 +375,13 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          {rawGameUrl && (
+  <div className="ml-auto flex items-center gap-2">
+  {onVoiceChat && (
+    <button id="player-voice-btn" onClick={onVoiceChat} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open voice chat">
+      <Mic size={13} className="mr-0 sm:mr-1.5" /><span className="hidden sm:inline">Voice</span>
+    </button>
+  )}
+  {rawGameUrl && (
             <button id="player-external-btn" onClick={handleOpenInNewTab} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open game in a new tab">
               <ExternalLink size={14} />
             </button>
