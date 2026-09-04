@@ -11,8 +11,6 @@ import {
   Volume2,
   VolumeX,
   Radio,
-  MonitorUp,
-  MonitorStop,
   Check,
   X,
   Sparkles,
@@ -93,9 +91,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const animFrameRef = useRef<number | null>(null);
 
   const videoStreamRef = useRef<MediaStream | null>(null);
-  const screenStreamRef = useRef<MediaStream | null>(null);
-  const localScreenRef = useRef<HTMLVideoElement | null>(null);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const sessionStartTimeRef = useRef<number>(Date.now());
   const isMountedRef = useRef<boolean>(true);
@@ -104,16 +99,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   // Reusable dummy video track generator for initial WebRTC video m-line negotiation
   const dummyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const dummyTrackRef = useRef<MediaStreamTrack | null>(null);
-  const dummyScreenTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
-  const remoteCameraStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
-  const remoteScreenStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
-  const remoteScreenRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
   // Automatically acquire studio uncapped microphone stream (no noise gate, no AGC, no compression cutoff)
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
@@ -199,10 +190,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     []
   );
 
-  const getOrCreateDummyVideoTrack = useCallback((label = "frosted-camera"): MediaStreamTrack => {
-    const trackRef = label === "frosted-screen" ? dummyScreenTrackRef : dummyTrackRef;
-    if (trackRef.current && trackRef.current.readyState === "live") {
-      return trackRef.current;
+  const getOrCreateDummyVideoTrack = useCallback((): MediaStreamTrack => {
+    if (dummyTrackRef.current && dummyTrackRef.current.readyState === "live") {
+      return dummyTrackRef.current;
     }
     let canvas = dummyCanvasRef.current;
     if (!canvas) {
@@ -219,8 +209,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     const canvasStream = canvas.captureStream(5);
     const track = canvasStream.getVideoTracks()[0];
     track.enabled = true;
-    try { Object.defineProperty(track, "__frostedLabel", { value: label, configurable: true }); } catch {}
-    trackRef.current = track;
+    dummyTrackRef.current = track;
     return track;
   }, []);
 
@@ -440,16 +429,12 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         } catch (e) {}
       }
 
-      // 2. Negotiate two stable video slots: camera and screen share.
-      // Keeping both slots negotiated avoids renegotiation glitches when sharing starts/stops.
+      // 2. Add the camera track only when enabled, otherwise use a stable placeholder
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
       const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
         ? realVideoTrack
         : getOrCreateDummyVideoTrack();
-      const screenTrack = screenStreamRef.current?.getVideoTracks()[0] || getOrCreateDummyVideoTrack("frosted-screen");
-
       pc.addTrack(cameraTrack, micStream);
-      pc.addTrack(screenTrack, micStream);
 
       // Handle local ICE candidates
       pc.onicecandidate = (event) => {
@@ -464,20 +449,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           remoteStreamsRef.current[partnerUid] = new MediaStream();
         }
         const rStream = remoteStreamsRef.current[partnerUid];
-        const videoReceivers = pc.getReceivers().filter((receiver) => receiver.track?.kind === "video");
-        const videoIndex = event.track.kind === "video" ? videoReceivers.findIndex((receiver) => receiver === event.receiver) : -1;
-
         if (event.track && !rStream.getTracks().some((track) => track.id === event.track.id)) {
           if (event.track.kind === "audio") {
             rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
-            rStream.addTrack(event.track);
-          } else if (videoIndex === 0) {
-            const cameraStream = remoteCameraStreamsRef.current[partnerUid] ||= new MediaStream();
-            cameraStream.addTrack(event.track);
-          } else if (videoIndex === 1) {
-            const screenStream = remoteScreenStreamsRef.current[partnerUid] ||= new MediaStream();
-            screenStream.addTrack(event.track);
           }
+          rStream.addTrack(event.track);
         }
 
         // Attach to remote audio player
@@ -492,15 +468,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         // Attach to remote video player
         const videoEl = remoteVideoRefs.current[partnerUid];
         if (videoEl) {
-          const cameraStream = remoteCameraStreamsRef.current[partnerUid];
-          if (cameraStream && videoEl.srcObject !== cameraStream) videoEl.srcObject = cameraStream;
+          if (videoEl.srcObject !== rStream) videoEl.srcObject = rStream;
           videoEl.play().catch(() => {});
-        }
-        const screenEl = remoteScreenRefs.current[partnerUid];
-        const screenStream = remoteScreenStreamsRef.current[partnerUid];
-        if (screenEl && screenStream && screenEl.srcObject !== screenStream) {
-          screenEl.srcObject = screenStream;
-          screenEl.play().catch(() => {});
         }
 
         setTrackTrigger((v) => v + 1);
@@ -903,38 +872,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     }
   };
 
-  const stopScreenSharing = useCallback(() => {
-    const replacement = getOrCreateDummyVideoTrack("frosted-screen");
-    (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
-      const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
-      videoSenders[1]?.replaceTrack(replacement).catch(() => {});
-    });
-    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
-    screenStreamRef.current = null;
-    setIsScreenSharing(false);
-    setTrackTrigger((value) => value + 1);
-  }, [getOrCreateDummyVideoTrack]);
-
-  const startScreenSharing = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      screenStreamRef.current = stream;
-      setIsScreenSharing(true);
-      if (localScreenRef.current) { localScreenRef.current.srcObject = stream; localScreenRef.current.play().catch(() => {}); }
-      stream.getVideoTracks()[0]?.addEventListener("ended", stopScreenSharing, { once: true });
-      (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
-        const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
-        const screenSender = videoSenders.find((sender) => sender.track?.label.includes("frosted-screen"));
-        if (screenSender) {
-          screenSender.replaceTrack(stream.getVideoTracks()[0]).catch(() => {});
-        }
-      });
-      setTrackTrigger((value) => value + 1);
-    } catch { setCameraNotice("Screen sharing was cancelled or unavailable."); }
-  }, [stopScreenSharing]);
-
   const handleLeave = () => {
-    stopScreenSharing();
     stopAllMediaTracks();
     onLeave();
   };
@@ -1017,12 +955,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             </span>
           </div>
 
-          {isScreenSharing && (
-            <div className="absolute inset-2 z-10 overflow-hidden rounded-xl border border-cyan-400/70 bg-black shadow-xl">
-              <video ref={(el) => { localScreenRef.current = el; if (el && screenStreamRef.current) { el.srcObject = screenStreamRef.current; el.play().catch(() => {}); } }} autoPlay playsInline muted className="h-full w-full object-contain" />
-              <span className="absolute left-2 top-2 rounded bg-cyan-500 px-2 py-1 text-[10px] font-bold text-black">YOUR SCREEN</span>
-            </div>
-          )}
           {isVideoOn ? (
             <div className="relative w-full h-full">
               <video
@@ -1177,12 +1109,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 playsInline
               />
 
-              {remoteScreenStreamsRef.current[p.uid]?.getVideoTracks().some((track) => track.readyState === "live") && (
-                <div className="absolute right-2 top-2 z-10 h-32 w-48 overflow-hidden rounded-lg border border-cyan-400/70 bg-black shadow-xl">
-                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; const screen = remoteScreenStreamsRef.current[p.uid]; if (el && screen) { el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline muted className="h-full w-full object-contain" />
-                  <span className="absolute left-1 top-1 rounded bg-cyan-500 px-1.5 py-0.5 text-[9px] font-bold text-black">SCREEN</span>
-                </div>
-              )}
 
               {/* Volume Slider for Remote User */}
               <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
@@ -1212,9 +1138,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   <video
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
-                      const cameraStream = remoteCameraStreamsRef.current[p.uid];
-                      if (el && cameraStream && el.srcObject !== cameraStream) {
-                        el.srcObject = cameraStream;
+                      const remoteStream = remoteStreamsRef.current[p.uid];
+                      if (el && remoteStream && el.srcObject !== remoteStream) {
+                        el.srcObject = remoteStream;
                         el.play().catch(() => {});
                       }
                     }}
@@ -1377,15 +1303,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           ) : (
             <VideoOff size={20} />
           )}
-        </button>
-
-        <button
-          onClick={isScreenSharing ? stopScreenSharing : startScreenSharing}
-          className={`flex items-center gap-2 rounded-2xl px-3.5 py-3.5 text-sm font-semibold transition-all cursor-pointer ${isScreenSharing ? "bg-cyan-500 text-black" : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"}`}
-          title={isScreenSharing ? "Stop Sharing" : "Share Screen"}
-        >
-          {isScreenSharing ? <MonitorStop size={20} /> : <MonitorUp size={20} />}
-          <span className="hidden sm:inline">{isScreenSharing ? "Stop Sharing" : "Share Screen"}</span>
         </button>
 
         <button
