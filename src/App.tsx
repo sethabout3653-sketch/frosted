@@ -264,10 +264,10 @@ export default function App() {
         </div>
 
         <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
-          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} />
+          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} persistent />
         </div>
-        {currentView === "game" && voiceOverlayOpen && (
-          <Chat isOpen onClose={() => setVoiceOverlayOpen(false)} overlay />
+        {currentView !== "chat" && (
+          <Chat isOpen={false} onClose={() => {}} persistent />
         )}
       </main>
 

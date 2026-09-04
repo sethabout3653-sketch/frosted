@@ -196,7 +196,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     []
   );
 
-  const getOrCreateDummyVideoTrack = useCallback((): MediaStreamTrack => {
+  const getOrCreateDummyVideoTrack = useCallback((label = "frosted-camera"): MediaStreamTrack => {
     if (dummyTrackRef.current && dummyTrackRef.current.readyState === "live") {
       return dummyTrackRef.current;
     }
@@ -441,7 +441,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
         ? realVideoTrack
         : getOrCreateDummyVideoTrack();
-      const screenTrack = screenStreamRef.current?.getVideoTracks()[0] || getOrCreateDummyVideoTrack();
+      const screenTrack = screenStreamRef.current?.getVideoTracks()[0] || getOrCreateDummyVideoTrack("frosted-screen");
 
       pc.addTrack(cameraTrack, micStream);
       pc.addTrack(screenTrack, micStream);
@@ -888,7 +888,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   };
 
   const stopScreenSharing = useCallback(() => {
-    const replacement = getOrCreateDummyVideoTrack();
+    const replacement = getOrCreateDummyVideoTrack("frosted-screen");
     (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
       const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
       videoSenders[1]?.replaceTrack(replacement).catch(() => {});
@@ -908,7 +908,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       stream.getVideoTracks()[0]?.addEventListener("ended", stopScreenSharing, { once: true });
       (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
         const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
-        videoSenders[1]?.replaceTrack(stream.getVideoTracks()[0]).catch(() => {});
+        const screenSender = videoSenders.find((sender) => sender.track?.label.includes("frosted-screen"));
+        if (screenSender) {
+          screenSender.replaceTrack(stream.getVideoTracks()[0]).catch(() => {});
+        }
       });
       setTrackTrigger((value) => value + 1);
     } catch { setCameraNotice("Screen sharing was cancelled or unavailable."); }
@@ -1158,9 +1161,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 playsInline
               />
 
-              {stream && stream.getVideoTracks().length > 1 && (
+              {stream && stream.getVideoTracks().some((track) => track.label.includes("screen") && track.readyState === "live") && (
                 <div className="absolute right-2 top-2 z-10 h-28 w-44 overflow-hidden rounded-lg border border-cyan-400/70 bg-black shadow-xl">
-                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; if (el) { const screen = new MediaStream([stream.getVideoTracks()[1]]); el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline className="h-full w-full object-contain" />
+                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; if (el) { const screen = new MediaStream(stream.getVideoTracks().filter((track) => track.label.includes("screen"))); el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline className="h-full w-full object-contain" />
                   <span className="absolute left-1 top-1 rounded bg-cyan-500 px-1.5 py-0.5 text-[9px] font-bold text-black">SCREEN</span>
                 </div>
               )}
