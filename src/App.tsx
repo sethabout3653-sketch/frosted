@@ -6,6 +6,7 @@ import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
+import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
 import localZones from "./zones.json";
 
 const SOUNDBOARD_GAME: Game = {
@@ -77,6 +78,9 @@ export default function App() {
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const [background, setBackground] = useState<AppBackground>(() => {
+    try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
+  });
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setShowStartup(false), 2400);
@@ -211,7 +215,7 @@ export default function App() {
       >
         <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
-      <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
+      <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -286,7 +290,8 @@ export default function App() {
           </div>
         </footer>
       )}
-      </div>
-    </>
+  <BackgroundEditor background={background} onChange={setBackground} />
+  </div>
+  </>
   );
 }
