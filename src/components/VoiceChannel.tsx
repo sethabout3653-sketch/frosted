@@ -74,6 +74,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isCameraLoading, setIsCameraLoading] = useState(false);
   const [remoteVideoLoaded, setRemoteVideoLoaded] = useState<Record<string, boolean>>({});
+  const previousParticipantIdsRef = useRef<Set<string> | null>(null);
+  const joinSoundRef = useRef<HTMLAudioElement | null>(null);
+  const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -287,6 +290,30 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     });
     remoteStreamsRef.current = {};
   }, []);
+
+  // Play globally when a remote participant joins or leaves the channel.
+  // The first participant snapshot only establishes a baseline and stays silent.
+  useEffect(() => {
+    const remoteIds = new Set(participants.filter((participant) => participant.uid !== profile.uid).map((participant) => participant.uid));
+    const previousIds = previousParticipantIdsRef.current;
+    if (previousIds) {
+      const joined = [...remoteIds].some((uid) => !previousIds.has(uid));
+      const left = [...previousIds].some((uid) => !remoteIds.has(uid));
+      if (joined) {
+        joinSoundRef.current ||= new Audio("/audio/discord-join.mp3");
+        joinSoundRef.current.currentTime = 0;
+        joinSoundRef.current.volume = 0.82;
+        joinSoundRef.current.play().catch(() => {});
+      }
+      if (left) {
+        leaveSoundRef.current ||= new Audio("/audio/LockChime.wav");
+        leaveSoundRef.current.currentTime = 0;
+        leaveSoundRef.current.volume = 1;
+        leaveSoundRef.current.play().catch(() => {});
+      }
+    }
+    previousParticipantIdsRef.current = remoteIds;
+  }, [participants, profile.uid]);
 
   // Ensure local video element displays camera stream when enabled
   useEffect(() => {
