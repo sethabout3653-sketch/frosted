@@ -56,6 +56,8 @@ export default function Chat({
   const [channelSearch, setChannelSearch] = useState<string>("");
   const [showMembersSidebar, setShowMembersSidebar] = useState<boolean>(true);
   const [notification, setNotification] = useState<ChatMessage | null>(null);
+  const messageSoundRef = useRef<HTMLAudioElement | null>(null);
+
   const [voiceUsers, setVoiceUsers] = useState<
     Array<{
       uid: string;
@@ -113,9 +115,15 @@ export default function Chat({
         if (msg.timestamp < sessionStartRef.current) return;
         const currentProfile = profileRef.current;
         const isMe = currentProfile && (msg.uid === currentProfile.uid || (msg.username === currentProfile.username && msg.photoURL === currentProfile.photoURL));
-        if (!isOpenRef.current && !isMe) {
-          setNotification(msg);
-          setTimeout(() => setNotification(null), 4000);
+        if (!isMe) {
+          messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
+          messageSoundRef.current.currentTime = 0;
+          messageSoundRef.current.volume = 0.8;
+          messageSoundRef.current.play().catch(() => {});
+          if (!isOpenRef.current) {
+            setNotification(msg);
+            setTimeout(() => setNotification(null), 4000);
+          }
         }
       } catch {}
     };
