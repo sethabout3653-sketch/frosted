@@ -59,6 +59,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
   });
 
   const isLuminGame = game.source === "luminsdk";
+  const isGameMinusThree = game.name.trim() === "-3";
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
 
@@ -130,7 +131,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
   const sizingStyle = useMemo(() => {
     const { width: cW, height: cH } = containerDimensions;
 
-    if (fitMode === "fill") {
+    if (fitMode === "fill" || isGameMinusThree) {
       return { width: "100%", height: "100%" };
     }
 
@@ -165,7 +166,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       maxWidth: "100%",
       maxHeight: "100%",
     };
-  }, [containerDimensions, fitMode, detectedRatio]);
+  }, [containerDimensions, fitMode, detectedRatio, isGameMinusThree]);
 
   // Focus iframe so keyboard and mouse inputs route immediately to game
   const focusGame = useCallback(() => {
@@ -404,7 +405,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
         onClick={focusGame}
         onMouseDown={focusGame}
         className={`relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 min-h-0 overflow-hidden ${
-          isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
+          isTheaterMode || isGameMinusThree ? "max-w-none" : "max-w-6xl mx-auto"
         }`}
       >
         {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
@@ -432,7 +433,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className="w-full h-full rounded-xl bg-black border-none"
+              className={`w-full h-full rounded-xl bg-black border-none ${isGameMinusThree ? "min-h-[320px]" : ""}`}
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
