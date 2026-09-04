@@ -435,14 +435,16 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         } catch (e) {}
       }
 
-      // 2. Add video track (webcam if active, otherwise dummy video canvas track)
+      // 2. Negotiate two stable video slots: camera and screen share.
+      // Keeping both slots negotiated avoids renegotiation glitches when sharing starts/stops.
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
-      const videoTrackToSend =
-        realVideoTrack && realVideoTrack.readyState === "live"
-          ? realVideoTrack
-          : getOrCreateDummyVideoTrack();
+      const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
+        ? realVideoTrack
+        : getOrCreateDummyVideoTrack();
+      const screenTrack = screenStreamRef.current?.getVideoTracks()[0] || getOrCreateDummyVideoTrack();
 
-      pc.addTrack(videoTrackToSend, micStream);
+      pc.addTrack(cameraTrack, micStream);
+      pc.addTrack(screenTrack, micStream);
 
       // Handle local ICE candidates
       pc.onicecandidate = (event) => {
@@ -458,17 +460,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         }
         const rStream = remoteStreamsRef.current[partnerUid];
 
-        if (event.track) {
-          const currentTracks = rStream.getTracks();
-          const existingSameKind = currentTracks.find((t) => t.kind === event.track.kind);
-          if (existingSameKind) {
-            if (existingSameKind.id !== event.track.id) {
-              rStream.removeTrack(existingSameKind);
-              rStream.addTrack(event.track);
-            }
-          } else {
-            rStream.addTrack(event.track);
+        if (event.track && !rStream.getTracks().some((track) => track.id === event.track.id)) {
+          // Keep both negotiated video tracks: camera is first, screen is second.
+          // Audio remains a single track and may be replaced during reconnects.
+          if (event.track.kind === "audio") {
+            rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
           }
+          rStream.addTrack(event.track);
         }
 
         // Attach to remote audio player
@@ -890,11 +888,16 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   };
 
   const stopScreenSharing = useCallback(() => {
+    const replacement = getOrCreateDummyVideoTrack();
+    (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
+      const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
+      videoSenders[1]?.replaceTrack(replacement).catch(() => {});
+    });
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current = null;
     setIsScreenSharing(false);
     setTrackTrigger((value) => value + 1);
-  }, []);
+  }, [getOrCreateDummyVideoTrack]);
 
   const startScreenSharing = useCallback(async () => {
     try {
@@ -904,8 +907,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
       if (localScreenRef.current) { localScreenRef.current.srcObject = stream; localScreenRef.current.play().catch(() => {}); }
       stream.getVideoTracks()[0]?.addEventListener("ended", stopScreenSharing, { once: true });
       (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
-        const sender = pc.getSenders().find((item: RTCRtpSender) => item.track?.kind === "video");
-        if (sender) pc.addTrack(stream.getVideoTracks()[0], stream);
+        const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
+        videoSenders[1]?.replaceTrack(stream.getVideoTracks()[0]).catch(() => {});
       });
       setTrackTrigger((value) => value + 1);
     } catch { setCameraNotice("Screen sharing was cancelled or unavailable."); }
