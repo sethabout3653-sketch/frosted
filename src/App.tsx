@@ -215,7 +215,7 @@ export default function App() {
       >
         <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
-      <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+      <div id="app-root" className={`${currentView === "home" ? "min-h-screen" : "h-screen overflow-hidden"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
       
       {/* Interactive Top Header Component */}
       <Header

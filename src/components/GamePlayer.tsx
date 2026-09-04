@@ -413,7 +413,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
           className="relative flex items-center justify-center transition-transform duration-150"
           style={{
             ...sizingStyle,
-            transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
+            transform: !isGameMinusThree && zoom !== 100 ? `scale(${zoom / 100})` : undefined,
             transformOrigin: "center center",
           }}
         >
@@ -434,6 +434,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
               }}
               tabIndex={0}
               className={`w-full h-full rounded-xl bg-black border-none ${isGameMinusThree ? "min-h-[320px]" : ""}`}
+              scrolling="yes"
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
