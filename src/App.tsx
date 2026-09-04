@@ -11,9 +11,10 @@ import localZones from "./zones.json";
 const SOUNDBOARD_GAME: Game = {
   id: "soundboard",
   name: "Soundboard",
-  cover: "https://myinstants.com/favicon.ico",
-  url: "https://myinstants.com/",
-  author: "MyInstants",
+  cover: "https://soundboardguys.com/favicon.ico",
+  url: "https://soundboardguys.com/",
+  author: "Soundboard Guys",
+  source: "catalog",
   special: ["all genres", "soundboard"],
   source: "catalog",
 };
