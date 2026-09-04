@@ -32,9 +32,11 @@ import { db, handleFirestoreError, OperationType } from "../firebase";
 export default function Chat({
   isOpen,
   onClose,
+  overlay = false,
 }: {
   isOpen?: boolean;
   onClose?: () => void;
+  overlay?: boolean;
 }) {
   const [profile, setProfile] = useState<ChatProfile | null>(() => {
     try {
@@ -45,7 +47,7 @@ export default function Chat({
   });
 
   const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">(
-    "chat"
+    overlay ? "voice" : "chat"
   );
   const [activeChannel, setActiveChannel] = useState<string>("general");
   const [channelSearch, setChannelSearch] = useState<string>("");
@@ -208,7 +210,7 @@ export default function Chat({
   }
 
   return (
-    <div className="flex-1 w-full flex bg-black border-t border-neutral-900 animate-in fade-in h-full min-h-0 overflow-hidden text-white">
+    <div className={`${overlay ? "fixed inset-3 sm:inset-auto sm:right-5 sm:bottom-5 sm:h-[min(70vh,560px)] sm:w-[390px] z-40 rounded-2xl border border-neutral-700 shadow-2xl" : "flex-1 w-full"} flex bg-black border border-neutral-900 animate-in fade-in h-full min-h-0 overflow-hidden text-white`}>
       {!profile || activeTab === "profile" ? (
         /* If not logged in or editing profile, show Profile Setup modal (Image 3 style) */
         <div className="flex-1 w-full flex items-center justify-center bg-black">

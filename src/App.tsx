@@ -76,6 +76,7 @@ export default function App() {
   });
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setShowStartup(false), 2400);
@@ -230,6 +231,7 @@ export default function App() {
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
+              onVoiceChat={() => setVoiceOverlayOpen(true)}
             />
           )}
         </div>
@@ -260,6 +262,9 @@ export default function App() {
         <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
           <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} />
         </div>
+        {currentView === "game" && voiceOverlayOpen && (
+          <Chat isOpen onClose={() => setVoiceOverlayOpen(false)} overlay />
+        )}
       </main>
 
       {/* Footer Branding Area (Home view only) */}
