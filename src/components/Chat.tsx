@@ -33,11 +33,13 @@ export default function Chat({
   isOpen,
   onClose,
   overlay = false,
+  persistent = false,
 }: {
   isOpen?: boolean;
   onClose?: () => void;
   overlay?: boolean;
-}) {
+  persistent?: boolean;
+  }) {
   const [profile, setProfile] = useState<ChatProfile | null>(() => {
     try {
       const saved = localStorage.getItem("frosted_chat_profile");
@@ -49,6 +51,7 @@ export default function Chat({
   const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">(
     overlay ? "voice" : "chat"
   );
+  const voiceOverlay = overlay || (persistent && !isOpen && activeTab === "voice");
   const [activeChannel, setActiveChannel] = useState<string>("general");
   const [channelSearch, setChannelSearch] = useState<string>("");
   const [showMembersSidebar, setShowMembersSidebar] = useState<boolean>(true);
@@ -210,7 +213,7 @@ export default function Chat({
   }
 
   return (
-    <div className={`${overlay ? "fixed inset-x-3 bottom-3 top-auto z-40 h-[min(78vh,620px)] w-auto rounded-2xl border border-neutral-700 shadow-2xl sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(76vh,620px)] sm:w-[440px]" : "flex-1 w-full"} flex bg-black/95 border border-neutral-900 animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl`}>
+    <div className={`${(overlay || (persistent && !isOpen && activeTab === "voice")) ? "fixed inset-x-3 bottom-3 top-auto z-40 h-[min(78vh,620px)] w-auto rounded-2xl border border-neutral-700 shadow-2xl sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(76vh,620px)] sm:w-[440px]" : "flex-1 w-full"} ${(persistent && !isOpen && activeTab !== "voice") ? "hidden" : ""} flex bg-black/95 border border-neutral-900 animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl`}>
       {!profile || activeTab === "profile" ? (
         /* If not logged in or editing profile, show Profile Setup modal (Image 3 style) */
         <div className="flex-1 w-full flex items-center justify-center bg-black">
@@ -225,7 +228,7 @@ export default function Chat({
         /* Discord Main App Shell matching Image 2 */
         <div className="flex-1 flex w-full h-full overflow-hidden">
           {/* Column 1: Leftmost Narrow Server Rail (~60px) matching Image 2 */}
-          <aside className={`${overlay ? "hidden" : ""} w-16 bg-[#050505] border-r border-neutral-900 flex flex-col items-center justify-between py-4 flex-shrink-0 z-20`}>
+          <aside className={`${voiceOverlay ? "hidden" : ""} w-16 bg-[#050505] border-r border-neutral-900 flex flex-col items-center justify-between py-4 flex-shrink-0 z-20`}>
             {/* Top Gamepad Button (Go back to games list) */}
             <div className="flex flex-col items-center gap-3">
               <button
@@ -281,7 +284,7 @@ export default function Chat({
           </aside>
 
           {/* Column 2: Channels Sidebar (~220px) matching Image 2 */}
-          <aside className={`${overlay ? "hidden" : ""} w-56 bg-[#0a0a0a] border-r border-neutral-900/90 flex-col h-full flex-shrink-0 ${overlay ? "" : "hidden sm:flex"}`}>
+          <aside className={`${voiceOverlay ? "hidden" : ""} w-56 bg-[#0a0a0a] border-r border-neutral-900/90 flex-col h-full flex-shrink-0 ${overlay ? "" : "hidden sm:flex"}`}>
             {/* Top Channel Search */}
             <div className="p-3 border-b border-neutral-900/90">
               <div className="relative">
@@ -322,6 +325,8 @@ export default function Chat({
                 </div>
               </div>
 
+              {!persistent && (
+              <>
               {/* VOICE Section */}
               <div>
                 <div className="flex items-center gap-1 text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
@@ -395,6 +400,8 @@ export default function Chat({
                   )}
                 </div>
               </div>
+              </>
+              )}
             </div>
 
             {/* Bottom User Bar matching Image 2 */}
@@ -427,7 +434,7 @@ export default function Chat({
 
           {/* Column 3 & 4: Main Chat view or Voice view */}
           <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-black">
-            {overlay && (
+            {voiceOverlay && (
               <div className="flex items-center justify-between border-b border-neutral-800 bg-neutral-950 px-4 py-3">
                 <div>
                   <p className="text-sm font-semibold text-white">Voice chat</p>
@@ -436,7 +443,7 @@ export default function Chat({
                 <button onClick={onClose} className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white" aria-label="Close voice chat"><X size={18} /></button>
               </div>
             )}
-            {!overlay && activeTab === "chat" ? (
+            {!voiceOverlay && activeTab === "chat" ? (
               <ChatPanel
                 profile={profile}
                 activeChannel={activeChannel}
