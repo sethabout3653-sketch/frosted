@@ -235,8 +235,12 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       } else {
         // Catalog games use their direct HTTPS URL; Vercel deployments do not
         // expose the local Express proxy route.
-        const catalogUrl = formatGameUrl(game.url, false);
-        const directRaw = getRawGameUrl(game.url);
+        // Game -3 needs raw.githack's HTML serving path; keep every other
+        // catalog game on the existing rawcdn.githack resolver.
+        const catalogUrl = isGameMinusThree
+          ? "https://raw.githack.com/gn-math/html/main/816.html"
+          : formatGameUrl(game.url, false);
+        const directRaw = catalogUrl;
         if (!isCancelled) {
           setGameUrl(catalogUrl);
           setRawGameUrl(directRaw);
