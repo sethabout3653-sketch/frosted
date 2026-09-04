@@ -16,7 +16,6 @@ const SOUNDBOARD_GAME: Game = {
   author: "Soundboard Guys",
   source: "catalog",
   special: ["all genres", "soundboard"],
-  source: "catalog",
 };
 
 function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog"): Game {

@@ -97,10 +97,14 @@ export default function ChatPanel({
 
     const markLeft = async () => {
       try {
-        await updateDoc(presenceRef, {
+        await setDoc(presenceRef, {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
           status: "left",
           lastSeen: Date.now(),
-        }).catch(() => {});
+          inVoice: false,
+        }, { merge: true }).catch(() => {});
       } catch (e) {}
     };
 

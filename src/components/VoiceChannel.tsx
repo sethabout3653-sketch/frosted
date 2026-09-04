@@ -645,10 +645,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           return;
         }
 
-        await updateDoc(doc(db, "presence", profile.uid), {
+        await setDoc(doc(db, "presence", profile.uid), {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
+          status: "online",
+          lastSeen: Date.now(),
           isMuted: false,
           inVoice: true,
-        }).catch(() => {});
+        }, { merge: true }).catch(() => {});
 
         // Poll participants over HTTPS instead of opening a Firestore realtime socket.
         const pollParticipants = async () => {
