@@ -104,10 +104,13 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   // Reusable dummy video track generator for initial WebRTC video m-line negotiation
   const dummyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const dummyTrackRef = useRef<MediaStreamTrack | null>(null);
+  const dummyScreenTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteCameraStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteScreenStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
   const remoteScreenRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
@@ -197,8 +200,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   );
 
   const getOrCreateDummyVideoTrack = useCallback((label = "frosted-camera"): MediaStreamTrack => {
-    if (dummyTrackRef.current && dummyTrackRef.current.readyState === "live") {
-      return dummyTrackRef.current;
+    const trackRef = label === "frosted-screen" ? dummyScreenTrackRef : dummyTrackRef;
+    if (trackRef.current && trackRef.current.readyState === "live") {
+      return trackRef.current;
     }
     let canvas = dummyCanvasRef.current;
     if (!canvas) {
@@ -215,7 +219,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     const canvasStream = canvas.captureStream(5);
     const track = canvasStream.getVideoTracks()[0];
     track.enabled = true;
-    dummyTrackRef.current = track;
+    try { Object.defineProperty(track, "__frostedLabel", { value: label, configurable: true }); } catch {}
+    trackRef.current = track;
     return track;
   }, []);
 
@@ -459,14 +464,20 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           remoteStreamsRef.current[partnerUid] = new MediaStream();
         }
         const rStream = remoteStreamsRef.current[partnerUid];
+        const videoReceivers = pc.getReceivers().filter((receiver) => receiver.track?.kind === "video");
+        const videoIndex = event.track.kind === "video" ? videoReceivers.findIndex((receiver) => receiver === event.receiver) : -1;
 
         if (event.track && !rStream.getTracks().some((track) => track.id === event.track.id)) {
-          // Keep both negotiated video tracks: camera is first, screen is second.
-          // Audio remains a single track and may be replaced during reconnects.
           if (event.track.kind === "audio") {
             rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
+            rStream.addTrack(event.track);
+          } else if (videoIndex === 0) {
+            const cameraStream = remoteCameraStreamsRef.current[partnerUid] ||= new MediaStream();
+            cameraStream.addTrack(event.track);
+          } else if (videoIndex === 1) {
+            const screenStream = remoteScreenStreamsRef.current[partnerUid] ||= new MediaStream();
+            screenStream.addTrack(event.track);
           }
-          rStream.addTrack(event.track);
         }
 
         // Attach to remote audio player
@@ -481,10 +492,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         // Attach to remote video player
         const videoEl = remoteVideoRefs.current[partnerUid];
         if (videoEl) {
-          if (videoEl.srcObject !== rStream) {
-            videoEl.srcObject = rStream;
-          }
+          const cameraStream = remoteCameraStreamsRef.current[partnerUid];
+          if (cameraStream && videoEl.srcObject !== cameraStream) videoEl.srcObject = cameraStream;
           videoEl.play().catch(() => {});
+        }
+        const screenEl = remoteScreenRefs.current[partnerUid];
+        const screenStream = remoteScreenStreamsRef.current[partnerUid];
+        if (screenEl && screenStream && screenEl.srcObject !== screenStream) {
+          screenEl.srcObject = screenStream;
+          screenEl.play().catch(() => {});
         }
 
         setTrackTrigger((v) => v + 1);
@@ -1161,9 +1177,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 playsInline
               />
 
-              {stream && stream.getVideoTracks().some((track) => track.label.includes("screen") && track.readyState === "live") && (
-                <div className="absolute right-2 top-2 z-10 h-28 w-44 overflow-hidden rounded-lg border border-cyan-400/70 bg-black shadow-xl">
-                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; if (el) { const screen = new MediaStream(stream.getVideoTracks().filter((track) => track.label.includes("screen"))); el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline className="h-full w-full object-contain" />
+              {remoteScreenStreamsRef.current[p.uid]?.getVideoTracks().some((track) => track.readyState === "live") && (
+                <div className="absolute right-2 top-2 z-10 h-32 w-48 overflow-hidden rounded-lg border border-cyan-400/70 bg-black shadow-xl">
+                  <video ref={(el) => { remoteScreenRefs.current[p.uid] = el; const screen = remoteScreenStreamsRef.current[p.uid]; if (el && screen) { el.srcObject = screen; el.play().catch(() => {}); } }} autoPlay playsInline muted className="h-full w-full object-contain" />
                   <span className="absolute left-1 top-1 rounded bg-cyan-500 px-1.5 py-0.5 text-[9px] font-bold text-black">SCREEN</span>
                 </div>
               )}
@@ -1196,8 +1212,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   <video
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
-                      if (el && stream && el.srcObject !== stream) {
-                        el.srcObject = stream;
+                      const cameraStream = remoteCameraStreamsRef.current[p.uid];
+                      if (el && cameraStream && el.srcObject !== cameraStream) {
+                        el.srcObject = cameraStream;
                         el.play().catch(() => {});
                       }
                     }}
