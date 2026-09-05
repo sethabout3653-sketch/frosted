@@ -107,6 +107,10 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     };
 
     updateDims();
+    if (isGameMinusThree) {
+      window.addEventListener("resize", updateDims);
+      return () => window.removeEventListener("resize", updateDims);
+    }
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         if (entry.contentRect) {
@@ -125,7 +129,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       observer.disconnect();
       window.removeEventListener("resize", updateDims);
     };
-  }, []);
+  }, [isGameMinusThree]);
 
   // Compute exact sizing style so game automatically fits container without clipping
   const sizingStyle = useMemo(() => {
@@ -437,7 +441,8 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className={`block border-none bg-black ${isGameMinusThree ? "absolute inset-0 h-full w-full max-h-full max-w-full rounded-none overflow-hidden" : "h-full w-full rounded-xl"}`}
+              className={`block border-none bg-black ${isGameMinusThree ? "absolute left-0 top-0 h-full w-full max-h-full max-w-full rounded-none" : "h-full w-full rounded-xl"}`}
+              style={isGameMinusThree ? { width: "100%", height: "100%", maxWidth: "100vw", maxHeight: "100vh" } : undefined}
               scrolling={isGameMinusThree ? "no" : "yes"}
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
