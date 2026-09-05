@@ -59,7 +59,6 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
   });
 
   const isLuminGame = game.source === "luminsdk";
-  const isGameMinusThree = game.name.trim() === "-3";
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
 
@@ -107,7 +106,6 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     };
 
     updateDims();
-    if (isGameMinusThree) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         if (entry.contentRect) {
@@ -126,13 +124,13 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       observer.disconnect();
       window.removeEventListener("resize", updateDims);
     };
-  }, [isGameMinusThree]);
+  }, []);
 
   // Compute exact sizing style so game automatically fits container without clipping
   const sizingStyle = useMemo(() => {
     const { width: cW, height: cH } = containerDimensions;
 
-    if (fitMode === "fill" || isGameMinusThree) {
+    if (fitMode === "fill") {
       return { width: "100%", height: "100%" };
     }
 
@@ -167,7 +165,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       maxWidth: "100%",
       maxHeight: "100%",
     };
-  }, [containerDimensions, fitMode, detectedRatio, isGameMinusThree]);
+  }, [containerDimensions, fitMode, detectedRatio]);
 
   // Focus iframe so keyboard and mouse inputs route immediately to game
   const focusGame = useCallback(() => {
@@ -236,11 +234,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       } else {
         // Catalog games use their direct HTTPS URL; Vercel deployments do not
         // expose the local Express proxy route.
-        // Game -3 needs raw.githack's HTML serving path; keep every other
-        // catalog game on the existing rawcdn.githack resolver.
-        const catalogUrl = isGameMinusThree
-          ? "https://raw.githack.com/gn-math/html/main/816.html"
-          : formatGameUrl(game.url, false);
+        const catalogUrl = formatGameUrl(game.url, false);
         const directRaw = catalogUrl;
         if (!isCancelled) {
           setGameUrl(catalogUrl);
@@ -410,12 +404,12 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
         onClick={focusGame}
         onMouseDown={focusGame}
         className={`relative flex-1 h-full min-h-0 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 overflow-hidden ${
-          isTheaterMode || isGameMinusThree ? "max-w-none" : "max-w-6xl mx-auto"
+          isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
         }`}
       >
         <div
-          className={isGameMinusThree ? "h-full w-full min-h-0 min-w-0 overflow-hidden" : "relative flex items-center justify-center transition-transform duration-150"}
-          style={isGameMinusThree ? undefined : {
+          className="relative flex items-center justify-center transition-transform duration-150"
+          style={{
             ...sizingStyle,
             transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
             transformOrigin: "center center",
@@ -437,8 +431,8 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className={`block h-full w-full border-none bg-black ${isGameMinusThree ? "rounded-none" : "rounded-xl"}`}
-              scrolling={isGameMinusThree ? "no" : "yes"}
+              className="block h-full w-full rounded-xl border-none bg-black"
+              scrolling="yes"
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
