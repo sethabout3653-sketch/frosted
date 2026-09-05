@@ -414,11 +414,10 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
       >
         {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
         <div
-          className={`relative flex items-center justify-center transition-transform duration-150 ${isGameMinusThree ? "h-full w-full min-h-0 min-w-0" : ""}`}
-          style={{
+          className={`relative flex items-center justify-center ${isGameMinusThree ? "h-full w-full min-h-0 min-w-0" : "transition-transform duration-150"}`}
+          style={isGameMinusThree ? undefined : {
             ...sizingStyle,
-            ...(isGameMinusThree ? { width: "100%", height: "100%", minHeight: 0, minWidth: 0 } : {}),
-            transform: !isGameMinusThree && zoom !== 100 ? `scale(${zoom / 100})` : undefined,
+            transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
             transformOrigin: "center center",
           }}
         >
@@ -438,8 +437,8 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className="h-full w-full rounded-xl border-none bg-black"
-              scrolling="yes"
+              className={`h-full w-full border-none bg-black ${isGameMinusThree ? "rounded-none" : "rounded-xl"}`}
+              scrolling={isGameMinusThree ? "no" : "yes"}
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
