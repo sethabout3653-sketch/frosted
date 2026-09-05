@@ -88,15 +88,11 @@ async function startServer() {
   app.get("/api/game-frame", async (req, res) => {
     try {
       const rawUrl = req.query.url as string;
-      if (!rawUrl) return res.status(400).send("Missing url parameter");
-      let target: URL;
-      try { target = new URL(rawUrl); } catch { return res.status(400).send("Invalid game URL"); }
-      const allowedHosts = ["myinstants.com", "www.myinstants.com", "raw.githubusercontent.com", "rawcdn.githack.com", "cdn.jsdelivr.net"];
-      if (target.protocol !== "https:" || !allowedHosts.includes(target.hostname)) {
-        return res.status(403).send("Game host is not allowed");
+      if (!rawUrl) {
+        return res.status(400).send("Missing url parameter");
       }
 
-      const response = await fetch(target, {
+      const response = await fetch(rawUrl, {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -105,8 +101,7 @@ async function startServer() {
       });
 
       if (!response.ok) {
-        res.setHeader("Content-Type", response.headers.get("content-type") || "text/html; charset=utf-8");
-        return res.status(response.status).send(await response.text());
+        return res.redirect(rawUrl);
       }
 
       const contentType = response.headers.get("content-type") || "";
@@ -269,6 +264,16 @@ async function startServer() {
         watch: null,
       },
       appType: "spa",
+    });
+    // Vite can still inject /@vite/client while transforming the SPA entry.
+    // The hosted preview has no HMR websocket endpoint, so serve a no-op client
+    // before Vite handles the request. This removes the socket attempt instead
+    // of suppressing its errors after the connection has already failed.
+    app.get("/@vite/client", (_req, res) => {
+      res.type("application/javascript").send("// HMR disabled in hosted preview");
+    });
+    app.get("/@react-refresh", (_req, res) => {
+      res.type("application/javascript").send("// React refresh disabled in hosted preview");
     });
     app.use(vite.middlewares);
   } else {

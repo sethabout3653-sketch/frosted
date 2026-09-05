@@ -6,18 +6,7 @@ import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
-import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
 import localZones from "./zones.json";
-
-const SOUNDBOARD_GAME: Game = {
-  id: "soundboard",
-  name: "Soundboard",
-  cover: "https://soundboardguys.com/favicon.ico",
-  url: "https://soundboardguys.com/",
-  author: "Soundboard Guys",
-  source: "catalog",
-  special: ["all genres", "soundboard"],
-};
 
 function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog"): Game {
   const isFnf = isFnfGame(g.name, g.special);
@@ -62,30 +51,21 @@ function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog")
 
 export default function App() {
   const [currentView, setCurrentView] = useState<"home" | "game" | "chat">("home");
-  const [showStartup, setShowStartup] = useState(true);
   // Core games list state seeded synchronously with ALL catalog and Lumin games combined,
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
     const catalogPrepared = (localZones as Game[])
-      .filter((g) => g.id !== -1 && g.name.trim() !== "-3")
+      .filter((g) => g.id !== -1)
       .map((g) => prepareGame(g, "catalog"));
-    const luminPrepared = getLocalLuminGames()
-      .filter((g) => g.name.trim() !== "-3")
-      .map((g) => prepareGame(g, "luminsdk"));
-    const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
-    return [SOUNDBOARD_GAME, ...catalog];
+    const luminPrepared = getLocalLuminGames().map((g) =>
+      prepareGame(g, "luminsdk")
+    );
+    return deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    );
   });
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
-  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
-  const [background, setBackground] = useState<AppBackground>(() => {
-    try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
-  });
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => setShowStartup(false), 2400);
-    return () => window.clearTimeout(timeout);
-  }, []);
 
   // Filter states
   const [searchQuery, setSearchQuery] = useState("");
@@ -110,7 +90,7 @@ export default function App() {
             ? liveGamesResult.value
             : (localZones as Game[])
         )
-          .filter((g) => g.id !== -1 && g.name.trim() !== "-3")
+          .filter((g) => g.id !== -1)
           .map((g) => prepareGame(g, "catalog"));
 
         let luminList: Game[] = [];
@@ -126,13 +106,14 @@ export default function App() {
           }
         }
 
-        const luminPrepared = luminList
-          .filter((g) => g.name.trim() !== "-3")
-          .map((g) => prepareGame(g, "luminsdk"));
+        const luminPrepared = luminList.map((g) => prepareGame(g, "luminsdk"));
 
         // Deduplicate between gn-math catalog and Lumin, strictly preserving gn-math for Friday Night Funkin
-        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
-        setGames([SOUNDBOARD_GAME, ...combined.filter((g) => g.id !== SOUNDBOARD_GAME.id)]);
+        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
+        setGames(combined);
         setLoadingLive(false);
       } catch {
         if (isMounted) {
@@ -210,14 +191,7 @@ export default function App() {
   }, [games, selectedTag, deferredSearch]);
 
   return (
-    <>
-      <div
-        aria-hidden={!showStartup}
-        className={`startup-splash ${showStartup ? "startup-splash-visible" : "startup-splash-hidden"}`}
-      >
-        <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
-      </div>
-      <div id="app-root" className={`${currentView === "home" ? "min-h-screen" : "h-screen overflow-hidden"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+    <div id="app-root" className={`${currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} bg-black text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -237,7 +211,6 @@ export default function App() {
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
-              onVoiceChat={() => setVoiceOverlayOpen(true)}
             />
           )}
         </div>
@@ -248,7 +221,10 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
-                  <span>Games ({processedGames.length})</span>
+                  <span>Unblocked Games</span>
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/10 text-white border border-white/20">
+                    {totalPlayableCount}
+                  </span>
                 </h2>
                 {loadingLive && (
                   <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
@@ -266,11 +242,8 @@ export default function App() {
         </div>
 
         <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
-          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} persistent />
+          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} />
         </div>
-        {currentView !== "chat" && (
-          <Chat isOpen={false} onClose={() => {}} persistent />
-        )}
       </main>
 
       {/* Footer Branding Area (Home view only) */}
@@ -292,8 +265,6 @@ export default function App() {
           </div>
         </footer>
       )}
-  <BackgroundEditor background={background} onChange={setBackground} />
-  </div>
-  </>
+    </div>
   );
 }

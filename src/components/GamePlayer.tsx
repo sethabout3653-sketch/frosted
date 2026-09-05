@@ -6,20 +6,21 @@ import {
   ArrowLeft,
   Maximize2,
   RefreshCw,
+  ZoomIn,
+  ZoomOut,
   ExternalLink,
+  Tv,
   RotateCcw,
-  Mic,
 } from "lucide-react";
 
 interface GamePlayerProps {
   game: Game;
   onBack: () => void;
-  onVoiceChat?: () => void;
 }
 
 type FitMode = "contain" | "fill" | "16-9" | "4-3";
 
-export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProps) {
+export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   const [gameUrl, setGameUrl] = useState<string>("");
   const [rawGameUrl, setRawGameUrl] = useState<string>("");
   const [usingDirectUrl, setUsingDirectUrl] = useState(false);
@@ -47,7 +48,13 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     return 100;
   });
 
-  const isTheaterMode = false;
+  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_theater_mode");
+      return saved === "true";
+    } catch {}
+    return false;
+  });
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -232,10 +239,9 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
           }
         }
       } else {
-        // Catalog games use their direct HTTPS URL; Vercel deployments do not
-        // expose the local Express proxy route.
-        const catalogUrl = formatGameUrl(game.url, false);
-        const directRaw = catalogUrl;
+        // Catalog game: resolve formatGameUrl with auto-fit proxy engine enabled
+        const catalogUrl = formatGameUrl(game.url, true);
+        const directRaw = getRawGameUrl(game.url);
         if (!isCancelled) {
           setGameUrl(catalogUrl);
           setRawGameUrl(directRaw);
@@ -325,6 +331,16 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     } catch {}
   };
 
+  const handleToggleTheater = () => {
+    setIsTheaterMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("frosted_theater_mode", next.toString());
+      } catch {}
+      return next;
+    });
+  };
+
   const handleOpenInNewTab = () => {
     const targetUrl = rawGameUrl || gameUrl;
     if (targetUrl) {
@@ -375,22 +391,128 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
           </div>
         </div>
 
-  <div className="ml-auto flex items-center gap-2">
-  {onVoiceChat && (
-    <button id="player-voice-btn" onClick={onVoiceChat} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open voice chat">
-      <Mic size={13} className="mr-0 sm:mr-1.5" /><span className="hidden sm:inline">Voice</span>
-    </button>
-  )}
-  {rawGameUrl && (
-            <button id="player-external-btn" onClick={handleOpenInNewTab} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open game in a new tab">
+        {/* Game Manipulation & Fit Controls (DO NOT DELETE - KEPT AS IN IMAGE) */}
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto">
+          {/* Fit Mode Switcher */}
+          <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
+            <button
+              onClick={() => handleSetFitMode("contain")}
+              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
+                fitMode === "contain"
+                  ? "bg-neutral-700 text-white shadow-sm"
+                  : "text-neutral-400 hover:text-white"
+              }`}
+              title="Automatically fit game on screen maintaining optimal aspect ratio"
+            >
+              Fit
+            </button>
+            <button
+              onClick={() => handleSetFitMode("fill")}
+              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
+                fitMode === "fill"
+                  ? "bg-neutral-700 text-white shadow-sm"
+                  : "text-neutral-400 hover:text-white"
+              }`}
+              title="Stretch to fill entire frame"
+            >
+              Fill
+            </button>
+            <button
+              onClick={() => handleSetFitMode("16-9")}
+              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
+                fitMode === "16-9"
+                  ? "bg-neutral-700 text-white shadow-sm"
+                  : "text-neutral-400 hover:text-white"
+              }`}
+              title="Lock 16:9 widescreen ratio"
+            >
+              16:9
+            </button>
+            <button
+              onClick={() => handleSetFitMode("4-3")}
+              className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer hidden md:block ${
+                fitMode === "4-3"
+                  ? "bg-neutral-700 text-white shadow-sm"
+                  : "text-neutral-400 hover:text-white"
+              }`}
+              title="Lock 4:3 classic ratio"
+            >
+              4:3
+            </button>
+          </div>
+
+          {/* Zoom / Scale Controls */}
+          <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
+            <button
+              onClick={handleZoomOut}
+              className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer"
+              title="Zoom out game (reduce scale)"
+            >
+              <ZoomOut size={13} />
+            </button>
+            <button
+              onClick={handleResetZoom}
+              className="px-1.5 text-[10px] font-bold text-neutral-300 hover:text-white min-w-[34px] text-center cursor-pointer"
+              title="Click to reset zoom to 100%"
+            >
+              {zoom}%
+            </button>
+            <button
+              onClick={handleZoomIn}
+              className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer"
+              title="Zoom in game (increase scale)"
+            >
+              <ZoomIn size={13} />
+            </button>
+          </div>
+
+          {/* Theater Mode Toggle */}
+          <button
+            id="player-theater-btn"
+            onClick={handleToggleTheater}
+            className={`flex items-center justify-center h-8 px-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
+              isTheaterMode
+                ? "bg-white text-black border-white shadow"
+                : "bg-neutral-800 border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white"
+            }`}
+            title={isTheaterMode ? "Exit Theater Mode" : "Theater Mode (Wide)"}
+          >
+            <Tv size={14} className="mr-0 sm:mr-1.5" />
+            <span className="hidden sm:inline">
+              {isTheaterMode ? "Wide On" : "Theater"}
+            </span>
+          </button>
+
+          {/* Open in New Tab Button */}
+          {rawGameUrl && (
+            <button
+              id="player-external-btn"
+              onClick={handleOpenInNewTab}
+              className="flex items-center justify-center h-8 px-2 rounded-lg bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium transition-all cursor-pointer"
+              title="Open raw game in dedicated new tab"
+            >
               <ExternalLink size={14} />
             </button>
           )}
-          <button id="player-reload-btn" onClick={handleReload} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Reload game">
+
+          {/* Reload Button */}
+          <button
+            id="player-reload-btn"
+            onClick={handleReload}
+            className="flex items-center justify-center h-8 px-2.5 rounded-lg bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium transition-all cursor-pointer"
+            title="Reload Game"
+          >
             <RefreshCw size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Reload</span>
           </button>
-          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-white px-3 text-xs font-bold text-black shadow-md transition-all hover:bg-neutral-200" title="Fullscreen">
+
+          {/* Fullscreen Button */}
+          <button
+            id="player-fullscreen-btn"
+            onClick={handleFullscreen}
+            className="flex items-center justify-center h-8 px-3 rounded-lg bg-white hover:bg-neutral-200 text-black text-xs font-bold shadow-md transition-all cursor-pointer"
+            title="Fullscreen"
+          >
             <Maximize2 size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Fullscreen</span>
           </button>
@@ -403,10 +525,11 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
         ref={containerRef}
         onClick={focusGame}
         onMouseDown={focusGame}
-        className={`relative flex-1 h-full min-h-0 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 overflow-hidden ${
+        className={`relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 min-h-0 overflow-hidden ${
           isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
         }`}
       >
+        {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
         <div
           className="relative flex items-center justify-center transition-transform duration-150"
           style={{
@@ -431,8 +554,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className="block h-full w-full rounded-xl border-none bg-black"
-              scrolling="yes"
+              className="w-full h-full rounded-xl bg-black border-none"
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />

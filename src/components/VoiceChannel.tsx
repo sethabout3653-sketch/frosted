@@ -74,9 +74,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isCameraLoading, setIsCameraLoading] = useState(false);
   const [remoteVideoLoaded, setRemoteVideoLoaded] = useState<Record<string, boolean>>({});
-  const previousParticipantIdsRef = useRef<Set<string> | null>(null);
-  const joinSoundRef = useRef<HTMLAudioElement | null>(null);
-  const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -291,30 +288,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     remoteStreamsRef.current = {};
   }, []);
 
-  // Play globally when a remote participant joins or leaves the channel.
-  // The first participant snapshot only establishes a baseline and stays silent.
-  useEffect(() => {
-    const remoteIds = new Set(participants.filter((participant) => participant.uid !== profile.uid).map((participant) => participant.uid));
-    const previousIds = previousParticipantIdsRef.current;
-    if (previousIds) {
-      const joined = [...remoteIds].some((uid) => !previousIds.has(uid));
-      const left = [...previousIds].some((uid) => !remoteIds.has(uid));
-      if (joined) {
-        joinSoundRef.current ||= new Audio("/audio/discord-join.mp3");
-        joinSoundRef.current.currentTime = 0;
-        joinSoundRef.current.volume = 0.82;
-        joinSoundRef.current.play().catch(() => {});
-      }
-      if (left) {
-        leaveSoundRef.current ||= new Audio("/audio/LockChime.wav");
-        leaveSoundRef.current.currentTime = 0;
-        leaveSoundRef.current.volume = 1;
-        leaveSoundRef.current.play().catch(() => {});
-      }
-    }
-    previousParticipantIdsRef.current = remoteIds;
-  }, [participants, profile.uid]);
-
   // Ensure local video element displays camera stream when enabled
   useEffect(() => {
     isVideoOnRef.current = isVideoOn;
@@ -456,12 +429,14 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         } catch (e) {}
       }
 
-      // 2. Add the camera track only when enabled, otherwise use a stable placeholder
+      // 2. Add video track (webcam if active, otherwise dummy video canvas track)
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
-      const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
-        ? realVideoTrack
-        : getOrCreateDummyVideoTrack();
-      pc.addTrack(cameraTrack, micStream);
+      const videoTrackToSend =
+        realVideoTrack && realVideoTrack.readyState === "live"
+          ? realVideoTrack
+          : getOrCreateDummyVideoTrack();
+
+      pc.addTrack(videoTrackToSend, micStream);
 
       // Handle local ICE candidates
       pc.onicecandidate = (event) => {
@@ -476,11 +451,18 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           remoteStreamsRef.current[partnerUid] = new MediaStream();
         }
         const rStream = remoteStreamsRef.current[partnerUid];
-        if (event.track && !rStream.getTracks().some((track) => track.id === event.track.id)) {
-          if (event.track.kind === "audio") {
-            rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
+
+        if (event.track) {
+          const currentTracks = rStream.getTracks();
+          const existingSameKind = currentTracks.find((t) => t.kind === event.track.kind);
+          if (existingSameKind) {
+            if (existingSameKind.id !== event.track.id) {
+              rStream.removeTrack(existingSameKind);
+              rStream.addTrack(event.track);
+            }
+          } else {
+            rStream.addTrack(event.track);
           }
-          rStream.addTrack(event.track);
         }
 
         // Attach to remote audio player
@@ -495,7 +477,9 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         // Attach to remote video player
         const videoEl = remoteVideoRefs.current[partnerUid];
         if (videoEl) {
-          if (videoEl.srcObject !== rStream) videoEl.srcObject = rStream;
+          if (videoEl.srcObject !== rStream) {
+            videoEl.srcObject = rStream;
+          }
           videoEl.play().catch(() => {});
         }
 
@@ -661,15 +645,10 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
           return;
         }
 
-        await setDoc(doc(db, "presence", profile.uid), {
-          uid: profile.uid,
-          username: profile.username,
-          photoURL: profile.photoURL || "",
-          status: "online",
-          lastSeen: Date.now(),
+        await updateDoc(doc(db, "presence", profile.uid), {
           isMuted: false,
           inVoice: true,
-        }, { merge: true }).catch(() => {});
+        }).catch(() => {});
 
         // Poll participants over HTTPS instead of opening a Firestore realtime socket.
         const pollParticipants = async () => {
@@ -1136,7 +1115,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                 playsInline
               />
 
-
               {/* Volume Slider for Remote User */}
               <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <Volume2 size={12} className="text-neutral-400" />
@@ -1165,9 +1143,8 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   <video
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
-                      const remoteStream = remoteStreamsRef.current[p.uid];
-                      if (el && remoteStream && el.srcObject !== remoteStream) {
-                        el.srcObject = remoteStream;
+                      if (el && stream && el.srcObject !== stream) {
+                        el.srcObject = stream;
                         el.play().catch(() => {});
                       }
                     }}

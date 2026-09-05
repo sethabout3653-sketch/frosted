@@ -1,11 +1,39 @@
 import React, { memo } from "react";
 import { Game } from "../types";
-import { formatTagLabel, isFnfGame, isFnfMod } from "../utils";
-import GameCover from "./GameCover";
+import { formatCoverUrl, formatTagLabel, isFnfGame, isFnfMod } from "../utils";
+import { Gamepad2 } from "lucide-react";
 
 interface GameCardProps {
   game: Game;
   onSelect: (game: Game) => void;
+}
+
+const PRESET_GRADIENTS = [
+  "from-indigo-600 via-indigo-700 to-violet-800",
+  "from-cyan-600 via-teal-700 to-emerald-800",
+  "from-rose-500 via-pink-600 to-purple-700",
+  "from-amber-500 via-orange-600 to-rose-700",
+  "from-blue-600 via-blue-700 to-indigo-800",
+  "from-purple-600 via-fuchsia-700 to-pink-800",
+  "from-emerald-500 via-teal-600 to-cyan-700",
+  "from-violet-600 via-purple-700 to-indigo-800"
+];
+
+function getGameGradient(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % PRESET_GRADIENTS.length;
+  return PRESET_GRADIENTS[index];
+}
+
+function getGameInitials(name: string): string {
+  const cleanName = name.replace(/[^a-zA-Z0-9\s]/g, "").trim();
+  const words = cleanName.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "G";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
 }
 
 const GameCard = memo(function GameCard({
@@ -18,7 +46,7 @@ const GameCard = memo(function GameCard({
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
 
-
+  const coverUrl = formatCoverUrl(game.cover);
   // Avoid duplicating FNF or FNF-mod in secondary tags since the primary badge handles it
   const rawTags = game.special
     ? game.special.filter((t) => {
@@ -29,6 +57,9 @@ const GameCard = memo(function GameCard({
     : [];
 
   const tagsToShow = rawTags.slice(0, 2);
+  const gradientClass = getGameGradient(game.name);
+  const initials = getGameInitials(game.name);
+
   return (
     <div
       id={`game-card-${game.id}`}
@@ -37,7 +68,62 @@ const GameCard = memo(function GameCard({
     >
       {/* Cover Image Container */}
       <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-black">
-        <GameCover name={game.name} cover={game.cover} />
+        {coverUrl ? (
+          <img
+            id={`game-cover-img-${game.id}`}
+            src={coverUrl}
+            alt={game.name}
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            onError={(e) => {
+              const target = e.target as HTMLImageElement;
+              
+              // If the local proxy failed, try direct CDN fallback first
+              if (target.src.includes("/api/lumin-icon/")) {
+                const parts = target.src.split("/api/lumin-icon/");
+                const token = parts[parts.length - 1];
+                if (token) {
+                  target.src = `https://a.luminsdk.com/api/v1/icon/${token}`;
+                  return;
+                }
+              }
+
+              target.style.display = "none";
+              const parent = target.parentElement;
+              if (parent) {
+                const fallback = parent.querySelector(".fallback-icon-container");
+                if (fallback) {
+                  fallback.classList.remove("hidden");
+                  fallback.classList.add("flex");
+                }
+              }
+            }}
+          />
+        ) : null}
+
+        {/* Fallback Icon Container */}
+        <div
+          id={`fallback-container-${game.id}`}
+          className={`fallback-icon-container ${coverUrl ? "hidden" : "flex"} h-full w-full flex-col items-center justify-center bg-gradient-to-br ${gradientClass} relative overflow-hidden`}
+        >
+          {/* Subtle background glow/noise simulation */}
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(255,255,255,0.15),transparent)] pointer-events-none" />
+          
+          {/* Big initials backdrop */}
+          <span className="absolute text-white/10 font-black text-6xl sm:text-7xl select-none uppercase tracking-tighter transform -translate-y-2">
+            {initials}
+          </span>
+
+          {/* Central floating icon */}
+          <div className="relative z-10 flex flex-col items-center justify-center">
+            <Gamepad2 size={38} className="text-white/90 drop-shadow-[0_2px_8px_rgba(0,0,0,0.4)] animate-pulse" />
+            <span className="mt-2.5 text-[9px] uppercase tracking-widest font-extrabold text-white/95 drop-shadow-sm px-2.5 py-0.5 rounded-full bg-black/25 backdrop-blur-sm border border-white/10">
+              PLAY
+            </span>
+          </div>
+        </div>
 
         {/* Tags Overlay */}
         <div className="absolute bottom-2 left-2 z-10 flex flex-wrap gap-1">
