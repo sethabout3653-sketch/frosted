@@ -67,11 +67,11 @@ export default function App() {
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
     const catalogPrepared = (localZones as Game[])
-      .filter((g) => g.id !== -1)
+      .filter((g) => g.id !== -1 && g.name.trim() !== "-3")
       .map((g) => prepareGame(g, "catalog"));
-    const luminPrepared = getLocalLuminGames().map((g) =>
-      prepareGame(g, "luminsdk")
-    );
+    const luminPrepared = getLocalLuminGames()
+      .filter((g) => g.name.trim() !== "-3")
+      .map((g) => prepareGame(g, "luminsdk"));
     const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
     return [SOUNDBOARD_GAME, ...catalog];
   });
@@ -110,7 +110,7 @@ export default function App() {
             ? liveGamesResult.value
             : (localZones as Game[])
         )
-          .filter((g) => g.id !== -1)
+          .filter((g) => g.id !== -1 && g.name.trim() !== "-3")
           .map((g) => prepareGame(g, "catalog"));
 
         let luminList: Game[] = [];
@@ -126,7 +126,9 @@ export default function App() {
           }
         }
 
-        const luminPrepared = luminList.map((g) => prepareGame(g, "luminsdk"));
+        const luminPrepared = luminList
+          .filter((g) => g.name.trim() !== "-3")
+          .map((g) => prepareGame(g, "luminsdk"));
 
         // Deduplicate between gn-math catalog and Lumin, strictly preserving gn-math for Friday Night Funkin
         const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
