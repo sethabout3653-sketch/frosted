@@ -68,8 +68,7 @@ body:has(#game-player-wrapper) {
 }
 
 .lumin-player-frame,
-.lumin-player iframe,
-.game-embed-frame {
+.lumin-player iframe {
   display: block !important;
   width: 100% !important;
   height: 100% !important;
@@ -81,8 +80,7 @@ body:has(#game-player-wrapper) {
   scrollbar-width: none !important;
 }
 
-.lumin-player iframe::-webkit-scrollbar,
-.game-embed-frame::-webkit-scrollbar {
+.lumin-player iframe::-webkit-scrollbar {
   display: none !important;
   width: 0 !important;
   height: 0 !important;

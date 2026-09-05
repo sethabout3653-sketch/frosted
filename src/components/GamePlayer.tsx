@@ -432,25 +432,11 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
           {/* Embedded Game iframe */}
           {gameUrl && !gameLoadError && (
             <iframe
-              id="game-iframe"
-              key={gameUrl}
-              ref={iframeRef}
               src={gameUrl}
               title={`${game.name} game`}
+              width="100%"
+              height="100%"
               scrolling="no"
-              onError={() => {
-                if (!usingDirectUrl && rawGameUrl && rawGameUrl !== gameUrl) {
-                  setUsingDirectUrl(true);
-                  setGameUrl(rawGameUrl);
-                } else {
-                  setGameLoadError(true);
-                }
-              }}
-              tabIndex={0}
-              className="game-embed-frame w-full h-full rounded-xl bg-black border-none"
-              style={{ overflow: "hidden" }}
-              allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
-              sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
           )}
           {gameLoadError && (
