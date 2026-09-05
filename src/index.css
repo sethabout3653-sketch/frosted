@@ -7,6 +7,17 @@
 @keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) { .startup-splash, .startup-wordmark { animation: none; opacity: 1; transition: none; } }
 
+/* Keep the page viewport fixed while a game is open; the game itself retains input and internal scrolling. */
+body:has(#game-player-wrapper) {
+  overflow: hidden;
+}
+
+#app-root:has(#game-player-wrapper) {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* High-performance rendering optimizations for large game catalogs */
 .game-card-item {
   content-visibility: auto;
@@ -58,9 +69,19 @@
 
 .lumin-player-frame,
 .lumin-player iframe {
+  display: block !important;
   width: 100% !important;
   height: 100% !important;
   border-radius: 1rem !important;
   border: none !important;
   background: #000000 !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  scrollbar-width: none !important;
+}
+
+.lumin-player iframe::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
