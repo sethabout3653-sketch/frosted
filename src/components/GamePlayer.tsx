@@ -107,10 +107,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     };
 
     updateDims();
-    if (isGameMinusThree) {
-      window.addEventListener("resize", updateDims);
-      return () => window.removeEventListener("resize", updateDims);
-    }
+    if (isGameMinusThree) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         if (entry.contentRect) {
@@ -416,10 +413,9 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
           isTheaterMode || isGameMinusThree ? "max-w-none" : "max-w-6xl mx-auto"
         }`}
       >
-        {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
         <div
-          className={`relative flex items-center justify-center ${isGameMinusThree ? "absolute inset-0 h-full w-full min-h-0 min-w-0 overflow-hidden" : "transition-transform duration-150"}`}
-          style={isGameMinusThree ? { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", transform: "none", zoom: 1, contain: "strict" } : {
+          className={isGameMinusThree ? "h-full w-full min-h-0 min-w-0 overflow-hidden" : "relative flex items-center justify-center transition-transform duration-150"}
+          style={isGameMinusThree ? undefined : {
             ...sizingStyle,
             transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
             transformOrigin: "center center",
@@ -441,8 +437,7 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className={`block border-none bg-black ${isGameMinusThree ? "absolute left-0 top-0 h-full w-full max-h-full max-w-full rounded-none" : "h-full w-full rounded-xl"}`}
-              style={isGameMinusThree ? { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", minWidth: 0, minHeight: 0, transform: "none", zoom: 1 } : undefined}
+              className={`block h-full w-full border-none bg-black ${isGameMinusThree ? "rounded-none" : "rounded-xl"}`}
               scrolling={isGameMinusThree ? "no" : "yes"}
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
