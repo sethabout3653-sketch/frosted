@@ -177,6 +177,19 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
     }
   }, []);
 
+  // Keep the page fixed while the game is open; scrolling remains available inside the embedded game.
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousRootOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousRootOverflow;
+    };
+  }, []);
+
   // Monitor Fullscreen changes globally to auto-focus the game iframe
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -423,6 +436,8 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
               key={gameUrl}
               ref={iframeRef}
               src={gameUrl}
+              title={`${game.name} game`}
+              scrolling="no"
               onError={() => {
                 if (!usingDirectUrl && rawGameUrl && rawGameUrl !== gameUrl) {
                   setUsingDirectUrl(true);
@@ -432,7 +447,8 @@ export default function GamePlayer({ game, onBack, onVoiceChat }: GamePlayerProp
                 }
               }}
               tabIndex={0}
-              className="w-full h-full rounded-xl bg-black border-none"
+              className="game-embed-frame w-full h-full rounded-xl bg-black border-none"
+              style={{ overflow: "hidden" }}
               allow="autoplay; fullscreen; keyboard; gamepad; pointer-lock"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-modals allow-orientation-lock"
             />
