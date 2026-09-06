@@ -1016,9 +1016,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                       </div>
                     )}
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
-                        <Loader2 size={24} className="animate-spin" />
-                      </div>
+                      <img
+                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                        alt="Loading camera"
+                        className="w-12 h-12 object-contain"
+                      />
                     </div>
                   </div>
                   <div className="flex flex-col items-center gap-1">
@@ -1048,9 +1050,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                   </div>
                 )}
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
-                    <Loader2 size={24} className="animate-spin" />
-                  </div>
+<img
+                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                        alt="Loading camera"
+                        className="w-12 h-12 object-contain"
+                      />
                 </div>
               </div>
               <div className="flex flex-col items-center gap-1">
@@ -1201,9 +1205,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                           </div>
                         )}
                         <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
-                            <Loader2 size={24} className="animate-spin" />
-                          </div>
+                          <img
+                            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                            alt="Loading camera"
+                            className="w-12 h-12 object-contain"
+                          />
                         </div>
                       </div>
                       <div className="flex flex-col items-center gap-1">
@@ -1234,9 +1240,11 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
                       </div>
                     )}
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="p-2.5 rounded-full bg-black/70 border border-cyan-500/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
-                        <Loader2 size={24} className="animate-spin" />
-                      </div>
+                      <img
+                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                        alt="Loading camera"
+                        className="w-12 h-12 object-contain"
+                      />
                     </div>
                   </div>
                   <div className="flex flex-col items-center gap-1">
