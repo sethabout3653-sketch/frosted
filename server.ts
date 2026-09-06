@@ -265,32 +265,6 @@ async function startServer() {
       },
       appType: "spa",
     });
-    // Vite can still inject /@vite/client while transforming the SPA entry.
-    // The hosted preview has no HMR websocket endpoint, so serve a no-op client
-    // before Vite handles the request. This removes the socket attempt instead
-    // of suppressing its errors after the connection has already failed.
-    app.get("/@vite/client", (_req, res) => {
-      res.type("application/javascript").send(`
-        export const createHotContext = () => ({
-          accept() {},
-          dispose() {},
-          prune() {},
-          invalidate() {},
-          on() {},
-          send() {},
-        });
-        export const updateStyle = () => {};
-        export const removeStyle = () => {};
-      `);
-    });
-    app.get("/@react-refresh", (_req, res) => {
-      res.type("application/javascript").send(`
-        export const performReactRefresh = () => {};
-        export const register = () => {};
-        export const createSignatureFunctionForTransform = () => (type) => type;
-        export const isLikelyComponentType = () => true;
-      `);
-    });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
