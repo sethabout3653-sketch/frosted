@@ -7,15 +7,59 @@
 @keyframes startup-wordmark-in { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) { .startup-splash, .startup-wordmark { animation: none; opacity: 1; transition: none; } }
 
-/* Keep the page viewport fixed while a game is open; the game itself retains input and internal scrolling. */
-body:has(#game-player-wrapper) {
+/* Keep the page viewport fixed while a standard game is open; the game itself retains input and internal scrolling. */
+body:has(#game-player-wrapper:not(.allow-scroll)) {
   overflow: hidden;
 }
 
-#app-root:has(#game-player-wrapper) {
+#app-root:has(#game-player-wrapper:not(.allow-scroll)) {
   height: 100vh;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Allow scrolling on html, body, and app-root for apps like Soundboard */
+html:has(#game-player-wrapper.allow-scroll),
+body:has(#game-player-wrapper.allow-scroll) {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  height: auto !important;
+}
+
+#app-root:has(#game-player-wrapper.allow-scroll) {
+  height: auto !important;
+  min-height: 100vh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+/* Ensure Soundboard player frame container is full size and expansive */
+#game-player-wrapper.allow-scroll #player-frame-container {
+  height: 85vh !important;
+  min-height: 750px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+}
+
+#game-player-wrapper.allow-scroll #player-frame-container > div {
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1 1 0% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Allow scrolling inside iframe on Soundboard */
+#game-player-wrapper.allow-scroll iframe,
+iframe[title*="Soundboard"] {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  flex: 1 1 0% !important;
+  display: block !important;
+  overflow: auto !important;
+  scrollbar-width: auto !important;
 }
 
 /* High-performance rendering optimizations for large game catalogs */

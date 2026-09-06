@@ -10,6 +10,27 @@
     <meta property="og:description" content="A minimal, black-and-white unblocked games portal featuring games from RawGitHack and LuminSDK." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          var saved = localStorage.getItem("frosted_tab_cloak");
+          if (saved) {
+            var parsed = JSON.parse(saved);
+            if (parsed && parsed.title) {
+              document.title = parsed.title;
+            }
+            if (parsed && parsed.icon) {
+              var iconUrl = parsed.icon;
+              var link = document.querySelector("link[rel*='icon']");
+              if (link) {
+                link.type = iconUrl.indexOf("svg") !== -1 ? "image/svg+xml" : (iconUrl.indexOf("png") !== -1 ? "image/png" : "image/x-icon");
+                link.href = iconUrl;
+              }
+            }
+          }
+        } catch(e) {}
+      })();
+    </script>
       <!-- CRITICAL: DO NOT REMOVE/MODIFY THIS COMMENT OR THE SCRIPT BELOW -->
         <!-- BLINK_PICKER_RUNTIME_V2:d74d75e6c99e -->
     <script>(function(){

@@ -7,6 +7,8 @@ import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
 import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
+import SettingsModal from "./components/SettingsModal";
+import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import localZones from "./zones.json";
 
 const SOUNDBOARD_GAME: Game = {
@@ -67,11 +69,11 @@ export default function App() {
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
   const [games, setGames] = useState<Game[]>(() => {
     const catalogPrepared = (localZones as Game[])
-      .filter((g) => g.id !== -1)
+      .filter((g) => g.id !== -1 && g.name !== "-3" && g.id !== 816)
       .map((g) => prepareGame(g, "catalog"));
-    const luminPrepared = getLocalLuminGames().map((g) =>
-      prepareGame(g, "luminsdk")
-    );
+    const luminPrepared = getLocalLuminGames()
+      .filter((g) => g.name !== "-3" && g.id !== 816)
+      .map((g) => prepareGame(g, "luminsdk"));
     const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
     return [SOUNDBOARD_GAME, ...catalog];
   });
@@ -80,6 +82,15 @@ export default function App() {
   const [background, setBackground] = useState<AppBackground>(() => {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    // Automatically restore saved tab cloak on initial mount
+    const saved = getSavedTabCloak();
+    if (saved) {
+      applyTabCloak(saved);
+    }
+  }, []);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setShowStartup(false), 2400);
@@ -109,7 +120,7 @@ export default function App() {
             ? liveGamesResult.value
             : (localZones as Game[])
         )
-          .filter((g) => g.id !== -1)
+          .filter((g) => g.id !== -1 && g.name !== "-3" && g.id !== 816)
           .map((g) => prepareGame(g, "catalog"));
 
         let luminList: Game[] = [];
@@ -206,6 +217,8 @@ export default function App() {
     });
   }, [games, selectedTag, deferredSearch]);
 
+  const isSoundboardActive = currentView === "game" && (selectedGame?.id === "soundboard" || selectedGame?.name?.toLowerCase().includes("soundboard"));
+
   return (
     <>
       <div
@@ -214,7 +227,7 @@ export default function App() {
       >
         <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
-      <div id="app-root" className={`${currentView === "game" || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+      <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -225,11 +238,12 @@ export default function App() {
         tags={tags}
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full flex flex-col min-h-0">
-        <div className={currentView === "game" && selectedGame ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
+      <main className={`flex-1 w-full flex flex-col ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"}`}>
+        <div className={currentView === "game" && selectedGame ? `flex-1 w-full flex flex-col ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"}` : "hidden"}>
           {selectedGame && (
             <GamePlayer
               game={selectedGame}
@@ -291,6 +305,7 @@ export default function App() {
         </footer>
       )}
   <BackgroundEditor background={background} onChange={setBackground} />
+  <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
   </div>
   </>
   );

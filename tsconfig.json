@@ -22,5 +22,22 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/types.ts",
+    "src/utils.ts",
+    "src/lumin.ts",
+    "src/tabCloaks.ts",
+    "src/firebase.ts",
+    "src/components/Header.tsx",
+    "src/components/GameGrid.tsx",
+    "src/components/GameCard.tsx",
+    "src/components/GamePlayer.tsx",
+    "src/components/Chat.tsx",
+    "src/components/BackgroundEditor.tsx",
+    "src/components/SettingsModal.tsx",
+    "server.ts"
+  ]
 }

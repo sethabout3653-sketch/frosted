@@ -59,6 +59,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   const isLuminGame = game.source === "luminsdk";
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
+  const isSoundboard = game.id === "soundboard" || (game.name && game.name.toLowerCase().includes("soundboard"));
 
   // Automatically detect the game's natural aspect ratio based on title, type, and source
   const detectedRatio = useMemo(() => {
@@ -126,6 +127,10 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
 
   // Compute exact sizing style so game automatically fits container without clipping
   const sizingStyle = useMemo(() => {
+    if (isSoundboard) {
+      return { width: "100%", height: "100%" };
+    }
+
     const { width: cW, height: cH } = containerDimensions;
 
     if (fitMode === "fill") {
@@ -163,7 +168,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       maxWidth: "100%",
       maxHeight: "100%",
     };
-  }, [containerDimensions, fitMode, detectedRatio]);
+  }, [containerDimensions, fitMode, detectedRatio, isSoundboard]);
 
   // Focus iframe so keyboard and mouse inputs route immediately to game
   const focusGame = useCallback(() => {
@@ -175,8 +180,17 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     }
   }, []);
 
-  // Keep the page fixed while the game is open; scrolling remains available inside the embedded game.
+  // Keep the page fixed while a standard game is open; allow scrolling on apps like Soundboard.
   useEffect(() => {
+    if (isSoundboard) {
+      document.body.style.overflow = "auto";
+      document.documentElement.style.overflow = "auto";
+      return () => {
+        document.body.style.overflow = "";
+        document.documentElement.style.overflow = "";
+      };
+    }
+
     const previousBodyOverflow = document.body.style.overflow;
     const previousRootOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = "hidden";
@@ -186,7 +200,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousRootOverflow;
     };
-  }, []);
+  }, [isSoundboard]);
 
   // Monitor Fullscreen changes globally to auto-focus the game iframe
   useEffect(() => {
@@ -346,7 +360,11 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   return (
     <div
       id="game-player-wrapper"
-      className={`flex flex-col w-full h-[calc(100vh-5rem)] bg-black overflow-hidden transition-all duration-300 ${
+      className={`flex flex-col w-full bg-black transition-all duration-300 ${
+        isSoundboard
+          ? "allow-scroll min-h-[calc(100vh-5rem)] h-auto overflow-visible pb-10"
+          : "h-[calc(100vh-5rem)] overflow-hidden"
+      } ${
         isTheaterMode ? "p-2" : "px-3 py-2 md:px-6"
       }`}
     >
@@ -409,27 +427,43 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
         ref={containerRef}
         onClick={focusGame}
         onMouseDown={focusGame}
-        className={`relative flex-1 w-full flex items-center justify-center bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 min-h-0 overflow-hidden ${
+        className={`relative w-full bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 ${
           isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
+        } ${
+          isSoundboard
+            ? "h-[85vh] min-h-[750px] md:min-h-[850px] flex flex-col overflow-hidden"
+            : "flex-1 min-h-0 overflow-hidden flex items-center justify-center"
         }`}
       >
         {/* Dynamic Auto-Fit Sizing & Scaling Wrapper */}
         <div
-          className="relative flex items-center justify-center transition-transform duration-150"
-          style={{
-            ...sizingStyle,
-            transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
-            transformOrigin: "center center",
-          }}
+          className={
+            isSoundboard
+              ? "relative w-full h-full flex-1 flex flex-col overflow-hidden"
+              : "relative flex items-center justify-center transition-transform duration-150"
+          }
+          style={
+            isSoundboard
+              ? { width: "100%", height: "100%" }
+              : {
+                  ...sizingStyle,
+                  transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
+                  transformOrigin: "center center",
+                }
+          }
         >
           {/* Embedded Game iframe */}
           {gameUrl && !gameLoadError && (
             <iframe
+              ref={iframeRef}
               src={gameUrl}
               title={`${game.name} game`}
               width="100%"
               height="100%"
-              scrolling="no"
+              className="w-full h-full flex-1 border-0 rounded-2xl"
+              style={{ width: "100%", height: "100%", minHeight: "100%", display: "block" }}
+              scrolling="yes"
+              allow="autoplay; encrypted-media; fullscreen"
             />
           )}
           {gameLoadError && (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, memo } from "react";
-import { Search, Snowflake, MessageSquare } from "lucide-react";
+import { Search, Snowflake, MessageSquare, SlidersHorizontal } from "lucide-react";
 import { formatTagLabel } from "../utils";
 
 interface HeaderProps {
@@ -10,6 +10,7 @@ interface HeaderProps {
   tags: string[];
   onGoHome?: () => void;
   onChatClick?: () => void;
+  onOpenSettings?: () => void;
 }
 
 const Header = memo(function Header({
@@ -20,6 +21,7 @@ const Header = memo(function Header({
   tags,
   onGoHome,
   onChatClick,
+  onOpenSettings,
 }: HeaderProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
 
@@ -101,6 +103,15 @@ const Header = memo(function Header({
             >
               <MessageSquare size={15} className="text-white" />
               <span>Frosted Chat</span>
+            </button>
+            <button
+              id="frosted-settings-btn"
+              onClick={onOpenSettings}
+              className="h-9 w-9 rounded-lg border border-neutral-800 bg-neutral-900/90 hover:bg-neutral-800 text-white transition-all cursor-pointer flex items-center justify-center shadow-sm hover:border-neutral-700 active:scale-95 flex-shrink-0"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <SlidersHorizontal size={16} className="text-white" />
             </button>
           </div>
         </div>
