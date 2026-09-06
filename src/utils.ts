@@ -23,7 +23,7 @@ export function formatCoverUrl(cover: string): string {
 /**
  * Normalizes a game's play URL by replacing placeholders with raw.githack URLs.
  */
-export function formatGameUrl(url: string, useProxy: boolean = false): string {
+export function formatGameUrl(url: string, _useProxy: boolean = false): string {
   if (!url) return "";
   let formattedUrl = url;
   if (formattedUrl.startsWith("http://")) formattedUrl = formattedUrl.replace("http://", "https://");
@@ -31,28 +31,6 @@ export function formatGameUrl(url: string, useProxy: boolean = false): string {
   const rawUrl = formattedUrl
     .replace(/{HTML_URL}/g, HTML_BASE)
     .replace(/{COVER_URL}/g, COVER_BASE);
-
-  // Catalog games are hosted on rawcdn.githack.com. Load them through the
-  // existing server proxy so response headers and cross-origin restrictions do
-  // not prevent the embedded game document from mounting. Keep unknown hosts
-  // direct rather than creating an open proxy.
-  if (useProxy) {
-    try {
-      const parsed = new URL(rawUrl);
-      const allowedHosts = new Set([
-        "myinstants.com",
-        "www.myinstants.com",
-        "raw.githubusercontent.com",
-        "rawcdn.githack.com",
-        "cdn.jsdelivr.net",
-      ]);
-      if (parsed.protocol === "https:" && allowedHosts.has(parsed.hostname)) {
-        return `/api/game-frame?url=${encodeURIComponent(rawUrl)}`;
-      }
-    } catch {
-      // Keep the normalized URL if it is not a valid absolute URL.
-    }
-  }
 
   return rawUrl;
 }
