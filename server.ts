@@ -270,10 +270,26 @@ async function startServer() {
     // before Vite handles the request. This removes the socket attempt instead
     // of suppressing its errors after the connection has already failed.
     app.get("/@vite/client", (_req, res) => {
-      res.type("application/javascript").send("// HMR disabled in hosted preview");
+      res.type("application/javascript").send(`
+        export const createHotContext = () => ({
+          accept() {},
+          dispose() {},
+          prune() {},
+          invalidate() {},
+          on() {},
+          send() {},
+        });
+        export const updateStyle = () => {};
+        export const removeStyle = () => {};
+      `);
     });
     app.get("/@react-refresh", (_req, res) => {
-      res.type("application/javascript").send("// React refresh disabled in hosted preview");
+      res.type("application/javascript").send(`
+        export const performReactRefresh = () => {};
+        export const register = () => {};
+        export const createSignatureFunctionForTransform = () => (type) => type;
+        export const isLikelyComponentType = () => true;
+      `);
     });
     app.use(vite.middlewares);
   } else {
