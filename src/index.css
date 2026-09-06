@@ -85,3 +85,13 @@ body:has(#game-player-wrapper) {
   width: 0 !important;
   height: 0 !important;
 }
+
+/* Suppress Blink badge container */
+#blink-badge-container,
+.badge-container,
+.watermark[href*="blink.new"] {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
