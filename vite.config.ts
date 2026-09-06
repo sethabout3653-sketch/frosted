@@ -10,10 +10,11 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    server: {
-      // This hosted preview is intentionally HTTP-only with live reload disabled.
-      hmr: false,
-      watch: null,
-    },
+      server: {
+    port: 3000,
+    strictPort: true,
+    host: true,
+    allowedHosts: true,
+  },
   };
 });

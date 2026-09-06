@@ -1,11 +1,13 @@
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
+
+// Use the registered Firestore service instead of initializeFirestore. The
+// latter can run before Firebase's Firestore component registration in Vite's
+// dependency optimizer, which causes the app to crash during module load.
+export const db = getFirestore(app);
 
 export enum OperationType {
   CREATE = 'create',
