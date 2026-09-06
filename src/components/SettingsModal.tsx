@@ -135,7 +135,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               </div>
               <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-t-lg border-t border-x border-neutral-700 bg-neutral-800/90 text-xs font-medium text-white max-w-full sm:max-w-xs shadow-sm">
                 <img
-                  src={activeCloak.icon}
+                  src={activeCloak.id === "chrome_newtab" ? "/cloaks/chrome_newtab_dark.svg" : activeCloak.icon}
                   alt="Tab Icon"
                   className="w-4 h-4 object-contain flex-shrink-0"
                   referrerPolicy="no-referrer"
@@ -176,7 +176,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     {/* Real Official Image with Transparent Background */}
                     <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-transparent flex-shrink-0 transition-transform group-hover:scale-110">
                       <img
-                        src={cloak.iconUrl}
+                        src={cloak.id === "chrome_newtab" ? "/cloaks/chrome_newtab_dark.svg" : cloak.iconUrl}
                         alt={cloak.name}
                         className="w-7 h-7 object-contain drop-shadow-sm"
                         loading="eager"

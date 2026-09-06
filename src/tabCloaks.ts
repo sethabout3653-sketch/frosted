@@ -164,36 +164,90 @@ export interface ActiveCloakState {
   icon: string;
 }
 
+// Global theme change listener handler
+let themeListenerAttached = false;
+
+function setupThemeListener() {
+  if (typeof window === "undefined" || themeListenerAttached) return;
+  themeListenerAttached = true;
+
+  try {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => {
+      const saved = getSavedTabCloak();
+      if (saved && saved.id === "chrome_newtab") {
+        applyTabCloak(saved);
+      }
+    };
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", handler);
+    } else if ((mediaQuery as any).addListener) {
+      (mediaQuery as any).addListener(handler);
+    }
+  } catch (err) {
+    console.debug("Theme listener init error:", err);
+  }
+}
+
 export function applyTabCloak(cloak: { id: string; title: string; icon: string }): void {
   try {
+    setupThemeListener();
+
     // 1. Update Document Title
     document.title = cloak.title || "frosted";
 
-    // 2. Resolve icon URL
-    const iconHref = cloak.icon || "/favicon.svg";
+    // 2. Resolve icon URL based on browser color / theme
+    let iconHref = cloak.icon || "/favicon.svg";
 
-    // Check for existing link icons
-    let iconLink = document.querySelector<HTMLLinkElement>("link[rel~='icon']");
-    if (!iconLink) {
-      iconLink = document.createElement("link");
-      iconLink.rel = "icon";
-      document.head.appendChild(iconLink);
+    const isDarkTheme = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+    // If Chrome New Tab, adapt directly to dark or light browser theme
+    if (cloak.id === "chrome_newtab") {
+      iconHref = isDarkTheme ? "/cloaks/chrome_newtab_dark.svg" : "/cloaks/chrome_newtab_light.svg";
     }
+
+    // 3. Remove previous icon links to force Chrome/browser tab cache refresh
+    const existingLinks = document.querySelectorAll<HTMLLinkElement>("link[rel~='icon'], link[rel='shortcut icon']");
+    existingLinks.forEach((el) => el.remove());
 
     const isSvg = iconHref.includes(".svg") || iconHref.startsWith("data:image/svg");
     const isPng = iconHref.includes(".png") || iconHref.startsWith("data:image/png");
-    iconLink.type = isSvg ? "image/svg+xml" : isPng ? "image/png" : "image/x-icon";
-    iconLink.href = iconHref;
+    const mimeType = isSvg ? "image/svg+xml" : isPng ? "image/png" : "image/x-icon";
 
-    // Shortcut icon for Chromium and Edge
-    let shortcutLink = document.querySelector<HTMLLinkElement>("link[rel='shortcut icon']");
-    if (!shortcutLink) {
-      shortcutLink = document.createElement("link");
+    if (cloak.id === "chrome_newtab") {
+      // Add responsive media-query icon tags
+      const darkLink = document.createElement("link");
+      darkLink.rel = "icon";
+      darkLink.type = "image/svg+xml";
+      darkLink.media = "(prefers-color-scheme: dark)";
+      darkLink.href = "/cloaks/chrome_newtab_dark.svg";
+      document.head.appendChild(darkLink);
+
+      const lightLink = document.createElement("link");
+      lightLink.rel = "icon";
+      lightLink.type = "image/svg+xml";
+      lightLink.media = "(prefers-color-scheme: light)";
+      lightLink.href = "/cloaks/chrome_newtab_light.svg";
+      document.head.appendChild(lightLink);
+
+      const shortcutLink = document.createElement("link");
       shortcutLink.rel = "shortcut icon";
+      shortcutLink.type = "image/svg+xml";
+      shortcutLink.href = isDarkTheme ? "/cloaks/chrome_newtab_dark.svg" : "/cloaks/chrome_newtab_light.svg";
+      document.head.appendChild(shortcutLink);
+    } else {
+      const iconLink = document.createElement("link");
+      iconLink.rel = "icon";
+      iconLink.type = mimeType;
+      iconLink.href = iconHref;
+      document.head.appendChild(iconLink);
+
+      const shortcutLink = document.createElement("link");
+      shortcutLink.rel = "shortcut icon";
+      shortcutLink.type = mimeType;
+      shortcutLink.href = iconHref;
       document.head.appendChild(shortcutLink);
     }
-    shortcutLink.type = iconLink.type;
-    shortcutLink.href = iconHref;
 
     // Persist to local storage
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloak));

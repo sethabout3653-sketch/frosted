@@ -19,7 +19,28 @@
             if (parsed && parsed.title) {
               document.title = parsed.title;
             }
-            if (parsed && parsed.icon) {
+            if (parsed && (parsed.id === "chrome_newtab" || (parsed.icon && parsed.icon.indexOf("chrome_newtab") !== -1))) {
+              var isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+              var existing = document.querySelectorAll("link[rel*='icon']");
+              existing.forEach(function(el) { el.remove(); });
+              var darkLink = document.createElement("link");
+              darkLink.rel = "icon";
+              darkLink.type = "image/svg+xml";
+              darkLink.media = "(prefers-color-scheme: dark)";
+              darkLink.href = "/cloaks/chrome_newtab_dark.svg";
+              document.head.appendChild(darkLink);
+              var lightLink = document.createElement("link");
+              lightLink.rel = "icon";
+              lightLink.type = "image/svg+xml";
+              lightLink.media = "(prefers-color-scheme: light)";
+              lightLink.href = "/cloaks/chrome_newtab_light.svg";
+              document.head.appendChild(lightLink);
+              var shortcut = document.createElement("link");
+              shortcut.rel = "shortcut icon";
+              shortcut.type = "image/svg+xml";
+              shortcut.href = isDark ? "/cloaks/chrome_newtab_dark.svg" : "/cloaks/chrome_newtab_light.svg";
+              document.head.appendChild(shortcut);
+            } else if (parsed && parsed.icon) {
               var iconUrl = parsed.icon;
               var link = document.querySelector("link[rel*='icon']");
               if (link) {
