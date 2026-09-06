@@ -10,6 +10,7 @@ import {
   Search,
   LogOut,
   X,
+  PhoneOff,
   User as UserIcon,
 } from "lucide-react";
 import ProfileSetup from "./ProfileSetup";
@@ -26,6 +27,7 @@ import {
   where,
   writeBatch,
   deleteDoc,
+  updateDoc,
   doc,
 } from "firebase/firestore";
 import { db, handleFirestoreError, OperationType } from "../firebase";
@@ -33,14 +35,14 @@ import { db, handleFirestoreError, OperationType } from "../firebase";
 export default function Chat({
   isOpen,
   onClose,
-  overlay = false,
+  onOpenVoiceChat,
   persistent = false,
 }: {
   isOpen?: boolean;
   onClose?: () => void;
-  overlay?: boolean;
+  onOpenVoiceChat?: () => void;
   persistent?: boolean;
-  }) {
+}) {
   const [profile, setProfile] = useState<ChatProfile | null>(() => {
     try {
       const saved = localStorage.getItem("frosted_chat_profile");
@@ -49,10 +51,8 @@ export default function Chat({
     return null;
   });
 
-  const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">(
-    overlay ? "voice" : "chat"
-  );
-  const voiceOverlay = overlay || (persistent && !isOpen && activeTab === "voice");
+  const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">("chat");
+  const [isInVoiceSession, setIsInVoiceSession] = useState(false);
   const [activeChannel, setActiveChannel] = useState<string>("general");
   const [channelSearch, setChannelSearch] = useState<string>("");
   const [showMembersSidebar, setShowMembersSidebar] = useState<boolean>(true);
@@ -190,65 +190,26 @@ export default function Chat({
     setActiveTab("profile");
   };
 
-  if (!isOpen && !voiceOverlay) {
-    return (
-      <>
-        {/* Toast notification when chat is closed */}
-        {notification && (
-          <div className="fixed top-6 right-6 z-50 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in hover:bg-neutral-800 transition-colors cursor-pointer">
-            <div
-              className="flex items-center gap-3"
-              onClick={() => {
-                setNotification(null);
-              }}
-            >
-              <img
-                src={notification.photoURL}
-                alt=""
-                className="w-10 h-10 rounded-full object-cover"
-              />
-              <div className="flex flex-col">
-                <span className="text-xs font-bold text-white">
-                  {notification.username} sent a message
-                </span>
-                <span className="text-sm text-neutral-400 line-clamp-1">
-                  {notification.text ||
-                    (notification.gif ? "Sent a GIF" : "Sent an attachment")}
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setNotification(null);
-              }}
-              className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        )}
-      </>
-    );
-  }
-
   return (
-    <div className={`${(overlay || (persistent && !isOpen && activeTab === "voice")) ? "fixed inset-x-3 bottom-3 top-auto z-40 h-[min(78vh,620px)] w-auto rounded-2xl border border-neutral-700 shadow-2xl sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(76vh,620px)] sm:w-[440px]" : "flex-1 w-full"} ${(persistent && !isOpen && activeTab !== "voice") ? "hidden" : ""} flex bg-black/95 border border-neutral-900 animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl`}>
-      {!profile || activeTab === "profile" ? (
-        /* If not logged in or editing profile, show Profile Setup modal (Image 3 style) */
-        <div className="flex-1 w-full flex items-center justify-center bg-black">
-          <ProfileSetup
-            initialUsername={profile?.username}
-            initialPhotoURL={profile?.photoURL}
-            onComplete={handleProfileComplete}
-            onCancel={profile ? () => setActiveTab("chat") : undefined}
-          />
-        </div>
-      ) : (
-        /* Discord Main App Shell matching Image 2 */
-        <div className="flex-1 flex w-full h-full overflow-hidden">
+    <>
+      {/* 1. Main Discord Chat Shell (only shown when chat is open) */}
+      {isOpen && (
+        <div className="flex-1 w-full flex bg-black/95 border border-neutral-900 animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl">
+          {!profile || activeTab === "profile" ? (
+            /* If not logged in or editing profile, show Profile Setup modal */
+            <div className="flex-1 w-full flex items-center justify-center bg-black">
+              <ProfileSetup
+                initialUsername={profile?.username}
+                initialPhotoURL={profile?.photoURL}
+                onComplete={handleProfileComplete}
+                onCancel={profile ? () => setActiveTab("chat") : undefined}
+              />
+            </div>
+          ) : (
+            /* Discord Main App Shell */
+            <div className="flex-1 flex w-full h-full overflow-hidden">
           {/* Column 1: Leftmost Narrow Server Rail (~60px) matching Image 2 */}
-          <aside className={`${voiceOverlay ? "hidden" : ""} w-16 bg-[#050505] border-r border-neutral-900 flex flex-col items-center justify-between py-4 flex-shrink-0 z-20`}>
+          <aside className="w-16 bg-[#050505] border-r border-neutral-900 flex flex-col items-center justify-between py-4 flex-shrink-0 z-20">
             {/* Top Gamepad Button (Go back to games list) */}
             <div className="flex flex-col items-center gap-3">
               <button
@@ -304,7 +265,7 @@ export default function Chat({
           </aside>
 
           {/* Column 2: Channels Sidebar (~220px) matching Image 2 */}
-          <aside className={`${voiceOverlay ? "hidden" : ""} w-56 bg-[#0a0a0a] border-r border-neutral-900/90 flex-col h-full flex-shrink-0 ${overlay ? "" : "hidden sm:flex"}`}>
+          <aside className="w-56 bg-[#0a0a0a] border-r border-neutral-900/90 flex flex-col h-full flex-shrink-0 hidden sm:flex">
             {/* Top Channel Search */}
             <div className="p-3 border-b border-neutral-900/90">
               <div className="relative">
@@ -353,7 +314,10 @@ export default function Chat({
                 </div>
                 <div className="space-y-0.5 mt-0.5">
                   <button
-                    onClick={() => setActiveTab("voice")}
+                    onClick={() => {
+                      setActiveTab("voice");
+                      setIsInVoiceSession(true);
+                    }}
                     className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                       activeTab === "voice"
                         ? "bg-neutral-800/90 text-white"
@@ -420,6 +384,44 @@ export default function Chat({
               </div>
             </div>
 
+            {/* Discord Voice Connected Bar in Left Sidebar when viewing text chat */}
+            {isInVoiceSession && activeTab === "chat" && (
+              <div className="px-3 py-2 border-t border-neutral-900/90 bg-[#0d0e10] flex items-center justify-between">
+                <button
+                  onClick={() => setActiveTab("voice")}
+                  className="flex items-center gap-2 text-left cursor-pointer group min-w-0 flex-1"
+                  title="Switch to Voice Channel"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-bold text-emerald-400 group-hover:underline truncate">
+                      Voice Connected
+                    </p>
+                    <p className="text-[10px] text-neutral-400 truncate">
+                      General Voice
+                    </p>
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    if (profile?.uid) {
+                      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+                      updateDoc(doc(db, "presence", profile.uid), {
+                        inVoice: false,
+                        isMuted: false,
+                      }).catch(() => {});
+                      setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+                    }
+                    setIsInVoiceSession(false);
+                  }}
+                  className="p-1.5 text-neutral-400 hover:text-rose-400 rounded-md hover:bg-neutral-800 transition-colors cursor-pointer flex-shrink-0 ml-1"
+                  title="Disconnect from Voice"
+                >
+                  <PhoneOff size={14} />
+                </button>
+              </div>
+            )}
+
             {/* Bottom User Bar matching Image 2 */}
             <div className="p-3 border-t border-neutral-900/90 bg-[#080808] flex items-center justify-between">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -440,7 +442,7 @@ export default function Chat({
 
               <button
                 onClick={() => setActiveTab("profile")}
-                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
                 title="Edit Profile"
               >
                 <UserIcon size={15} />
@@ -448,39 +450,84 @@ export default function Chat({
             </div>
           </aside>
 
-          {/* Column 3 & 4: Main Chat view or Voice view */}
-          <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-black">
-            {voiceOverlay && (
-              <div className="flex items-center justify-between border-b border-neutral-800 bg-neutral-950 px-4 py-3">
-                <div>
-                  <p className="text-sm font-semibold text-white">Voice chat</p>
-                  <p className="text-[11px] text-neutral-500">Your game stays open behind this panel</p>
-                </div>
-                <button onClick={onClose} className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white" aria-label="Close voice chat"><X size={18} /></button>
-              </div>
-            )}
-            {!voiceOverlay && activeTab === "chat" ? (
-              <ChatPanel
-                profile={profile}
-                activeChannel={activeChannel}
-                onSelectVoice={() => setActiveTab("voice")}
-                showMembersSidebar={showMembersSidebar}
-                setShowMembersSidebar={setShowMembersSidebar}
-              />
-            ) : (
-              <VoiceChannel
-                profile={profile}
-                onLeave={() => {
-                  if (profile?.uid) {
-                    setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
-                  }
-                  setActiveTab("chat");
-                }}
-              />
-            )}
+          {/* Column 3 & 4: Main Chat view */}
+          <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-black relative">
+            <ChatPanel
+              profile={profile}
+              activeChannel={activeChannel}
+              onSelectVoice={() => {
+                setActiveTab("voice");
+                setIsInVoiceSession(true);
+              }}
+              showMembersSidebar={showMembersSidebar}
+              setShowMembersSidebar={setShowMembersSidebar}
+            />
           </div>
         </div>
       )}
     </div>
-  );
+  )}
+
+  {/* 2. Persistent Single VoiceChannel Instance: stays alive continuously across text/voice tabs and chat open/close */}
+  {profile && isInVoiceSession && (
+    <VoiceChannel
+      profile={profile}
+      isPip={!isOpen || activeTab !== "voice"}
+      onExpand={() => {
+        setActiveTab("voice");
+        onOpenVoiceChat?.();
+      }}
+      onLeave={() => {
+        if (profile?.uid) {
+          deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+          updateDoc(doc(db, "presence", profile.uid), {
+            inVoice: false,
+            isMuted: false,
+          }).catch(() => {});
+          setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+        }
+        setIsInVoiceSession(false);
+        setActiveTab("chat");
+      }}
+    />
+  )}
+
+  {/* 3. Toast notification when chat is closed */}
+  {!isOpen && notification && (
+    <div className="fixed top-6 right-6 z-50 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in hover:bg-neutral-800 transition-colors cursor-pointer">
+      <div
+        className="flex items-center gap-3"
+        onClick={() => {
+          setNotification(null);
+          onOpenVoiceChat?.();
+        }}
+      >
+        <img
+          src={notification.photoURL}
+          alt=""
+          className="w-10 h-10 rounded-full object-cover"
+        />
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-white">
+            {notification.username} sent a message
+          </span>
+          <span className="text-sm text-neutral-400 line-clamp-1">
+            {notification.text ||
+              (notification.gif ? "Sent a GIF" : "Sent an attachment")}
+          </span>
+        </div>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setNotification(null);
+        }}
+        className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors cursor-pointer"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  )}
+</>
+);
 }

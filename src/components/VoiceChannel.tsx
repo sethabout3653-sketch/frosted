@@ -15,6 +15,7 @@ import {
   X,
   Sparkles,
   Loader2,
+  Maximize2,
 } from "lucide-react";
 import {
   collection,
@@ -34,6 +35,8 @@ import { ChatProfile, VoiceSignal } from "../types";
 interface VoiceChannelProps {
   profile: ChatProfile;
   onLeave: () => void;
+  isPip?: boolean;
+  onExpand?: () => void;
 }
 
 interface Participant extends ChatProfile {
@@ -70,7 +73,12 @@ function optimizeAudioSdp(sdp: string): string {
   return lines.join("\r\n");
 }
 
-export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
+export default function VoiceChannel({
+  profile,
+  onLeave,
+  isPip = false,
+  onExpand,
+}: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isCameraLoading, setIsCameraLoading] = useState(false);
@@ -955,7 +963,15 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     // 3. Immediately stop local media tracks and release hardware
     stopAllMediaTracks();
 
-    // 4. Notify parent to update view immediately
+    // 4. Close all active WebRTC peer connections
+    for (const peerId in peersRef.current) {
+      try {
+        peersRef.current[peerId]?.close();
+      } catch {}
+    }
+    peersRef.current = {};
+
+    // 5. Notify parent to update view immediately
     onLeave();
   };
 
@@ -979,20 +995,238 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
     );
   }
 
+  const activeRemoteWithVideo = participants.find((p) => p.isVideoOn);
+  const anyVideoOn = !!activeRemoteWithVideo || isVideoOn;
+
   return (
-    <div className="flex-1 flex flex-col h-full w-full bg-black text-white min-h-0 overflow-hidden">
-      {/* Top Header Bar */}
-      <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-sm font-extrabold text-emerald-400 tracking-wide">
-            Voice Connected
-          </span>
-        </div>
-        <span className="text-sm font-semibold text-neutral-400">
-          General Voice ({participants.length + 1})
-        </span>
+    <>
+      {/* Hidden persistent audio playback elements for all remote peers (never unmounted on view mode toggle) */}
+      <div className="hidden" aria-hidden="true">
+        {participants.map((p) => (
+          <audio
+            key={`audio-playback-${p.uid}`}
+            ref={(el) => {
+              remoteAudioRefs.current[p.uid] = el;
+              const remoteStream = remoteStreamsRef.current[p.uid];
+              if (el && remoteStream && el.srcObject !== remoteStream) {
+                el.srcObject = remoteStream;
+                el.play().catch(() => {});
+              }
+            }}
+            autoPlay
+            playsInline
+          />
+        ))}
       </div>
+
+      {isPip ? (
+        <div
+          id="discord-voice-pip"
+          className="fixed bottom-4 right-4 z-50 flex flex-col bg-[#111214] border border-[#2b2d31] rounded-2xl shadow-2xl overflow-hidden backdrop-blur-xl animate-in fade-in slide-in-from-bottom-3 duration-200"
+          style={{ width: anyVideoOn ? "320px" : "280px" }}
+        >
+          {/* Top Header Bar */}
+          <div className="h-9 px-3 bg-[#1e1f22] border-b border-[#2b2d31] flex items-center justify-between">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
+              <span className="text-[11px] font-bold text-emerald-400 tracking-wide truncate">
+                Voice Connected
+              </span>
+              <span className="text-[10px] text-neutral-400 truncate">
+                • General
+              </span>
+            </div>
+            {onExpand && (
+              <button
+                onClick={onExpand}
+                className="p-1 text-neutral-400 hover:text-white rounded hover:bg-[#313338] transition-colors cursor-pointer"
+                title="Return to Voice Channel"
+              >
+                <Maximize2 size={13} />
+              </button>
+            )}
+          </div>
+
+        {/* Video or Avatar Display */}
+        {anyVideoOn ? (
+          <div className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center">
+            {activeRemoteWithVideo ? (
+              <>
+                <video
+                  ref={(el) => {
+                    remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                    const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                    if (el && stream && el.srcObject !== stream) {
+                      el.srcObject = stream;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white truncate max-w-[140px]">
+                  {activeRemoteWithVideo.username}
+                </div>
+                {isVideoOn && (
+                  <div className="absolute top-2 right-2 w-20 aspect-video rounded-md overflow-hidden border border-neutral-700 shadow-md bg-black">
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                          el.srcObject = videoStreamRef.current;
+                          el.play().catch(() => {});
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover transform -scale-x-100"
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <video
+                  ref={(el) => {
+                    localVideoRef.current = el;
+                    if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                      el.srcObject = videoStreamRef.current;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform -scale-x-100"
+                />
+                <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white">
+                  You
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="p-3 bg-[#111214] flex items-center justify-center gap-2.5">
+            <div className="flex flex-col items-center gap-1">
+              <div className="relative">
+                <img
+                  src={profile.photoURL}
+                  alt={profile.username}
+                  className={`w-10 h-10 rounded-full object-cover border-2 transition-all ${
+                    audioLevel > 5 && !isMuted
+                      ? "border-emerald-400 ring-2 ring-emerald-500/30 scale-105"
+                      : "border-[#2b2d31]"
+                  }`}
+                />
+                {isMuted && (
+                  <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
+                    <MicOff size={10} />
+                  </div>
+                )}
+              </div>
+              <span className="text-[10px] font-medium text-neutral-300 truncate max-w-[60px]">
+                You
+              </span>
+            </div>
+
+            {participants.slice(0, 3).map((p) => (
+              <div key={p.uid} className="flex flex-col items-center gap-1">
+                <div className="relative">
+                  <img
+                    src={p.photoURL}
+                    alt={p.username}
+                    className="w-10 h-10 rounded-full object-cover border-2 border-[#2b2d31]"
+                  />
+                  {p.isMuted && (
+                    <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
+                      <MicOff size={10} />
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] font-medium text-neutral-300 truncate max-w-[60px]">
+                  {p.username}
+                </span>
+              </div>
+            ))}
+            {participants.length > 3 && (
+              <span className="text-[10px] text-neutral-400 font-bold self-center">
+                +{participants.length - 3}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Discord Controls Bar */}
+        <div className="px-3 py-2 bg-[#1e1f22] border-t border-[#2b2d31] flex items-center justify-center gap-2">
+          <button
+            onClick={toggleMute}
+            className={`p-2 rounded-xl transition-all cursor-pointer ${
+              isMuted
+                ? "bg-red-600/20 text-red-500 border border-red-800/80 hover:bg-red-600/30"
+                : "bg-[#2b2d31] text-white hover:bg-[#35373c]"
+            }`}
+            title={isMuted ? "Unmute" : "Mute"}
+          >
+            {isMuted ? <MicOff size={14} /> : <Mic size={14} />}
+          </button>
+
+          <button
+            onClick={toggleVideo}
+            disabled={isCameraLoading}
+            className={`p-2 rounded-xl transition-all cursor-pointer ${
+              isCameraLoading
+                ? "bg-[#2b2d31] text-cyan-400 animate-pulse cursor-wait"
+                : isVideoOn
+                ? "bg-white text-black font-bold"
+                : "bg-[#2b2d31] text-white hover:bg-[#35373c]"
+            }`}
+            title={isVideoOn ? "Turn off camera" : "Turn on camera"}
+          >
+            {isCameraLoading ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : isVideoOn ? (
+              <Video size={14} />
+            ) : (
+              <VideoOff size={14} />
+            )}
+          </button>
+
+          <button
+            onClick={handleLeave}
+            className="p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white transition-all cursor-pointer active:scale-95"
+            title="Disconnect"
+          >
+            <PhoneOff size={14} />
+          </button>
+        </div>
+      </div>
+    ) : (
+      <div className="fixed inset-y-0 right-0 left-16 sm:left-72 z-30 flex flex-col bg-black text-white min-h-0 overflow-hidden">
+        {/* Top Header Bar */}
+        <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-sm font-extrabold text-emerald-400 tracking-wide">
+              Voice Connected
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-neutral-400 hidden sm:inline">
+              General Voice ({participants.length + 1})
+            </span>
+            <button
+              onClick={handleLeave}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow active:scale-95"
+              title="Disconnect from Voice"
+            >
+              <PhoneOff size={14} />
+              <span>Disconnect</span>
+            </button>
+          </div>
+        </div>
 
       {/* Optional Notification Toast */}
       {cameraNotice && (
@@ -1128,20 +1362,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               key={p.uid}
               className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
             >
-              {/* Dedicated persistent Audio element for voice playback */}
-              <audio
-                ref={(el) => {
-                  remoteAudioRefs.current[p.uid] = el;
-                  if (el && stream && el.srcObject !== stream) {
-                    el.srcObject = stream;
-                    el.play().catch(() => {});
-                  }
-                }}
-                autoPlay
-                playsInline
-              />
-
-
               {/* Volume Slider for Remote User */}
               <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <Volume2 size={12} className="text-neutral-400" />
@@ -1296,5 +1516,7 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
         </button>
       </div>
     </div>
+    )}
+  </>
   );
 }

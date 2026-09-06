@@ -77,7 +77,6 @@ export default function App() {
   });
   const [loadingLive, setLoadingLive] = useState(true);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
-  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
   const [background, setBackground] = useState<AppBackground>(() => {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
@@ -235,7 +234,6 @@ export default function App() {
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
-              onVoiceChat={() => setVoiceOverlayOpen(true)}
             />
           )}
         </div>
@@ -266,14 +264,8 @@ export default function App() {
         <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : ""}>
           <Chat
             isOpen={currentView === "chat"}
-            overlay={voiceOverlayOpen}
-            onClose={() => {
-              if (voiceOverlayOpen) {
-                setVoiceOverlayOpen(false);
-              } else {
-                handleBackToHub();
-              }
-            }}
+            onClose={handleBackToHub}
+            onOpenVoiceChat={() => setCurrentView("chat")}
             persistent
           />
         </div>
