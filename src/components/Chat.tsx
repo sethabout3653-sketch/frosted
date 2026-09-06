@@ -22,6 +22,7 @@ import {
   orderBy,
   limit,
   getDocs,
+  onSnapshot,
   where,
   writeBatch,
   deleteDoc,
@@ -72,20 +73,18 @@ export default function Chat({
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
 
-  // Poll voice presence over normal HTTPS instead of opening a realtime socket.
+  // Real-time listener for voice users
   useEffect(() => {
-    let cancelled = false;
-    const loadVoiceUsers = async () => {
-      try {
-        const snapshot = await getDocs(collection(db, "voice_users"));
-        if (!cancelled) setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
-      } catch {
-        if (!cancelled) setVoiceUsers([]);
+    const unsubscribe = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
+      },
+      (error) => {
+        console.warn("Chat voice_users listener error:", error);
       }
-    };
-    loadVoiceUsers();
-    const interval = window.setInterval(loadVoiceUsers, 10000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    );
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -96,25 +95,36 @@ export default function Chat({
     profileRef.current = profile;
   }, [profile]);
 
-  // Global message listener for notifications
+  // Real-time message listener for instant audio & toast notifications
   useEffect(() => {
     const q = query(
       collection(db, "messages"),
       orderBy("timestamp", "desc"),
       limit(1)
     );
-    let cancelled = false;
-    let lastMessageId: string | null = null;
-    const checkForMessage = async () => {
-      try {
-        const snapshot = await getDocs(q);
+    let initialLoad = true;
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (snapshot.empty) return;
         const newest = snapshot.docs[0];
-        if (!newest || cancelled || newest.id === lastMessageId) return;
-        lastMessageId = newest.id;
         const msg = { id: newest.id, ...newest.data() } as ChatMessage;
+
+        // Skip notifying on initial mount/page load
+        if (initialLoad) {
+          initialLoad = false;
+          return;
+        }
+
         if (msg.timestamp < sessionStartRef.current) return;
         const currentProfile = profileRef.current;
-        const isMe = currentProfile && (msg.uid === currentProfile.uid || (msg.username === currentProfile.username && msg.photoURL === currentProfile.photoURL));
+        const isMe =
+          currentProfile &&
+          (msg.uid === currentProfile.uid ||
+            (msg.username === currentProfile.username &&
+              msg.photoURL === currentProfile.photoURL));
+
         if (!isMe) {
           messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
           messageSoundRef.current.currentTime = 0;
@@ -125,11 +135,13 @@ export default function Chat({
             setTimeout(() => setNotification(null), 4000);
           }
         }
-      } catch {}
-    };
-    checkForMessage();
-    const interval = window.setInterval(checkForMessage, 5000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+      },
+      (error) => {
+        console.warn("Chat notifications listener error:", error);
+      }
+    );
+
+    return () => unsubscribe();
   }, []);
 
   const handleProfileComplete = async (p: {
@@ -178,7 +190,7 @@ export default function Chat({
     setActiveTab("profile");
   };
 
-  if (!isOpen) {
+  if (!isOpen && !voiceOverlay) {
     return (
       <>
         {/* Toast notification when chat is closed */}
@@ -458,7 +470,12 @@ export default function Chat({
             ) : (
               <VoiceChannel
                 profile={profile}
-                onLeave={() => setActiveTab("chat")}
+                onLeave={() => {
+                  if (profile?.uid) {
+                    setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+                  }
+                  setActiveTab("chat");
+                }}
               />
             )}
           </div>

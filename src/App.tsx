@@ -263,12 +263,20 @@ export default function App() {
           </section>
         </div>
 
-        <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : "hidden"}>
-          <Chat isOpen={currentView === "chat"} onClose={handleBackToHub} persistent />
+        <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : ""}>
+          <Chat
+            isOpen={currentView === "chat"}
+            overlay={voiceOverlayOpen}
+            onClose={() => {
+              if (voiceOverlayOpen) {
+                setVoiceOverlayOpen(false);
+              } else {
+                handleBackToHub();
+              }
+            }}
+            persistent
+          />
         </div>
-        {currentView !== "chat" && (
-          <Chat isOpen={false} onClose={() => {}} persistent />
-        )}
       </main>
 
       {/* Footer Branding Area (Home view only) */}

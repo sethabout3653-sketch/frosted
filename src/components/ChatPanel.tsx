@@ -5,6 +5,7 @@ import {
   orderBy,
   limit,
   getDocs,
+  onSnapshot,
   addDoc,
   deleteDoc,
   doc,
@@ -63,19 +64,24 @@ export default function ChatPanel({
   const [attachment, setAttachment] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Poll presence over HTTPS rather than opening Firestore realtime sockets.
+  // Real-time listener for voice users
   useEffect(() => {
-    let cancelled = false;
-    const loadVoiceUsers = async () => {
-      try {
-        const snapshot = await getDocs(collection(db, "voice_users"));
-        if (!cancelled) setActiveVoiceUsers(Object.fromEntries(snapshot.docs.map((d) => [d.id, d.data() as any])));
-      } catch { if (!cancelled) setActiveVoiceUsers({}); }
-    };
-    loadVoiceUsers();
-    const interval = window.setInterval(loadVoiceUsers, 10000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    const unsub = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setActiveVoiceUsers(
+          Object.fromEntries(
+            snapshot.docs.map((d) => [d.id, d.data() as any])
+          )
+        );
+      },
+      (error) => {
+        console.warn("ChatPanel voice_users listener error:", error);
+      }
+    );
+    return () => unsub();
   }, []);
 
   // Presence & Left Website tracking
@@ -136,14 +142,12 @@ export default function ChatPanel({
     };
   }, [profile]);
 
-  // Poll member presence over normal HTTPS.
+  // Real-time member presence listener
   useEffect(() => {
     const q = query(collection(db, "presence"), limit(40));
-    let cancelled = false;
-    const loadPresence = async () => {
-      try {
-        const snapshot = await getDocs(q);
-        if (cancelled) return;
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
         const users: MemberUser[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as MemberUser;
@@ -170,16 +174,15 @@ export default function ChatPanel({
         }
 
         setMemberUsers(users);
-      } catch {
-        if (!cancelled) setMemberUsers([{ uid: profile.uid, username: profile.username, photoURL: profile.photoURL, status: "online", lastSeen: Date.now() }]);
+      },
+      (error) => {
+        console.warn("ChatPanel presence listener error:", error);
       }
-    };
-    loadPresence();
-    const interval = window.setInterval(loadPresence, 10000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    );
+    return () => unsub();
   }, [profile]);
 
-  // Subscribe to messages
+  // Real-time message subscription with instant local rendering
   useEffect(() => {
     const q = query(
       collection(db, "messages"),
@@ -187,24 +190,37 @@ export default function ChatPanel({
       limit(50)
     );
 
-    let cancelled = false;
-    const loadMessages = async () => {
-      try {
-        const snapshot = await getDocs(q);
-        if (cancelled) return;
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
         const newMessages: ChatMessage[] = [];
         snapshot.forEach((docSnap) => {
           newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
         });
-        setMessages(newMessages.reverse());
-        window.setTimeout(() => scrollToBottom(), 100);
-      } catch (error) {
+        const reversed = newMessages.reverse();
+
+        setMessages((prev) => {
+          // Keep any local optimistic messages that haven't arrived in the snapshot yet
+          const pending = prev.filter(
+            (m) =>
+              m.id.startsWith("temp_") &&
+              !reversed.some(
+                (sm) =>
+                  sm.uid === m.uid &&
+                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
+                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
+              )
+          );
+          return [...reversed, ...pending];
+        });
+        window.setTimeout(() => scrollToBottom(), 50);
+      },
+      (error) => {
         handleFirestoreError(error, OperationType.LIST, "messages");
       }
-    };
-    loadMessages();
-    const interval = window.setInterval(loadMessages, 5000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    );
+
+    return () => unsubscribe();
   }, []);
 
   const scrollToBottom = () => {
@@ -213,45 +229,84 @@ export default function ChatPanel({
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!text.trim() && !attachment) return;
+    const currentText = text.trim();
+    const currentAttachment = attachment;
+    if (!currentText && !currentAttachment) return;
+
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show message immediately on sender's screen (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      uid: profile.uid,
+      username: profile.username,
+      photoURL: profile.photoURL || "",
+      timestamp: now,
+      ...(currentText ? { text: currentText } : {}),
+      ...(currentAttachment ? { attachment: currentAttachment } : {}),
+    };
+
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setText("");
+    setAttachment(null);
+    inputRef.current?.focus();
+    window.setTimeout(() => scrollToBottom(), 10);
 
     try {
       const msgData: Record<string, any> = {
         uid: profile.uid,
         username: profile.username,
         photoURL: profile.photoURL || "",
-        timestamp: Date.now(),
+        timestamp: now,
       };
 
-      if (text.trim()) {
-        msgData.text = text.trim();
+      if (currentText) {
+        msgData.text = currentText;
       }
-      if (attachment) {
-        msgData.attachment = attachment;
+      if (currentAttachment) {
+        msgData.attachment = currentAttachment;
       }
 
       await addDoc(collection(db, "messages"), msgData);
-      setText("");
-      setAttachment(null);
     } catch (error) {
+      // Revert optimistic message if writing failed
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
   const handleSendGif = async (gifUrl: string) => {
+    if (!gifUrl) return;
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show GIF immediately (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      uid: profile.uid,
+      username: profile.username,
+      photoURL: profile.photoURL || "",
+      gif: gifUrl,
+      timestamp: now,
+    };
+
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setShowGiphy(false);
+    window.setTimeout(() => scrollToBottom(), 10);
+
     try {
-      if (!gifUrl) return;
       const msgData: Record<string, any> = {
         uid: profile.uid,
         username: profile.username,
         photoURL: profile.photoURL || "",
         gif: gifUrl,
-        timestamp: Date.now(),
+        timestamp: now,
       };
 
       await addDoc(collection(db, "messages"), msgData);
-      setShowGiphy(false);
     } catch (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
@@ -272,6 +327,8 @@ export default function ChatPanel({
   };
 
   const handleDeleteMessage = async (msgId: string) => {
+    // Optimistically remove from view immediately
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
     try {
       await deleteDoc(doc(db, "messages", msgId));
     } catch (error) {
@@ -479,6 +536,7 @@ export default function ChatPanel({
             className="bg-neutral-900/90 border border-neutral-800 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-neutral-700 transition-colors"
           >
             <input
+              ref={inputRef}
               type="text"
               value={text}
               onChange={(e) => setText(e.target.value)}
