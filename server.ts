@@ -265,6 +265,9 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        // The preview is served through the managed proxy; disabling HMR
+        // prevents its browser websocket client from producing false runtime
+        // errors while the React app and Firebase listeners continue to work.
         hmr: false,
         watch: null,
       },
