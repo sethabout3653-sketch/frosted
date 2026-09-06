@@ -30,7 +30,9 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       if (saved === "contain" || saved === "fill" || saved === "16-9" || saved === "4-3") {
         return saved;
       }
-    } catch {}
+    } catch {
+      // Ignore unavailable localStorage in restricted browsing contexts.
+    }
     return "contain";
   });
 
@@ -41,7 +43,9 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
         const val = parseInt(saved, 10);
         if (!isNaN(val) && val >= 50 && val <= 150) return val;
       }
-    } catch {}
+    } catch {
+      // Ignore unavailable localStorage in restricted browsing contexts.
+    }
     return 100;
   });
 
@@ -57,6 +61,12 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   });
 
   const isLuminGame = game.source === "luminsdk";
+  // Give catalog games a URL during the first render as well as in the
+  // loading effect. This guarantees the iframe exists immediately, so a
+  // click in the player cannot land on the surrounding host HTML while the
+  // effect is resolving.
+  const initialCatalogUrl = !isLuminGame ? formatGameUrl(game.url, true) : "";
+  const renderedGameUrl = gameUrl || initialCatalogUrl;
   const isMod = game.isMod ?? isFnfMod(game.name, game.special);
   const isFnf = isFnfGame(game.name, game.special);
 
@@ -171,7 +181,9 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       try {
         iframeRef.current.focus();
         iframeRef.current.contentWindow?.focus();
-      } catch {}
+      } catch {
+        // Cross-origin game frames can reject contentWindow.focus().
+      }
     }
   }, []);
 
@@ -245,7 +257,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       } else {
         // Catalog games use their direct HTTPS URL; Vercel deployments do not
         // expose the local Express proxy route.
-        const catalogUrl = formatGameUrl(game.url, false);
+        const catalogUrl = formatGameUrl(game.url, true);
         const directRaw = getRawGameUrl(game.url);
         if (!isCancelled) {
           setGameUrl(catalogUrl);
@@ -307,7 +319,9 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       const next = Math.max(50, prev - 10);
       try {
         localStorage.setItem("frosted_game_zoom", next.toString());
-      } catch {}
+      } catch {
+        // Ignore unavailable localStorage when saving zoom preferences.
+      }
       return next;
     });
   };
@@ -317,7 +331,9 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       const next = Math.min(150, prev + 10);
       try {
         localStorage.setItem("frosted_game_zoom", next.toString());
-      } catch {}
+      } catch {
+        // Ignore unavailable localStorage when saving zoom preferences.
+      }
       return next;
     });
   };
@@ -326,14 +342,18 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     setZoom(100);
     try {
       localStorage.setItem("frosted_game_zoom", "100");
-    } catch {}
+    } catch {
+      // Ignore unavailable localStorage when resetting zoom preferences.
+    }
   };
 
   const handleSetFitMode = (mode: FitMode) => {
     setFitMode(mode);
     try {
       localStorage.setItem("frosted_fit_mode", mode);
-    } catch {}
+    } catch {
+      // Ignore unavailable localStorage when saving fit preferences.
+    }
   };
 
   const handleOpenInNewTab = () => {
@@ -423,13 +443,32 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
           }}
         >
           {/* Embedded Game iframe */}
-          {gameUrl && !gameLoadError && (
+          {renderedGameUrl && !gameLoadError && (
             <iframe
-              src={gameUrl}
+              ref={iframeRef}
+              src={renderedGameUrl}
               title={`${game.name} game`}
               width="100%"
               height="100%"
               scrolling="no"
+              tabIndex={0}
+              allow="autoplay; fullscreen; gamepad; clipboard-read; clipboard-write"
+              allowFullScreen
+              onLoad={() => {
+                setGameLoadError(false);
+                focusGame();
+              }}
+              onError={() => {
+                if (!usingDirectUrl && rawGameUrl) {
+                  setUsingDirectUrl(true);
+                  setGameUrl(rawGameUrl);
+                } else if (initialCatalogUrl && rawGameUrl !== initialCatalogUrl) {
+                  setUsingDirectUrl(true);
+                  setGameUrl(rawGameUrl);
+                } else {
+                  setGameLoadError(true);
+                }
+              }}
             />
           )}
           {gameLoadError && (
@@ -445,5 +484,3 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     </div>
   );
 }
-
-
