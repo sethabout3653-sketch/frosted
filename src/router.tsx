@@ -2,9 +2,8 @@ import { createRouter as createTanStackRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
 
 /**
- * TanStack Start entry — the framework imports this `createRouter` factory.
- * `routeTree.gen.ts` is generated automatically by the TanStack Start Vite
- * plugin from the files under `src/routes/` (do not edit it by hand).
+ * Legacy template router retained for compatibility. The active entry is the
+ * plain React app in src/main.tsx.
  */
 export function createRouter() {
   return createTanStackRouter({
@@ -14,8 +13,8 @@ export function createRouter() {
   })
 }
 
-// TanStack Start's hydration entry imports `getRouter` from this module
-// (production `vite build` fails with "getRouter is not exported" without it).
+// Kept for compatibility with the imported template files; not mounted by
+// the active plain React entry.
 export const getRouter = createRouter
 
 declare module '@tanstack/react-router' {

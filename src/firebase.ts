@@ -4,9 +4,8 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
-// Use the registered Firestore service instead of initializeFirestore. The
-// latter can run before Firebase's Firestore component registration in Vite's
-// dependency optimizer, which causes the app to crash during module load.
+// Use the registered Firestore service so Firebase realtime listeners remain
+// available in the plain React/Webpack runtime.
 export const db = getFirestore(app);
 
 export enum OperationType {

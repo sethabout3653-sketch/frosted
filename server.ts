@@ -1,6 +1,9 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
+import fs from "fs";
+import webpack from "webpack";
+import webpackDevMiddleware from "webpack-dev-middleware";
+import webpackConfig from "./webpack.config.cjs";
 
 async function startServer() {
   const app = express();
@@ -260,27 +263,28 @@ async function startServer() {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
   });
 
-  // Vite integration and static asset serving
+  // Plain React/Webpack development and static asset serving. Firebase's
+  // Firestore realtime listeners are client-side and remain unchanged.
+  const distPath = path.join(process.cwd(), "dist");
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        // The preview is served through the managed proxy; disabling HMR
-        // prevents its browser websocket client from producing false runtime
-        // errors while the React app and Firebase listeners continue to work.
-        hmr: false,
-        watch: null,
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+    const compiler = (webpack as any)({ ...webpackConfig, mode: "development" });
+    app.use(webpackDevMiddleware(compiler as any, {
+      publicPath: "/",
+      stats: "minimal",
+      writeToDisk: true,
+    }));
   } else {
-    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
+
+  app.get("*", (req, res, next) => {
+    const indexPath = path.join(distPath, "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      next();
+    }
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);

@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import {
   HeadContent,
   Scripts,
@@ -8,7 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 import type { ReactNode } from 'react'
-import indexCss from '../index.css?url'
+import '../index.css'
 
 /**
  * Pre-paint theme script. Runs synchronously in <head> BEFORE first paint, so
@@ -63,7 +62,6 @@ export const Route = createRootRoute({
       { name: 'twitter:card', content: 'summary_large_image' },
     ],
     links: [
-      { rel: 'stylesheet', href: indexCss },
       { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
     ],
   }),
