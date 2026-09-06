@@ -1002,70 +1002,22 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
               />
 
               {isCameraLoading && (
-                <div className="absolute inset-0 bg-[#0f0f0f]/95 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-10 animate-in fade-in duration-200">
-                  <div className="relative flex items-center justify-center">
-                    {profile.photoURL ? (
-                      <img
-                        src={profile.photoURL}
-                        alt={profile.username}
-                        className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
-                      />
-                    ) : (
-                      <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
-                        {profile.username.charAt(0).toUpperCase()}
-                      </div>
-                    )}
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <img
-                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                        alt="Loading camera"
-                        className="w-12 h-12 object-contain"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
-                      <Video size={13} className="text-cyan-400 animate-pulse" />
-                      <span>Starting your camera...</span>
-                    </span>
-                    <span className="text-[10px] text-neutral-400 font-mono">
-                      Initializing video feed
-                    </span>
-                  </div>
+                <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
+                  <img
+                    src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                    alt="Loading camera"
+                    className="w-12 h-12 object-contain"
+                  />
                 </div>
               )}
             </div>
           ) : isCameraLoading ? (
-            <div className="relative w-full h-full bg-[#0f0f0f] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-200">
-              <div className="relative flex items-center justify-center">
-                {profile.photoURL ? (
-                  <img
-                    src={profile.photoURL}
-                    alt={profile.username}
-                    className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
-                  />
-                ) : (
-                  <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
-                    {profile.username.charAt(0).toUpperCase()}
-                  </div>
-                )}
-                <div className="absolute inset-0 flex items-center justify-center">
-<img
-                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                        alt="Loading camera"
-                        className="w-12 h-12 object-contain"
-                      />
-                </div>
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
-                  <Video size={13} className="text-cyan-400 animate-pulse" />
-                  <span>Starting your camera...</span>
-                </span>
-                <span className="text-[10px] text-neutral-400 font-mono">
-                  Requesting camera permissions
-                </span>
-              </div>
+<div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
+              <img
+                src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                alt="Loading camera"
+                className="w-12 h-12 object-contain"
+              />
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
@@ -1104,12 +1056,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
             <span className="text-xs font-bold text-white">
               {profile.username} (You)
             </span>
-            {isCameraLoading && (
-              <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 flex items-center gap-1">
-                <Loader2 size={10} className="animate-spin" />
-                <span>Camera Loading</span>
-              </span>
-            )}
             {isMuted && (
               <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
                 Muted
@@ -1191,71 +1137,23 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
                   {/* Loading screen while remote video is connecting or buffering */}
                   {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
-                    <div className="absolute inset-0 bg-[#0f0f0f]/95 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-10 animate-in fade-in duration-200">
-                      <div className="relative flex items-center justify-center">
-                        {p.photoURL ? (
-                          <img
-                            src={p.photoURL}
-                            alt={p.username}
-                            className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
-                          />
-                        ) : (
-                          <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
-                            {p.username.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <img
-                            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                            alt="Loading camera"
-                            className="w-12 h-12 object-contain"
-                          />
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-center gap-1">
-                        <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
-                          <Video size={13} className="text-cyan-400 animate-pulse" />
-                          <span>{p.username} is loading camera...</span>
-                        </span>
-                        <span className="text-[10px] text-neutral-400 font-mono">
-                          Connecting video stream
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : p.isVideoLoading ? (
-                /* Loading screen when remote user is starting camera (before isVideoOn is set) */
-                <div className="relative w-full h-full bg-[#0f0f0f] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-200">
-                  <div className="relative flex items-center justify-center">
-                    {p.photoURL ? (
-                      <img
-                        src={p.photoURL}
-                        alt={p.username}
-                        className="w-16 h-16 rounded-full object-cover border border-neutral-700/60 opacity-40 blur-[1px]"
-                      />
-                    ) : (
-                      <div className="w-16 h-16 rounded-full bg-neutral-800 border border-neutral-700/60 flex items-center justify-center text-xl font-bold text-white/40">
-                        {p.username.charAt(0).toUpperCase()}
-                      </div>
-                    )}
-                    <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                         alt="Loading camera"
                         className="w-12 h-12 object-contain"
                       />
                     </div>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <span className="text-xs font-semibold text-neutral-200 flex items-center gap-1.5">
-                      <Video size={13} className="text-cyan-400 animate-pulse" />
-                      <span>{p.username} is starting camera...</span>
-                    </span>
-                    <span className="text-[10px] text-neutral-400 font-mono">
-                      Initializing video feed
-                    </span>
-                  </div>
+                  )}
+                </div>
+              ) : p.isVideoLoading ? (
+                /* Loading screen when remote user is starting camera (before isVideoOn is set) */
+                <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
+                  <img
+                    src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                    alt="Loading camera"
+                    className="w-12 h-12 object-contain"
+                  />
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-3">
@@ -1282,12 +1180,6 @@ export default function VoiceChannel({ profile, onLeave }: VoiceChannelProps) {
 
               <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
                 <span className="text-xs font-bold text-white">{p.username}</span>
-                {((!remoteVideoLoaded[p.uid] && p.isVideoOn) || p.isVideoLoading) && (
-                  <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 flex items-center gap-1">
-                    <Loader2 size={10} className="animate-spin" />
-                    <span>Camera Loading</span>
-                  </span>
-                )}
                 {p.isMuted && (
                   <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
                     Muted
