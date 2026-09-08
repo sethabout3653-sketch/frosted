@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Mic,
   MicOff,
@@ -17,20 +17,8 @@ import {
   Loader2,
   Maximize2,
 } from "lucide-react";
-import {
-  collection,
-  doc,
-  setDoc,
-  deleteDoc,
-  getDocs,
-  onSnapshot,
-  query,
-  where,
-  addDoc,
-  updateDoc,
-} from "firebase/firestore";
-import { db } from "../firebase";
 import { ChatProfile, VoiceSignal } from "../types";
+import { realtime } from "../services/realtime";
 
 interface VoiceChannelProps {
   profile: ChatProfile;
@@ -88,8 +76,36 @@ export default function VoiceChannel({
   const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
+
+  // Keep refs in sync for heartbeat timer
+  const isMutedRef = useRef(isMuted);
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  const isCameraLoadingRef = useRef(isCameraLoading);
+  useEffect(() => {
+    isCameraLoadingRef.current = isCameraLoading;
+  }, [isCameraLoading]);
+
+  // 1-second interval to continuously re-evaluate presence and prune disconnected/lagging participants
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 60s)
+  const activeParticipants = useMemo(() => {
+    return participants.filter((p) => {
+      const ts = p.timestamp || (p as any).lastSeen;
+      return typeof ts === "number" ? currentTime - ts < 60000 : true;
+    });
+  }, [participants, currentTime]);
 
   // Audio level and remote volume states
   const [audioLevel, setAudioLevel] = useState<number>(0);
@@ -406,22 +422,12 @@ export default function VoiceChannel({
   }, []);
 
   const sendSignal = useCallback(
-    async (
+    (
       receiverId: string,
       type: "offer" | "answer" | "candidate",
       data: string
     ) => {
-      try {
-        await addDoc(collection(db, "signals"), {
-          senderId: profile.uid,
-          receiverId,
-          type,
-          data,
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        console.warn("Error sending WebRTC signal:", err);
-      }
+      realtime.sendVoiceSignal(receiverId, { type, data }, profile.uid);
     },
     [profile.uid]
   );
@@ -625,20 +631,17 @@ export default function VoiceChannel({
     [createPeerConnection, processCandidateQueue, profile.uid, sendSignal]
   );
 
-  // Main lifecycle: acquire microphone and register in voice_users
+  // Main lifecycle: acquire microphone and register in voice room
   useEffect(() => {
     isMountedRef.current = true;
     let unsubscribeSignals: () => void;
     let unsubscribeUsers: () => void;
+    let unsubscribePeerLeft: () => void;
     sessionStartTimeRef.current = Date.now();
 
     const handleUnload = () => {
       stopAllMediaTracks();
-      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
-      updateDoc(doc(db, "presence", profile.uid), {
-        inVoice: false,
-        isMuted: false,
-      }).catch(() => {});
+      realtime.leaveVoice(profile.uid);
     };
 
     window.addEventListener("beforeunload", handleUnload);
@@ -665,44 +668,27 @@ export default function VoiceChannel({
 
         localStreamRef.current = stream;
 
-        // Register self as active participant
-        await setDoc(doc(db, "voice_users", profile.uid), {
+        // Register self as active voice participant via WebSocket
+        realtime.joinVoice({
           uid: profile.uid,
           username: profile.username,
           photoURL: profile.photoURL || "",
           isMuted: false,
           isVideoOn: false,
           isVideoLoading: false,
-          timestamp: Date.now(),
         });
 
-        if (!isMountedRef.current) {
-          stopAllMediaTracks();
-          return;
-        }
-
-        await setDoc(doc(db, "presence", profile.uid), {
-          uid: profile.uid,
-          username: profile.username,
-          photoURL: profile.photoURL || "",
-          status: "online",
-          lastSeen: Date.now(),
-          isMuted: false,
-          inVoice: true,
-        }, { merge: true }).catch(() => {});
-
         // Real-time listener for voice participants
-        const unsubUsers = onSnapshot(
-          collection(db, "voice_users"),
-          (snapshot) => {
-            if (!isMountedRef.current) return;
-            const users: Participant[] = [];
-            const activeUids = new Set<string>();
-            snapshot.forEach((d) => {
-              const u = d.data() as Participant;
+        unsubscribeUsers = realtime.subscribeVoiceUsers((users) => {
+          if (!isMountedRef.current) return;
+          const activeList: Participant[] = [];
+          const activeUids = new Set<string>();
+
+          users.forEach((u) => {
+            if (u && u.uid) {
               activeUids.add(u.uid);
               if (u.uid !== profile.uid) {
-                users.push(u);
+                activeList.push(u);
                 const pc = peersRef.current[u.uid];
                 const isDead =
                   !pc ||
@@ -716,60 +702,48 @@ export default function VoiceChannel({
                   initiateCall(u.uid, localStreamRef.current);
                 }
               }
-            });
+            }
+          });
 
-            // Instantly clean up peer connection and audio/video for anyone who left
-            Object.keys(peersRef.current).forEach((peerUid) => {
-              if (!activeUids.has(peerUid)) {
-                try {
-                  peersRef.current[peerUid].close();
-                } catch (e) {}
-                delete peersRef.current[peerUid];
-                delete iceCandidateQueuesRef.current[peerUid];
-                if (remoteStreamsRef.current[peerUid]) {
-                  remoteStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
-                  delete remoteStreamsRef.current[peerUid];
-                }
+          // Instantly clean up peer connection and audio/video for anyone who left
+          Object.keys(peersRef.current).forEach((peerUid) => {
+            if (!activeUids.has(peerUid)) {
+              try {
+                peersRef.current[peerUid].close();
+              } catch (e) {}
+              delete peersRef.current[peerUid];
+              delete iceCandidateQueuesRef.current[peerUid];
+              if (remoteStreamsRef.current[peerUid]) {
+                remoteStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
+                delete remoteStreamsRef.current[peerUid];
               }
-            });
+            }
+          });
 
-            setParticipants(users);
-          },
-          (err) => {
-            console.warn("voice_users listener error in VoiceChannel:", err);
+          setParticipants(activeList);
+        });
+
+        // Real-time listener for WebRTC signals directed to current user (instant P2P forwarding)
+        unsubscribeSignals = realtime.onVoiceSignal(async ({ senderId, signal }) => {
+          if (!isMountedRef.current || !localStreamRef.current) return;
+          await handleSignal({ ...signal, senderId }, localStreamRef.current);
+        });
+
+        // Real-time peer disconnect listener
+        unsubscribePeerLeft = realtime.onPeerLeft((uid) => {
+          if (peersRef.current[uid]) {
+            try {
+              peersRef.current[uid].close();
+            } catch (e) {}
+            delete peersRef.current[uid];
+            delete iceCandidateQueuesRef.current[uid];
           }
-        );
-        unsubscribeUsers = unsubUsers;
-
-        // Real-time listener for WebRTC signals directed to current user
-        const qSignals = query(
-          collection(db, "signals"),
-          where("receiverId", "==", profile.uid)
-        );
-
-        const unsubSignals = onSnapshot(
-          qSignals,
-          (snapshot) => {
-            if (!isMountedRef.current) return;
-            snapshot.docChanges().forEach(async (change) => {
-              if (change.type === "added") {
-                const signalDoc = change.doc;
-                const signal = {
-                  id: signalDoc.id,
-                  ...signalDoc.data(),
-                } as VoiceSignal;
-                deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
-                if (localStreamRef.current && isMountedRef.current) {
-                  await handleSignal(signal, localStreamRef.current);
-                }
-              }
-            });
-          },
-          (err) => {
-            console.warn("signals listener error in VoiceChannel:", err);
+          if (remoteStreamsRef.current[uid]) {
+            remoteStreamsRef.current[uid].getTracks().forEach((t) => t.stop());
+            delete remoteStreamsRef.current[uid];
           }
-        );
-        unsubscribeSignals = unsubSignals;
+          setParticipants((prev) => prev.filter((p) => p.uid !== uid));
+        });
       } catch (err: any) {
         if (isMountedRef.current) {
           console.error("Failed to access microphone", err);
@@ -786,20 +760,37 @@ export default function VoiceChannel({
       window.removeEventListener("pagehide", handleUnload);
 
       stopAllMediaTracks();
-
-      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
-      updateDoc(doc(db, "presence", profile.uid), {
-        inVoice: false,
-        isMuted: false,
-      }).catch(() => {});
+      realtime.leaveVoice(profile.uid);
 
       if (unsubscribeSignals) unsubscribeSignals();
       if (unsubscribeUsers) unsubscribeUsers();
+      if (unsubscribePeerLeft) unsubscribePeerLeft();
     };
   }, [handleSignal, initiateCall, profile, stopAllMediaTracks]);
 
+  // Continuously prune and close dead/lagging peer connections
+  useEffect(() => {
+    const now = Date.now();
+    participants.forEach((p) => {
+      const ts = p.timestamp || (p as any).lastSeen;
+      if (typeof ts === "number" && now - ts > 60000) {
+        if (peersRef.current[p.uid]) {
+          try {
+            peersRef.current[p.uid].close();
+          } catch (e) {}
+          delete peersRef.current[p.uid];
+          delete iceCandidateQueuesRef.current[p.uid];
+          if (remoteStreamsRef.current[p.uid]) {
+            remoteStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteStreamsRef.current[p.uid];
+          }
+        }
+      }
+    });
+  }, [currentTime, participants]);
+
   // Toggle Microphone Mute
-  const toggleMute = async () => {
+  const toggleMute = () => {
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
 
@@ -814,14 +805,7 @@ export default function VoiceChannel({
       });
     }
 
-    try {
-      await updateDoc(doc(db, "voice_users", profile.uid), {
-        isMuted: nextMuted,
-      });
-      await updateDoc(doc(db, "presence", profile.uid), {
-        isMuted: nextMuted,
-      });
-    } catch (e) {}
+    realtime.updateVoiceState({ isMuted: nextMuted });
   };
 
   // Toggle Video Camera
@@ -836,11 +820,10 @@ export default function VoiceChannel({
         setIsVideoOn(true);
         isVideoOnRef.current = true;
 
-        // Broadcast to all other participants immediately that camera is loading
-        await updateDoc(doc(db, "voice_users", profile.uid), {
+        realtime.updateVoiceState({
           isVideoLoading: true,
           isVideoOn: false,
-        }).catch((err) => console.warn("Error setting isVideoLoading:", err));
+        });
 
         // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
@@ -860,10 +843,7 @@ export default function VoiceChannel({
           setIsCameraLoading(false);
           setIsVideoOn(false);
           isVideoOnRef.current = false;
-          await updateDoc(doc(db, "voice_users", profile.uid), {
-            isVideoOn: false,
-            isVideoLoading: false,
-          }).catch(() => {});
+          realtime.updateVoiceState({ isVideoOn: false, isVideoLoading: false });
           return;
         }
 
@@ -892,12 +872,9 @@ export default function VoiceChannel({
           })
         );
 
-        // 3. Mark camera as active and ready in Firestore
+        // 3. Mark camera as active and ready
         setIsCameraLoading(false);
-        await updateDoc(doc(db, "voice_users", profile.uid), {
-          isVideoOn: true,
-          isVideoLoading: false,
-        });
+        realtime.updateVoiceState({ isVideoOn: true, isVideoLoading: false });
       } else {
         setIsVideoOn(false);
         isVideoOnRef.current = false;
@@ -932,10 +909,7 @@ export default function VoiceChannel({
           localVideoRef.current.srcObject = null;
         }
 
-        await updateDoc(doc(db, "voice_users", profile.uid), {
-          isVideoOn: false,
-          isVideoLoading: false,
-        });
+        realtime.updateVoiceState({ isVideoOn: false, isVideoLoading: false });
       }
     } catch (e: any) {
       console.error("Failed to toggle camera:", e);
@@ -948,20 +922,13 @@ export default function VoiceChannel({
         videoStreamRef.current.getTracks().forEach((t) => t.stop());
         videoStreamRef.current = null;
       }
-      await updateDoc(doc(db, "voice_users", profile.uid), {
-        isVideoOn: false,
-        isVideoLoading: false,
-      }).catch(() => {});
+      realtime.updateVoiceState({ isVideoOn: false, isVideoLoading: false });
     }
   };
 
   const handleLeave = () => {
-    // 1. Immediately delete voice_users document and mark presence as left voice
-    deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
-    updateDoc(doc(db, "presence", profile.uid), {
-      inVoice: false,
-      isMuted: false,
-    }).catch(() => {});
+    // 1. Notify voice channel leave
+    realtime.leaveVoice(profile.uid);
 
     // 2. Play leave sound for user instantly
     try {
@@ -1006,14 +973,14 @@ export default function VoiceChannel({
     );
   }
 
-  const activeRemoteWithVideo = participants.find((p) => p.isVideoOn);
+  const activeRemoteWithVideo = activeParticipants.find((p) => p.isVideoOn);
   const anyVideoOn = !!activeRemoteWithVideo || isVideoOn;
 
   return (
     <>
       {/* Hidden persistent audio playback elements for all remote peers (never unmounted on view mode toggle) */}
       <div className="hidden" aria-hidden="true">
-        {participants.map((p) => (
+        {activeParticipants.map((p) => (
           <audio
             key={`audio-playback-${p.uid}`}
             ref={(el) => {
@@ -1143,7 +1110,7 @@ export default function VoiceChannel({
               </span>
             </div>
 
-            {participants.slice(0, 3).map((p) => (
+            {activeParticipants.slice(0, 3).map((p) => (
               <div key={p.uid} className="flex flex-col items-center gap-1">
                 <div className="relative">
                   <img
@@ -1162,9 +1129,9 @@ export default function VoiceChannel({
                 </span>
               </div>
             ))}
-            {participants.length > 3 && (
+            {activeParticipants.length > 3 && (
               <span className="text-[10px] text-neutral-400 font-bold self-center">
-                +{participants.length - 3}
+                +{activeParticipants.length - 3}
               </span>
             )}
           </div>
@@ -1226,7 +1193,7 @@ export default function VoiceChannel({
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm font-semibold text-neutral-400 hidden sm:inline">
-              General Voice ({participants.length + 1})
+              General Voice ({activeParticipants.length + 1})
             </span>
             <button
               onClick={handleLeave}
@@ -1365,7 +1332,7 @@ export default function VoiceChannel({
         </div>
 
         {/* Remote Participants Tiles */}
-        {participants.map((p) => {
+        {activeParticipants.map((p) => {
           const stream = remoteStreamsRef.current[p.uid];
 
           return (

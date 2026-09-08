@@ -23,6 +23,8 @@ export interface ChatProfile {
   isVideoOn?: boolean;
   isVideoLoading?: boolean;
   status?: "online" | "left" | "offline";
+  lastSeen?: number;
+  timestamp?: number;
 }
 
 export interface ChatMessage {

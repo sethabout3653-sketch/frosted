@@ -1,14 +1,157 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { storage } from "./server/storage";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // JSON and URL parsing middleware
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  // JSON and URL parsing middleware with generous limit for attachments
+  app.use(express.json({ limit: "25mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+
+  // Messages API Endpoints (Persistent, Fast, No Quota Limits, Zero WebSockets)
+  app.get("/api/messages", (req, res) => {
+    try {
+      const messages = storage.getMessages();
+      res.json(messages);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/messages", (req, res) => {
+    try {
+      const msg = req.body;
+      if (!msg || !msg.id) {
+        return res.status(400).json({ error: "Invalid message body" });
+      }
+      const saved = storage.addMessage(msg);
+      res.json(saved);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/messages", (req, res) => {
+    try {
+      storage.clearAllMessages();
+      res.json({ success: true, count: 0 });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/messages/:id", (req, res) => {
+    try {
+      const msgId = req.params.id;
+      const success = storage.deleteMessage(msgId);
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/messages/bulk-sync", (req, res) => {
+    try {
+      const incoming = req.body.messages || [];
+      const updated = storage.bulkMerge(incoming);
+      res.json({ success: true, total: updated.length, messages: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Presence & Member List REST Endpoints
+  app.get("/api/presence", (req, res) => {
+    try {
+      res.json(storage.getPresenceList());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/presence", (req, res) => {
+    try {
+      const user = req.body;
+      if (user && user.uid) {
+        storage.updatePresence(user);
+      }
+      res.json({ success: true, presence: storage.getPresenceList() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Voice Rooms REST Endpoints
+  app.get("/api/voice/users", (req, res) => {
+    try {
+      res.json(storage.getVoiceUsers());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/voice/join", (req, res) => {
+    try {
+      const user = req.body;
+      if (user && user.uid) {
+        storage.joinVoice(user);
+      }
+      res.json({ success: true, users: storage.getVoiceUsers() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/voice/state", (req, res) => {
+    try {
+      const { uid, state } = req.body;
+      if (uid && state) {
+        storage.updateVoiceState(uid, state);
+      }
+      res.json({ success: true, users: storage.getVoiceUsers() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/voice/leave", (req, res) => {
+    try {
+      const { uid } = req.body;
+      if (uid) {
+        storage.leaveVoice(uid);
+      }
+      res.json({ success: true, users: storage.getVoiceUsers() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // WebRTC Signaling via REST
+  app.post("/api/voice/signal", (req, res) => {
+    try {
+      const { senderId, receiverId, type, data } = req.body;
+      if (senderId && receiverId && type && data) {
+        const signal = storage.addSignal({ senderId, receiverId, type, data });
+        return res.json({ success: true, signalId: signal.id });
+      }
+      res.status(400).json({ error: "Missing signal parameters" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/voice/signals/:uid", (req, res) => {
+    try {
+      const targetUid = req.params.uid;
+      const signals = storage.getAndClearSignals(targetUid);
+      res.json(signals);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // API Proxy Route: Create session
   app.post("/api/lumin-session", async (req, res) => {

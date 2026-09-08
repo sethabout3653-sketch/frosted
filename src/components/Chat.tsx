@@ -17,20 +17,7 @@ import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
 import { ChatProfile, ChatMessage } from "../types";
-import {
-  collection,
-  query,
-  orderBy,
-  limit,
-  getDocs,
-  onSnapshot,
-  where,
-  writeBatch,
-  deleteDoc,
-  updateDoc,
-  doc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+import { realtime } from "../services/realtime";
 
 export default function Chat({
   isOpen,
@@ -59,15 +46,33 @@ export default function Chat({
   const [notification, setNotification] = useState<ChatMessage | null>(null);
   const messageSoundRef = useRef<HTMLAudioElement | null>(null);
 
-  const [voiceUsers, setVoiceUsers] = useState<
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [rawVoiceUsers, setRawVoiceUsers] = useState<
     Array<{
       uid: string;
       username: string;
       photoURL: string;
       isMuted?: boolean;
       isVideoOn?: boolean;
+      timestamp?: number;
+      lastSeen?: number;
     }>
   >([]);
+
+  // 1-second tick to continuously drop dead/disconnected users within a few seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Filter out any voice participant whose heartbeat is older than 60 seconds
+  const voiceUsers = rawVoiceUsers.filter((u) => {
+    if (profile && u.uid === profile.uid) return true;
+    const ts = u.timestamp || u.lastSeen;
+    return typeof ts === "number" ? currentTime - ts < 60000 : true;
+  });
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
@@ -75,15 +80,9 @@ export default function Chat({
 
   // Real-time listener for voice users
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "voice_users"),
-      (snapshot) => {
-        setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
-      },
-      (error) => {
-        console.warn("Chat voice_users listener error:", error);
-      }
-    );
+    const unsubscribe = realtime.subscribeVoiceUsers((users) => {
+      setRawVoiceUsers(users);
+    });
     return () => unsubscribe();
   }, []);
 
@@ -97,49 +96,37 @@ export default function Chat({
 
   // Real-time message listener for instant audio & toast notifications
   useEffect(() => {
-    const q = query(
-      collection(db, "messages"),
-      orderBy("timestamp", "desc"),
-      limit(1)
-    );
     let initialLoad = true;
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        if (snapshot.empty) return;
-        const newest = snapshot.docs[0];
-        const msg = { id: newest.id, ...newest.data() } as ChatMessage;
-
-        // Skip notifying on initial mount/page load
-        if (initialLoad) {
-          initialLoad = false;
-          return;
-        }
-
-        if (msg.timestamp < sessionStartRef.current) return;
-        const currentProfile = profileRef.current;
-        const isMe =
-          currentProfile &&
-          (msg.uid === currentProfile.uid ||
-            (msg.username === currentProfile.username &&
-              msg.photoURL === currentProfile.photoURL));
-
-        if (!isMe) {
-          messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
-          messageSoundRef.current.currentTime = 0;
-          messageSoundRef.current.volume = 0.8;
-          messageSoundRef.current.play().catch(() => {});
-          if (!isOpenRef.current) {
-            setNotification(msg);
-            setTimeout(() => setNotification(null), 4000);
-          }
-        }
-      },
-      (error) => {
-        console.warn("Chat notifications listener error:", error);
+    const unsubscribe = realtime.subscribeMessages((messages) => {
+      // Skip notifying on initial mount/page load
+      if (initialLoad) {
+        initialLoad = false;
+        return;
       }
-    );
+      if (!messages || messages.length === 0) return;
+      const newest = messages[messages.length - 1];
+      if (!newest) return;
+
+      if (newest.timestamp < sessionStartRef.current) return;
+      const currentProfile = profileRef.current;
+      const isMe =
+        currentProfile &&
+        (newest.uid === currentProfile.uid ||
+          (newest.username === currentProfile.username &&
+            newest.photoURL === currentProfile.photoURL));
+
+      if (!isMe) {
+        messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
+        messageSoundRef.current.currentTime = 0;
+        messageSoundRef.current.volume = 0.8;
+        messageSoundRef.current.play().catch(() => {});
+        if (!isOpenRef.current) {
+          setNotification(newest);
+          setTimeout(() => setNotification(null), 4000);
+        }
+      }
+    });
 
     return () => unsubscribe();
   }, []);
@@ -159,27 +146,6 @@ export default function Chat({
       localStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
     } catch (e) {}
     setActiveTab("chat");
-
-    // Update previous messages
-    try {
-      const q = query(
-        collection(db, "messages"),
-        where("uid", "==", newProfile.uid)
-      );
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        const batch = writeBatch(db);
-        snapshot.docs.forEach((doc) => {
-          batch.update(doc.ref, {
-            username: newProfile.username,
-            photoURL: newProfile.photoURL,
-          });
-        });
-        await batch.commit();
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, "messages");
-    }
   };
 
   const handleLogoutProfile = () => {
@@ -405,12 +371,8 @@ export default function Chat({
                 <button
                   onClick={() => {
                     if (profile?.uid) {
-                      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
-                      updateDoc(doc(db, "presence", profile.uid), {
-                        inVoice: false,
-                        isMuted: false,
-                      }).catch(() => {});
-                      setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+                      realtime.leaveVoice(profile.uid);
+                      setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
                     }
                     setIsInVoiceSession(false);
                   }}
@@ -479,12 +441,8 @@ export default function Chat({
       }}
       onLeave={() => {
         if (profile?.uid) {
-          deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
-          updateDoc(doc(db, "presence", profile.uid), {
-            inVoice: false,
-            isMuted: false,
-          }).catch(() => {});
-          setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+          realtime.leaveVoice(profile.uid);
+          setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
         }
         setIsInVoiceSession(false);
         setActiveTab("chat");
