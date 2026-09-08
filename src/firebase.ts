@@ -1,4 +1,4 @@
-// Real-Time Firebase Drop-in Replacement with Zero Quota Limits & 0ms Latency
+// Real-Time Firebase Drop-in Replacement with Zero Quota Limits & Google Cloud SQL (PostgreSQL 17) + Drizzle ORM
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',

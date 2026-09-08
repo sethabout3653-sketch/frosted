@@ -3,8 +3,11 @@ import http from "http";
 import path from "path";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+import { eq, desc } from "drizzle-orm";
+import { db as sqlDb } from "./src/db/index.ts";
+import { messages as sqlMessages, presence as sqlPresence, voiceUsers as sqlVoiceUsers } from "./src/db/schema.ts";
 
-// Real-time In-Memory Data Store (Zero quota limits, zero delay)
+// Real-time In-Memory Data Store (Zero quota limits, zero delay with PostgreSQL durable storage)
 interface ChatMessageData {
   id: string;
   uid: string;
@@ -105,7 +108,102 @@ setInterval(() => {
   }
 }, 15000);
 
+async function initDatabaseHydration() {
+  try {
+    const dbMessages = await sqlDb
+      .select()
+      .from(sqlMessages)
+      .orderBy(desc(sqlMessages.timestamp))
+      .limit(100);
+
+    if (dbMessages && dbMessages.length > 0) {
+      store.messages = dbMessages.reverse().map((m) => ({
+        id: m.id,
+        uid: m.uid,
+        username: m.username,
+        photoURL: m.photoURL || "",
+        text: m.text || undefined,
+        gif: m.gif || undefined,
+        attachment: m.attachment || undefined,
+        timestamp: Number(m.timestamp),
+      }));
+    }
+  } catch (err) {
+    console.warn("SQL hydration notice:", err);
+  }
+}
+
+async function persistMessage(msg: ChatMessageData) {
+  try {
+    await sqlDb
+      .insert(sqlMessages)
+      .values({
+        id: msg.id,
+        uid: msg.uid,
+        username: msg.username,
+        photoURL: msg.photoURL || null,
+        text: msg.text || null,
+        gif: msg.gif || null,
+        attachment: msg.attachment || null,
+        timestamp: msg.timestamp,
+      })
+      .onConflictDoUpdate({
+        target: sqlMessages.id,
+        set: {
+          username: msg.username,
+          photoURL: msg.photoURL || null,
+          text: msg.text || null,
+          gif: msg.gif || null,
+          attachment: msg.attachment || null,
+          timestamp: msg.timestamp,
+        },
+      });
+  } catch (err) {
+    console.warn("SQL message persist error:", err);
+  }
+}
+
+async function deleteMessageFromSql(id: string) {
+  try {
+    await sqlDb.delete(sqlMessages).where(eq(sqlMessages.id, id));
+  } catch (err) {
+    console.warn("SQL message delete error:", err);
+  }
+}
+
+async function persistPresence(pres: PresenceData) {
+  try {
+    await sqlDb
+      .insert(sqlPresence)
+      .values({
+        uid: pres.uid,
+        username: pres.username,
+        photoURL: pres.photoURL || null,
+        status: pres.status,
+        lastSeen: pres.lastSeen,
+        inVoice: pres.inVoice ?? false,
+        isMuted: pres.isMuted ?? false,
+      })
+      .onConflictDoUpdate({
+        target: sqlPresence.uid,
+        set: {
+          username: pres.username,
+          photoURL: pres.photoURL || null,
+          status: pres.status,
+          lastSeen: pres.lastSeen,
+          inVoice: pres.inVoice ?? false,
+          isMuted: pres.isMuted ?? false,
+        },
+      });
+  } catch (err) {
+    console.warn("SQL presence persist error:", err);
+  }
+}
+
 async function startServer() {
+  // Hydrate messages from PostgreSQL
+  await initDatabaseHydration();
+
   const app = express();
   const server = http.createServer(app);
   const PORT = 3000;
@@ -176,6 +274,7 @@ async function startServer() {
               store.messages = store.messages.slice(-500);
             }
             broadcast({ type: "add_doc", collection: "messages", doc: fullDoc });
+            persistMessage(fullDoc);
           } else if (colName === "signals") {
             store.signals.set(docId, fullDoc);
             // Route signal immediately to receiver with 0ms delay
@@ -202,6 +301,7 @@ async function startServer() {
             const merged = { ...existing, ...docData, uid: docId };
             store.presence.set(docId, merged as PresenceData);
             broadcast({ type: "set_doc", collection: "presence", doc: merged });
+            persistPresence(merged as PresenceData);
           } else if (colName === "messages") {
             const idx = store.messages.findIndex((m) => m.id === docId);
             if (idx >= 0) {
@@ -210,6 +310,7 @@ async function startServer() {
               store.messages.push(docData as ChatMessageData);
             }
             broadcast({ type: "set_doc", collection: "messages", doc: docData });
+            persistMessage(docData as ChatMessageData);
           }
         } else if (action === "update_doc") {
           const docId = id;
@@ -226,6 +327,7 @@ async function startServer() {
               const updated = { ...existing, ...data };
               store.presence.set(docId, updated);
               broadcast({ type: "update_doc", collection: "presence", doc: updated });
+              persistPresence(updated as PresenceData);
             }
           } else if (colName === "messages") {
             const idx = store.messages.findIndex((m) => m.id === docId);
@@ -236,6 +338,7 @@ async function startServer() {
                 collection: "messages",
                 doc: store.messages[idx],
               });
+              persistMessage(store.messages[idx]);
             }
           }
         } else if (action === "delete_doc") {
@@ -243,6 +346,7 @@ async function startServer() {
           if (colName === "messages") {
             store.messages = store.messages.filter((m) => m.id !== docId);
             broadcast({ type: "delete_doc", collection: "messages", id: docId });
+            deleteMessageFromSql(docId);
           } else if (colName === "voice_users") {
             store.voiceUsers.delete(docId);
             broadcast({ type: "delete_doc", collection: "voice_users", id: docId });
@@ -298,6 +402,7 @@ async function startServer() {
       store.messages = store.messages.slice(-500);
     }
     broadcast({ type: "add_doc", collection: "messages", doc: msg });
+    persistMessage(msg);
     res.json(msg);
   });
 
@@ -305,6 +410,7 @@ async function startServer() {
     const { id } = req.params;
     store.messages = store.messages.filter((m) => m.id !== id);
     broadcast({ type: "delete_doc", collection: "messages", id });
+    deleteMessageFromSql(id);
     res.json({ success: true, id });
   });
 
@@ -334,6 +440,7 @@ async function startServer() {
     const pres: PresenceData = { ...req.body, uid: req.body.uid, lastSeen: Date.now() };
     store.presence.set(pres.uid, pres);
     broadcast({ type: "set_doc", collection: "presence", doc: pres });
+    persistPresence(pres);
     res.json(pres);
   });
 
