@@ -29,8 +29,10 @@ import {
   deleteDoc,
   updateDoc,
   doc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  db,
+  handleFirestoreError,
+  OperationType,
+} from "../firebase";
 
 export default function Chat({
   isOpen,
@@ -112,6 +114,9 @@ export default function Chat({
 
   useEffect(() => {
     profileRef.current = profile;
+    if (profile?.uid) {
+      db.setUid(profile.uid);
+    }
   }, [profile]);
 
   // Real-time message listener for instant audio & toast notifications

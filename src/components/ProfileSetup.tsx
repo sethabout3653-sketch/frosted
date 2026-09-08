@@ -167,7 +167,7 @@ export default function ProfileSetup({
 
         {/* Subtitle */}
         <p className="text-neutral-400 text-xs mb-6 max-w-xs leading-relaxed">
-          Real-time messaging &amp; voice rooms powered by Cloud Firestore.
+          Instant real-time messaging &amp; zero-latency voice rooms.
         </p>
 
         <form onSubmit={handleSubmit} className="w-full flex flex-col gap-5 text-left">

@@ -28,8 +28,8 @@ import {
   where,
   addDoc,
   updateDoc,
-} from "firebase/firestore";
-import { db } from "../firebase";
+  db,
+} from "../firebase";
 import { ChatProfile, VoiceSignal } from "../types";
 
 interface VoiceChannelProps {
@@ -674,6 +674,7 @@ export default function VoiceChannel({
 
     async function initVoice() {
       try {
+        db.setUid(profile.uid);
         const rawStream = await acquireMicrophoneStream();
 
         if (!isMountedRef.current) {

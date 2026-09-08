@@ -1,14 +1,353 @@
 import express from "express";
+import http from "http";
 import path from "path";
+import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+
+// Real-time In-Memory Data Store (Zero quota limits, zero delay)
+interface ChatMessageData {
+  id: string;
+  uid: string;
+  username: string;
+  photoURL: string;
+  text?: string;
+  gif?: string;
+  attachment?: string;
+  timestamp: number;
+}
+
+interface VoiceUserData {
+  uid: string;
+  username: string;
+  photoURL: string;
+  isMuted?: boolean;
+  isVideoOn?: boolean;
+  isVideoLoading?: boolean;
+  timestamp: number;
+  lastSeen?: number;
+}
+
+interface PresenceData {
+  uid: string;
+  username: string;
+  photoURL: string;
+  status: "online" | "left" | "offline";
+  lastSeen: number;
+  isMuted?: boolean;
+  inVoice?: boolean;
+}
+
+interface VoiceSignalData {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  type: "offer" | "answer" | "candidate";
+  data: string;
+  timestamp: number;
+}
+
+const store = {
+  messages: [] as ChatMessageData[],
+  voiceUsers: new Map<string, VoiceUserData>(),
+  presence: new Map<string, PresenceData>(),
+  signals: new Map<string, VoiceSignalData>(),
+};
+
+// Map connected WebSockets to metadata
+const connectedClients = new Map<WebSocket, { uid?: string }>();
+
+function broadcast(payload: any, excludeWs?: WebSocket) {
+  const messageStr = JSON.stringify(payload);
+  for (const [client] of connectedClients) {
+    if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(messageStr);
+      } catch (err) {}
+    }
+  }
+}
+
+function sendToUser(targetUid: string, payload: any) {
+  const messageStr = JSON.stringify(payload);
+  for (const [client, meta] of connectedClients) {
+    if (meta.uid === targetUid && client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(messageStr);
+      } catch (err) {}
+    }
+  }
+}
+
+// Auto-prune inactive voice users and presence
+setInterval(() => {
+  const now = Date.now();
+  let voiceChanged = false;
+  for (const [uid, user] of store.voiceUsers) {
+    const ts = user.timestamp || user.lastSeen || 0;
+    if (now - ts > 75000) {
+      store.voiceUsers.delete(uid);
+      voiceChanged = true;
+    }
+  }
+  if (voiceChanged) {
+    broadcast({
+      type: "sync_collection",
+      collection: "voice_users",
+      data: Array.from(store.voiceUsers.values()),
+    });
+  }
+
+  // Clear stale signals older than 30s
+  for (const [id, signal] of store.signals) {
+    if (now - signal.timestamp > 30000) {
+      store.signals.delete(id);
+    }
+  }
+}, 15000);
 
 async function startServer() {
   const app = express();
+  const server = http.createServer(app);
   const PORT = 3000;
 
   // JSON and URL parsing middleware
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: "15mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+
+  // WebSocket Server setup
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = request.url
+      ? new URL(request.url, `http://${request.headers.host || "localhost"}`).pathname
+      : "";
+    if (pathname === "/ws") {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    }
+  });
+
+  wss.on("connection", (ws: WebSocket) => {
+    connectedClients.set(ws, {});
+
+    // Send full initial state snapshots on connection
+    ws.send(
+      JSON.stringify({
+        type: "sync_collection",
+        collection: "messages",
+        data: store.messages.slice(-100),
+      })
+    );
+    ws.send(
+      JSON.stringify({
+        type: "sync_collection",
+        collection: "voice_users",
+        data: Array.from(store.voiceUsers.values()),
+      })
+    );
+    ws.send(
+      JSON.stringify({
+        type: "sync_collection",
+        collection: "presence",
+        data: Array.from(store.presence.values()),
+      })
+    );
+
+    ws.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        const { action, collection: colName, data, id, uid, merge } = msg;
+
+        if (action === "identify" && uid) {
+          const meta = connectedClients.get(ws) || {};
+          meta.uid = uid;
+          connectedClients.set(ws, meta);
+          return;
+        }
+
+        if (action === "add_doc") {
+          const docId = id || "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+          const fullDoc = { ...data, id: docId };
+
+          if (colName === "messages") {
+            store.messages.push(fullDoc);
+            if (store.messages.length > 500) {
+              store.messages = store.messages.slice(-500);
+            }
+            broadcast({ type: "add_doc", collection: "messages", doc: fullDoc });
+          } else if (colName === "signals") {
+            store.signals.set(docId, fullDoc);
+            // Route signal immediately to receiver with 0ms delay
+            if (fullDoc.receiverId) {
+              sendToUser(fullDoc.receiverId, {
+                type: "signal",
+                collection: "signals",
+                doc: fullDoc,
+              });
+            }
+          }
+          ws.send(JSON.stringify({ type: "doc_added", docId, collection: colName }));
+        } else if (action === "set_doc") {
+          const docId = id || data?.uid || "doc_" + Date.now();
+          const docData = { ...data, id: docId };
+
+          if (colName === "voice_users") {
+            const existing = merge ? store.voiceUsers.get(docId) || {} : {};
+            const merged = { ...existing, ...docData, uid: docId };
+            store.voiceUsers.set(docId, merged as VoiceUserData);
+            broadcast({ type: "set_doc", collection: "voice_users", doc: merged });
+          } else if (colName === "presence") {
+            const existing = merge ? store.presence.get(docId) || {} : {};
+            const merged = { ...existing, ...docData, uid: docId };
+            store.presence.set(docId, merged as PresenceData);
+            broadcast({ type: "set_doc", collection: "presence", doc: merged });
+          } else if (colName === "messages") {
+            const idx = store.messages.findIndex((m) => m.id === docId);
+            if (idx >= 0) {
+              store.messages[idx] = { ...(merge ? store.messages[idx] : {}), ...docData };
+            } else {
+              store.messages.push(docData as ChatMessageData);
+            }
+            broadcast({ type: "set_doc", collection: "messages", doc: docData });
+          }
+        } else if (action === "update_doc") {
+          const docId = id;
+          if (colName === "voice_users") {
+            const existing = store.voiceUsers.get(docId);
+            if (existing) {
+              const updated = { ...existing, ...data };
+              store.voiceUsers.set(docId, updated);
+              broadcast({ type: "update_doc", collection: "voice_users", doc: updated });
+            }
+          } else if (colName === "presence") {
+            const existing = store.presence.get(docId);
+            if (existing) {
+              const updated = { ...existing, ...data };
+              store.presence.set(docId, updated);
+              broadcast({ type: "update_doc", collection: "presence", doc: updated });
+            }
+          } else if (colName === "messages") {
+            const idx = store.messages.findIndex((m) => m.id === docId);
+            if (idx >= 0) {
+              store.messages[idx] = { ...store.messages[idx], ...data };
+              broadcast({
+                type: "update_doc",
+                collection: "messages",
+                doc: store.messages[idx],
+              });
+            }
+          }
+        } else if (action === "delete_doc") {
+          const docId = id;
+          if (colName === "messages") {
+            store.messages = store.messages.filter((m) => m.id !== docId);
+            broadcast({ type: "delete_doc", collection: "messages", id: docId });
+          } else if (colName === "voice_users") {
+            store.voiceUsers.delete(docId);
+            broadcast({ type: "delete_doc", collection: "voice_users", id: docId });
+          } else if (colName === "presence") {
+            store.presence.delete(docId);
+            broadcast({ type: "delete_doc", collection: "presence", id: docId });
+          } else if (colName === "signals") {
+            store.signals.delete(docId);
+            // Notify receiver that signal was consumed
+            broadcast({ type: "delete_doc", collection: "signals", id: docId });
+          }
+        }
+      } catch (err) {
+        console.error("WS message handling error:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      const meta = connectedClients.get(ws);
+      connectedClients.delete(ws);
+      if (meta?.uid) {
+        // If no other connection for this UID exists, mark presence as left
+        const hasOtherConn = Array.from(connectedClients.values()).some(
+          (m) => m.uid === meta.uid
+        );
+        if (!hasOtherConn) {
+          const pres = store.presence.get(meta.uid);
+          if (pres) {
+            pres.status = "left";
+            pres.inVoice = false;
+            pres.lastSeen = Date.now();
+            broadcast({ type: "set_doc", collection: "presence", doc: pres });
+          }
+          if (store.voiceUsers.has(meta.uid)) {
+            store.voiceUsers.delete(meta.uid);
+            broadcast({ type: "delete_doc", collection: "voice_users", id: meta.uid });
+          }
+        }
+      }
+    });
+  });
+
+  // REST API Endpoints for Real-Time fallback and hydration
+  app.get("/api/realtime/messages", (req, res) => {
+    res.json(store.messages.slice(-100));
+  });
+
+  app.post("/api/realtime/messages", (req, res) => {
+    const docId = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+    const msg: ChatMessageData = { ...req.body, id: docId, timestamp: req.body.timestamp || Date.now() };
+    store.messages.push(msg);
+    if (store.messages.length > 500) {
+      store.messages = store.messages.slice(-500);
+    }
+    broadcast({ type: "add_doc", collection: "messages", doc: msg });
+    res.json(msg);
+  });
+
+  app.delete("/api/realtime/messages/:id", (req, res) => {
+    const { id } = req.params;
+    store.messages = store.messages.filter((m) => m.id !== id);
+    broadcast({ type: "delete_doc", collection: "messages", id });
+    res.json({ success: true, id });
+  });
+
+  app.get("/api/realtime/voice_users", (req, res) => {
+    res.json(Array.from(store.voiceUsers.values()));
+  });
+
+  app.post("/api/realtime/voice_users", (req, res) => {
+    const user: VoiceUserData = { ...req.body, uid: req.body.uid || "user_" + Date.now(), timestamp: Date.now() };
+    store.voiceUsers.set(user.uid, user);
+    broadcast({ type: "set_doc", collection: "voice_users", doc: user });
+    res.json(user);
+  });
+
+  app.delete("/api/realtime/voice_users/:uid", (req, res) => {
+    const { uid } = req.params;
+    store.voiceUsers.delete(uid);
+    broadcast({ type: "delete_doc", collection: "voice_users", id: uid });
+    res.json({ success: true, uid });
+  });
+
+  app.get("/api/realtime/presence", (req, res) => {
+    res.json(Array.from(store.presence.values()));
+  });
+
+  app.post("/api/realtime/presence", (req, res) => {
+    const pres: PresenceData = { ...req.body, uid: req.body.uid, lastSeen: Date.now() };
+    store.presence.set(pres.uid, pres);
+    broadcast({ type: "set_doc", collection: "presence", doc: pres });
+    res.json(pres);
+  });
+
+  app.post("/api/realtime/signals", (req, res) => {
+    const docId = "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+    const signal: VoiceSignalData = { ...req.body, id: docId, timestamp: Date.now() };
+    store.signals.set(docId, signal);
+    sendToUser(signal.receiverId, {
+      type: "signal",
+      collection: "signals",
+      doc: signal,
+    });
+    res.json(signal);
+  });
 
   // API Proxy Route: Create session
   app.post("/api/lumin-session", async (req, res) => {
@@ -279,8 +618,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT} with Realtime Engine & WebSockets active`);
   });
 }
 

@@ -11,8 +11,10 @@ import {
   doc,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  db,
+  handleFirestoreError,
+  OperationType,
+} from "../firebase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -106,6 +108,7 @@ export default function ChatPanel({
   // Presence & Left Website tracking with optimized 30s heartbeat
   useEffect(() => {
     if (!profile) return;
+    db.setUid(profile.uid);
     const presenceRef = doc(db, "presence", profile.uid);
 
     const markOnline = async () => {
