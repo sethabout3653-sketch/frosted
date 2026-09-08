@@ -1,5 +1,18 @@
 import React, { useState, useEffect, useRef } from "react";
-import { supabase } from "../lib/supabase";
+import {
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+  onSnapshot,
+  addDoc,
+  deleteDoc,
+  doc,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { db, handleFirestoreError, OperationType } from "../firebase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -49,77 +62,60 @@ export default function ChatPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [showGiphy, setShowGiphy] = useState(false);
   const [attachment, setAttachment] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 1-second tick to continuously evaluate active vs dead/lagging peers in real-time
+  // Real-time listener for voice users
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
+    const unsub = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setActiveVoiceUsers(
+          Object.fromEntries(
+            snapshot.docs.map((d) => [d.id, d.data() as any])
+          )
+        );
+      },
+      (error) => {
+        console.warn("ChatPanel voice_users listener error:", error);
+      }
+    );
+    return () => unsub();
   }, []);
 
-  // Real-time listener for voice users via Supabase
-  useEffect(() => {
-    let mounted = true;
-    const fetchVoiceUsers = async () => {
-      const { data } = await supabase.from("voice_users").select("*");
-      if (!mounted || !data) return;
-      setActiveVoiceUsers(
-        Object.fromEntries(
-          data.map((d: any) => [d.uid, d])
-        )
-      );
-    };
-    fetchVoiceUsers();
-
-    const channel = supabase
-      .channel("panel_voice_users")
-      .on("postgres_changes", { event: "*", schema: "public", table: "voice_users" }, () => {
-        fetchVoiceUsers();
-      })
-      .subscribe();
-
-    return () => {
-      mounted = false;
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  // Presence & Left Website tracking with fast 2.5s heartbeat via Supabase
+  // Presence & Left Website tracking
   useEffect(() => {
     if (!profile) return;
+    const presenceRef = doc(db, "presence", profile.uid);
 
     const markOnline = async () => {
       try {
-        await supabase.from("presence").upsert({
+        await setDoc(presenceRef, {
           uid: profile.uid,
           username: profile.username,
-          photo_url: profile.photoURL || "",
+          photoURL: profile.photoURL || "",
           status: "online",
-          last_seen: Date.now(),
-        }, { onConflict: "uid" });
+          lastSeen: Date.now(),
+        }, { merge: true });
       } catch (e) {}
     };
 
     const markLeft = async () => {
       try {
-        await supabase.from("presence").upsert({
+        await setDoc(presenceRef, {
           uid: profile.uid,
           username: profile.username,
-          photo_url: profile.photoURL || "",
+          photoURL: profile.photoURL || "",
           status: "left",
-          last_seen: Date.now(),
-          in_voice: false,
-        }, { onConflict: "uid" });
+          lastSeen: Date.now(),
+          inVoice: false,
+        }, { merge: true }).catch(() => {});
       } catch (e) {}
     };
 
     markOnline();
-    const interval = setInterval(markOnline, 2500); // 2.5s rapid heartbeat for real-time accuracy
+    const interval = setInterval(markOnline, 20000); // 20s heartbeat
 
     const handleUnload = () => {
       markLeft();
@@ -146,94 +142,85 @@ export default function ChatPanel({
     };
   }, [profile]);
 
-  // Real-time member presence listener via Supabase
+  // Real-time member presence listener
   useEffect(() => {
-    let mounted = true;
-    const fetchPresence = async () => {
-      const { data } = await supabase.from("presence").select("*").limit(40);
-      if (!mounted || !data) return;
-      const users: MemberUser[] = data.map((d: any) => ({
-        uid: d.uid,
-        username: d.username || "Anonymous",
-        photoURL: d.photo_url || d.photoURL || "",
-        status: d.status || "online",
-        lastSeen: d.last_seen || d.lastSeen,
-        isMuted: d.is_muted || d.isMuted || false,
-        inVoice: d.in_voice || d.inVoice || false,
-      }));
-
-      // Ensure current profile is present
-      if (!users.some((u) => u.uid === profile.uid)) {
-        users.unshift({
-          uid: profile.uid,
-          username: profile.username,
-          photoURL: profile.photoURL,
-          status: "online",
-          lastSeen: Date.now(),
+    const q = query(collection(db, "presence"), limit(40));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const users: MemberUser[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as MemberUser;
+          users.push({
+            uid: docSnap.id,
+            username: data.username || "Anonymous",
+            photoURL: data.photoURL || "",
+            status: data.status || "online",
+            lastSeen: data.lastSeen,
+            isMuted: data.isMuted || false,
+            inVoice: data.inVoice || false,
+          });
         });
+
+        // Ensure current profile is present
+        if (!users.some((u) => u.uid === profile.uid)) {
+          users.unshift({
+            uid: profile.uid,
+            username: profile.username,
+            photoURL: profile.photoURL,
+            status: "online",
+            lastSeen: Date.now(),
+          });
+        }
+
+        setMemberUsers(users);
+      },
+      (error) => {
+        console.warn("ChatPanel presence listener error:", error);
       }
-
-      setMemberUsers(users);
-    };
-
-    fetchPresence();
-
-    const channel = supabase
-      .channel("panel_presence")
-      .on("postgres_changes", { event: "*", schema: "public", table: "presence" }, () => {
-        fetchPresence();
-      })
-      .subscribe();
-
-    return () => {
-      mounted = false;
-      supabase.removeChannel(channel);
-    };
+    );
+    return () => unsub();
   }, [profile]);
 
-  // Real-time message subscription with instant local rendering via Supabase
+  // Real-time message subscription with instant local rendering
   useEffect(() => {
-    let mounted = true;
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*")
-        .order("timestamp", { ascending: false })
-        .limit(50);
+    const q = query(
+      collection(db, "messages"),
+      orderBy("timestamp", "desc"),
+      limit(50)
+    );
 
-      if (!mounted || !data) return;
-      const reversed = [...data].reverse();
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const newMessages: ChatMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
+        });
+        const reversed = newMessages.reverse();
 
-      setMessages((prev) => {
-        // Keep any local optimistic messages that haven't arrived in the query yet
-        const pending = prev.filter(
-          (m) =>
-            m.id.startsWith("temp_") &&
-            !reversed.some(
-              (sm: any) =>
-                sm.uid === m.uid &&
-                Math.abs(sm.timestamp - m.timestamp) < 6000 &&
-                (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
-            )
-        );
-        return [...reversed, ...pending];
-      });
-      window.setTimeout(() => scrollToBottom(), 50);
-    };
+        setMessages((prev) => {
+          // Keep any local optimistic messages that haven't arrived in the snapshot yet
+          const pending = prev.filter(
+            (m) =>
+              m.id.startsWith("temp_") &&
+              !reversed.some(
+                (sm) =>
+                  sm.uid === m.uid &&
+                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
+                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
+              )
+          );
+          return [...reversed, ...pending];
+        });
+        window.setTimeout(() => scrollToBottom(), 50);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, "messages");
+      }
+    );
 
-    fetchMessages();
-
-    const channel = supabase
-      .channel("panel_messages")
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
-        fetchMessages();
-      })
-      .subscribe();
-
-    return () => {
-      mounted = false;
-      supabase.removeChannel(channel);
-    };
+    return () => unsubscribe();
   }, []);
 
   const scrollToBottom = () => {
@@ -268,10 +255,9 @@ export default function ChatPanel({
 
     try {
       const msgData: Record<string, any> = {
-        id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
         uid: profile.uid,
         username: profile.username,
-        photo_url: profile.photoURL || "",
+        photoURL: profile.photoURL || "",
         timestamp: now,
       };
 
@@ -282,11 +268,11 @@ export default function ChatPanel({
         msgData.attachment = currentAttachment;
       }
 
-      await supabase.from("messages").insert(msgData);
+      await addDoc(collection(db, "messages"), msgData);
     } catch (error) {
       // Revert optimistic message if writing failed
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      console.warn("Error inserting message:", error);
+      handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
@@ -311,18 +297,17 @@ export default function ChatPanel({
 
     try {
       const msgData: Record<string, any> = {
-        id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
         uid: profile.uid,
         username: profile.username,
-        photo_url: profile.photoURL || "",
+        photoURL: profile.photoURL || "",
         gif: gifUrl,
         timestamp: now,
       };
 
-      await supabase.from("messages").insert(msgData);
+      await addDoc(collection(db, "messages"), msgData);
     } catch (error) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      console.warn("Error inserting gif message:", error);
+      handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
@@ -345,9 +330,9 @@ export default function ChatPanel({
     // Optimistically remove from view immediately
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
     try {
-      await supabase.from("messages").delete().eq("id", msgId);
+      await deleteDoc(doc(db, "messages", msgId));
     } catch (error) {
-      console.warn("Error deleting message:", error);
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }
   };
 
@@ -365,17 +350,15 @@ export default function ChatPanel({
       )
     : messages;
 
-  // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
-  // within a few seconds (7s) they will not be shown as online.
   const activeOnlineUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return true;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
+    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
     return u.status === "online" && isRecent;
   });
 
   const leftUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return false;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
+    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
     return u.status === "left" || !isRecent;
   });
 

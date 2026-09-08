@@ -17,7 +17,20 @@ import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
 import { ChatProfile, ChatMessage } from "../types";
-import { supabase } from "../lib/supabase";
+import {
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+  onSnapshot,
+  where,
+  writeBatch,
+  deleteDoc,
+  updateDoc,
+  doc,
+} from "firebase/firestore";
+import { db, handleFirestoreError, OperationType } from "../firebase";
 
 export default function Chat({
   isOpen,
@@ -46,74 +59,32 @@ export default function Chat({
   const [notification, setNotification] = useState<ChatMessage | null>(null);
   const messageSoundRef = useRef<HTMLAudioElement | null>(null);
 
-  const [currentTime, setCurrentTime] = useState<number>(Date.now());
-  const [rawVoiceUsers, setRawVoiceUsers] = useState<
+  const [voiceUsers, setVoiceUsers] = useState<
     Array<{
       uid: string;
       username: string;
       photoURL: string;
       isMuted?: boolean;
       isVideoOn?: boolean;
-      timestamp?: number;
-      lastSeen?: number;
     }>
   >([]);
-
-  // 1-second tick to continuously drop dead/disconnected users within a few seconds
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Filter out any voice participant whose heartbeat is older than 7 seconds
-  const voiceUsers = rawVoiceUsers.filter((u) => {
-    if (profile && u.uid === profile.uid) return true;
-    const ts = u.timestamp || u.lastSeen;
-    return typeof ts === "number" ? currentTime - ts < 7000 : true;
-  });
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
 
-  // Real-time listener for voice users via Supabase
+  // Real-time listener for voice users
   useEffect(() => {
-    let mounted = true;
-
-    const fetchVoiceUsers = async () => {
-      const { data } = await supabase.from("voice_users").select("*");
-      if (!mounted || !data) return;
-      setRawVoiceUsers(data);
-
-      // Lazily clean up zombie records older than 15s
-      const now = Date.now();
-      data.forEach((u: any) => {
-        const ts = u.timestamp || u.lastSeen;
-        if (typeof ts === "number" && now - ts > 15000) {
-          supabase.from("voice_users").delete().eq("uid", u.uid).catch(() => {});
-        }
-      });
-    };
-
-    fetchVoiceUsers();
-
-    const channel = supabase
-      .channel("chat_voice_users")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "voice_users" },
-        () => {
-          fetchVoiceUsers();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      mounted = false;
-      supabase.removeChannel(channel);
-    };
+    const unsubscribe = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
+      },
+      (error) => {
+        console.warn("Chat voice_users listener error:", error);
+      }
+    );
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -124,50 +95,53 @@ export default function Chat({
     profileRef.current = profile;
   }, [profile]);
 
-  // Real-time message listener for instant audio & toast notifications via Supabase
+  // Real-time message listener for instant audio & toast notifications
   useEffect(() => {
+    const q = query(
+      collection(db, "messages"),
+      orderBy("timestamp", "desc"),
+      limit(1)
+    );
     let initialLoad = true;
 
-    const channel = supabase
-      .channel("chat_notifications")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
-        (payload: any) => {
-          if (initialLoad) return;
-          const msg = (payload.new || payload.record) as ChatMessage;
-          if (!msg) return;
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (snapshot.empty) return;
+        const newest = snapshot.docs[0];
+        const msg = { id: newest.id, ...newest.data() } as ChatMessage;
 
-          if (msg.timestamp < sessionStartRef.current) return;
-          const currentProfile = profileRef.current;
-          const isMe =
-            currentProfile &&
-            (msg.uid === currentProfile.uid ||
-              (msg.username === currentProfile.username &&
-                msg.photoURL === currentProfile.photoURL));
+        // Skip notifying on initial mount/page load
+        if (initialLoad) {
+          initialLoad = false;
+          return;
+        }
 
-          if (!isMe) {
-            messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
-            messageSoundRef.current.currentTime = 0;
-            messageSoundRef.current.volume = 0.8;
-            messageSoundRef.current.play().catch(() => {});
-            if (!isOpenRef.current) {
-              setNotification(msg);
-              setTimeout(() => setNotification(null), 4000);
-            }
+        if (msg.timestamp < sessionStartRef.current) return;
+        const currentProfile = profileRef.current;
+        const isMe =
+          currentProfile &&
+          (msg.uid === currentProfile.uid ||
+            (msg.username === currentProfile.username &&
+              msg.photoURL === currentProfile.photoURL));
+
+        if (!isMe) {
+          messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
+          messageSoundRef.current.currentTime = 0;
+          messageSoundRef.current.volume = 0.8;
+          messageSoundRef.current.play().catch(() => {});
+          if (!isOpenRef.current) {
+            setNotification(msg);
+            setTimeout(() => setNotification(null), 4000);
           }
         }
-      )
-      .subscribe();
+      },
+      (error) => {
+        console.warn("Chat notifications listener error:", error);
+      }
+    );
 
-    const timer = setTimeout(() => {
-      initialLoad = false;
-    }, 1200);
-
-    return () => {
-      clearTimeout(timer);
-      supabase.removeChannel(channel);
-    };
+    return () => unsubscribe();
   }, []);
 
   const handleProfileComplete = async (p: {
@@ -186,17 +160,25 @@ export default function Chat({
     } catch (e) {}
     setActiveTab("chat");
 
-    // Update previous messages in Supabase
+    // Update previous messages
     try {
-      await supabase
-        .from("messages")
-        .update({
-          username: newProfile.username,
-          photo_url: newProfile.photoURL,
-        })
-        .eq("uid", newProfile.uid);
+      const q = query(
+        collection(db, "messages"),
+        where("uid", "==", newProfile.uid)
+      );
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const batch = writeBatch(db);
+        snapshot.docs.forEach((doc) => {
+          batch.update(doc.ref, {
+            username: newProfile.username,
+            photoURL: newProfile.photoURL,
+          });
+        });
+        await batch.commit();
+      }
     } catch (error) {
-      console.warn("Error updating profile messages:", error);
+      handleFirestoreError(error, OperationType.UPDATE, "messages");
     }
   };
 
@@ -423,12 +405,12 @@ export default function Chat({
                 <button
                   onClick={() => {
                     if (profile?.uid) {
-                      supabase.from("voice_users").delete().eq("uid", profile.uid).catch(() => {});
-                      supabase.from("presence").update({
-                        in_voice: false,
-                        is_muted: false,
-                      }).eq("uid", profile.uid).catch(() => {});
-                      setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+                      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+                      updateDoc(doc(db, "presence", profile.uid), {
+                        inVoice: false,
+                        isMuted: false,
+                      }).catch(() => {});
+                      setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
                     }
                     setIsInVoiceSession(false);
                   }}
@@ -497,12 +479,12 @@ export default function Chat({
       }}
       onLeave={() => {
         if (profile?.uid) {
-          supabase.from("voice_users").delete().eq("uid", profile.uid).catch(() => {});
-          supabase.from("presence").update({
-            in_voice: false,
-            is_muted: false,
-          }).eq("uid", profile.uid).catch(() => {});
-          setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+          deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+          updateDoc(doc(db, "presence", profile.uid), {
+            inVoice: false,
+            isMuted: false,
+          }).catch(() => {});
+          setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
         }
         setIsInVoiceSession(false);
         setActiveTab("chat");
