@@ -1,234 +1,471 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Search,
-  Users,
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+  onSnapshot,
+  addDoc,
+  deleteDoc,
+  doc,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { db, handleFirestoreError, OperationType } from "../firebase";
+import { ChatMessage, ChatProfile } from "../types";
+import {
   Send,
   Image as ImageIcon,
-  MoreVertical,
-  Hash,
   X,
-  Smile,
   Trash2,
+  Users,
+  Search,
+  Hash,
   MicOff,
-  Volume2
+  Volume2,
+  Video,
 } from "lucide-react";
-import { ChatProfile, ChatMessage } from "../types";
-import { format } from "date-fns";
+
 import GiphyPicker from "./GiphyPicker";
-import { socket } from "../socket";
 
 interface ChatPanelProps {
-  activeChannel?: string;
   profile: ChatProfile;
+  activeChannel?: string;
   onSelectVoice?: () => void;
   showMembersSidebar?: boolean;
   setShowMembersSidebar?: (show: boolean | ((prev: boolean) => boolean)) => void;
 }
 
+interface MemberUser {
+  uid: string;
+  username: string;
+  photoURL: string;
+  lastSeen?: number;
+  status?: "online" | "left" | "offline";
+  isMuted?: boolean;
+  inVoice?: boolean;
+}
+
 export default function ChatPanel({
-  activeChannel = "general",
   profile,
-  onSelectVoice,
+  activeChannel = "general",
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
+  const [activeVoiceUsers, setActiveVoiceUsers] = useState<
+    Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
+  >({});
   const [text, setText] = useState("");
-  const [activeOnlineUsers, setActiveOnlineUsers] = useState<any[]>([]);
-  const [activeVoiceUsers, setActiveVoiceUsers] = useState<Record<string, any>>({});
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [attachment, setAttachment] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [showGiphy, setShowGiphy] = useState(false);
+  const [attachment, setAttachment] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input automatically
+  // Real-time listener for voice users
   useEffect(() => {
-    inputRef.current?.focus();
-  }, [activeChannel]);
+    const unsub = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setActiveVoiceUsers(
+          Object.fromEntries(
+            snapshot.docs.map((d) => [d.id, d.data() as any])
+          )
+        );
+      },
+      (error) => {
+        console.warn("ChatPanel voice_users listener error:", error);
+      }
+    );
+    return () => unsub();
+  }, []);
 
-  // Socket.io Subscriptions
+  // Presence & Left Website tracking
   useEffect(() => {
-    socket.emit("join", profile);
+    if (!profile) return;
+    const presenceRef = doc(db, "presence", profile.uid);
 
-    const onInitMessages = (msgs: ChatMessage[]) => {
-      setMessages(msgs);
+    const markOnline = async () => {
+      try {
+        await setDoc(presenceRef, {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
+          status: "online",
+          lastSeen: Date.now(),
+        }, { merge: true });
+      } catch (e) {}
     };
 
-    const onNewMessage = (msg: ChatMessage) => {
-      setMessages(prev => [...prev, msg]);
-    };
-    
-    const onDeleteMessage = (msgId: string) => {
-      setMessages(prev => prev.filter(m => m.id !== msgId));
-    };
-
-    const onVoiceUsers = (users: any[]) => {
-      const map: Record<string, any> = {};
-      users.forEach(u => map[u.uid] = u);
-      setActiveVoiceUsers(map);
-    };
-
-    const onPresence = (users: any[]) => {
-      // Deduplicate by uid (in case of multiple tabs)
-      const uniqueUsers = Array.from(new Map(users.map(u => [u.uid, u])).values());
-      setActiveOnlineUsers(uniqueUsers);
+    const markLeft = async () => {
+      try {
+        await setDoc(presenceRef, {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
+          status: "left",
+          lastSeen: Date.now(),
+          inVoice: false,
+        }, { merge: true }).catch(() => {});
+      } catch (e) {}
     };
 
-    socket.on("init_messages", onInitMessages);
-    socket.on("new_message", onNewMessage);
-    socket.on("delete_message", onDeleteMessage);
-    socket.on("voice_users", onVoiceUsers);
-    socket.on("presence", onPresence);
+    markOnline();
+    const interval = setInterval(markOnline, 20000); // 20s heartbeat
+
+    const handleUnload = () => {
+      markLeft();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        markLeft();
+      } else {
+        markOnline();
+      }
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      socket.off("init_messages", onInitMessages);
-      socket.off("new_message", onNewMessage);
-      socket.off("delete_message", onDeleteMessage);
-      socket.off("voice_users", onVoiceUsers);
-      socket.off("presence", onPresence);
+      clearInterval(interval);
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      markLeft();
     };
   }, [profile]);
 
-  // Scroll to bottom
+  // Real-time member presence listener
   useEffect(() => {
+    const q = query(collection(db, "presence"), limit(40));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const users: MemberUser[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as MemberUser;
+          users.push({
+            uid: docSnap.id,
+            username: data.username || "Anonymous",
+            photoURL: data.photoURL || "",
+            status: data.status || "online",
+            lastSeen: data.lastSeen,
+            isMuted: data.isMuted || false,
+            inVoice: data.inVoice || false,
+          });
+        });
+
+        // Ensure current profile is present
+        if (!users.some((u) => u.uid === profile.uid)) {
+          users.unshift({
+            uid: profile.uid,
+            username: profile.username,
+            photoURL: profile.photoURL,
+            status: "online",
+            lastSeen: Date.now(),
+          });
+        }
+
+        setMemberUsers(users);
+      },
+      (error) => {
+        console.warn("ChatPanel presence listener error:", error);
+      }
+    );
+    return () => unsub();
+  }, [profile]);
+
+  // Real-time message subscription with instant local rendering
+  useEffect(() => {
+    const q = query(
+      collection(db, "messages"),
+      orderBy("timestamp", "desc"),
+      limit(50)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const newMessages: ChatMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
+        });
+        const reversed = newMessages.reverse();
+
+        setMessages((prev) => {
+          // Keep any local optimistic messages that haven't arrived in the snapshot yet
+          const pending = prev.filter(
+            (m) =>
+              m.id.startsWith("temp_") &&
+              !reversed.some(
+                (sm) =>
+                  sm.uid === m.uid &&
+                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
+                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
+              )
+          );
+          return [...reversed, ...pending];
+        });
+        window.setTimeout(() => scrollToBottom(), 50);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, "messages");
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, showGiphy, attachment]);
+  };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!text.trim() && !attachment) return;
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const currentText = text.trim();
+    const currentAttachment = attachment;
+    if (!currentText && !currentAttachment) return;
 
-    const newMsg: ChatMessage = {
-      id: Date.now().toString() + Math.random().toString(36).substring(7),
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show message immediately on sender's screen (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
       uid: profile.uid,
       username: profile.username,
-      photoURL: profile.photoURL || undefined,
-      text: text.trim(),
-      timestamp: Date.now(),
-      attachment: attachment || undefined,
+      photoURL: profile.photoURL || "",
+      timestamp: now,
+      ...(currentText ? { text: currentText } : {}),
+      ...(currentAttachment ? { attachment: currentAttachment } : {}),
     };
 
-    socket.emit("send_message", newMsg);
+    setMessages((prev) => [...prev, optimisticMsg]);
     setText("");
     setAttachment(null);
     inputRef.current?.focus();
+    window.setTimeout(() => scrollToBottom(), 10);
+
+    try {
+      const msgData: Record<string, any> = {
+        uid: profile.uid,
+        username: profile.username,
+        photoURL: profile.photoURL || "",
+        timestamp: now,
+      };
+
+      if (currentText) {
+        msgData.text = currentText;
+      }
+      if (currentAttachment) {
+        msgData.attachment = currentAttachment;
+      }
+
+      await addDoc(collection(db, "messages"), msgData);
+    } catch (error) {
+      // Revert optimistic message if writing failed
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      handleFirestoreError(error, OperationType.CREATE, "messages");
+    }
   };
 
   const handleSendGif = async (gifUrl: string) => {
-    const newMsg: ChatMessage = {
-      id: Date.now().toString() + Math.random().toString(36).substring(7),
+    if (!gifUrl) return;
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show GIF immediately (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
       uid: profile.uid,
       username: profile.username,
-      photoURL: profile.photoURL || undefined,
-      text: "",
+      photoURL: profile.photoURL || "",
       gif: gifUrl,
-      timestamp: Date.now(),
+      timestamp: now,
     };
-    socket.emit("send_message", newMsg);
-    setShowGiphy(false);
-  };
 
-  const handleDeleteMessage = async (msgId: string) => {
-    socket.emit("delete_message", msgId);
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setShowGiphy(false);
+    window.setTimeout(() => scrollToBottom(), 10);
+
+    try {
+      const msgData: Record<string, any> = {
+        uid: profile.uid,
+        username: profile.username,
+        photoURL: profile.photoURL || "",
+        gif: gifUrl,
+        timestamp: now,
+      };
+
+      await addDoc(collection(db, "messages"), msgData);
+    } catch (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      handleFirestoreError(error, OperationType.CREATE, "messages");
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
       if (file.size > 2 * 1024 * 1024) {
-        alert("File size must be under 2MB for this demo.");
+        alert("File must be less than 2MB");
         return;
       }
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onload = () => {
         setAttachment(reader.result as string);
       };
       reader.readAsDataURL(file);
     }
   };
 
+  const handleDeleteMessage = async (msgId: string) => {
+    // Optimistically remove from view immediately
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
+    try {
+      await deleteDoc(doc(db, "messages", msgId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+    }
+  };
+
+  const formatTimestamp = (ts: number) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const filteredMessages = searchQuery.trim()
+    ? messages.filter(
+        (m) =>
+          m.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          m.username.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : messages;
+
+  const activeOnlineUsers = memberUsers.filter((u) => {
+    if (u.uid === profile.uid) return true;
+    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
+    return u.status === "online" && isRecent;
+  });
+
+  const leftUsers = memberUsers.filter((u) => {
+    if (u.uid === profile.uid) return false;
+    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
+    return u.status === "left" || !isRecent;
+  });
+
   return (
-    <div className="flex-1 flex overflow-hidden bg-[#0a0a0a]">
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0a0a0a]">
-        {/* Top Header */}
-        <header className="h-12 border-b border-neutral-900 flex items-center justify-between px-4 bg-[#0a0a0a] flex-shrink-0 shadow-sm z-10">
+    <div className="flex-1 flex w-full h-full min-h-0 bg-black text-white overflow-hidden">
+      {/* Center Chat View matching Image 2 */}
+      <div className="flex-1 flex flex-col min-w-0 h-full bg-black">
+        {/* Chat Header Bar */}
+        <div className="h-12 px-4 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <Hash size={20} className="text-neutral-500" />
-            <h2 className="text-sm font-bold text-neutral-200">{activeChannel}</h2>
+            <span className="text-xl font-bold text-neutral-400">#</span>
+            <span className="text-sm font-bold text-white tracking-wide">
+              {activeChannel}
+            </span>
+            <span className="text-xs text-neutral-500 font-normal hidden sm:inline ml-1">
+              main room
+            </span>
           </div>
-          
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center bg-neutral-900 border border-neutral-800 rounded px-2 py-1">
+
+          <div className="flex items-center gap-2">
+            {/* Search Bar */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-neutral-500" />
               <input
                 type="text"
-                placeholder="Search"
-                className="bg-transparent text-xs text-neutral-300 placeholder-neutral-500 focus:outline-none w-32"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search messages"
+                className="h-8 w-32 sm:w-44 bg-neutral-900 border border-neutral-800 rounded-md pl-8 pr-3 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-neutral-700 transition-colors"
               />
-              <Search size={14} className="text-neutral-500" />
             </div>
-            
-            <button
-              onClick={() => setShowMembersSidebar?.(!showMembersSidebar)}
-              className={`p-1.5 rounded transition-colors ${showMembersSidebar ? 'text-neutral-200 bg-neutral-800' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-              title="Toggle Members"
-            >
-              <Users size={18} />
-            </button>
-          </div>
-        </header>
 
-        {/* Messages List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
-          {/* Welcome Message */}
-          <div className="mt-8 mb-12 flex flex-col justify-end min-h-[160px]">
-            <div className="w-16 h-16 bg-neutral-800 rounded-full flex items-center justify-center mb-4 border border-neutral-700">
-              <Hash size={32} className="text-white" />
+            {/* Toggle Member Sidebar Button */}
+            {setShowMembersSidebar && (
+              <button
+                onClick={() => setShowMembersSidebar((prev) => !prev)}
+                className={`p-1.5 rounded-md transition-colors ${
+                  showMembersSidebar
+                    ? "bg-neutral-800 text-white"
+                    : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
+                }`}
+                title="Toggle Member List"
+              >
+                <Users size={18} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Scrollable Chat Area */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {/* Welcome Channel Banner matching Image 2 */}
+          <div className="mb-8 pt-2">
+            <div className="w-16 h-16 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-3xl font-extrabold text-white mb-3 shadow-md">
+              <Hash size={36} className="text-neutral-300" />
             </div>
-            <h1 className="text-3xl font-extrabold text-white mb-2">Welcome to #{activeChannel}!</h1>
-            <p className="text-neutral-400 text-sm">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-1">
+              Welcome to #{activeChannel}!
+            </h1>
+            <p className="text-neutral-400 text-xs sm:text-sm">
               This is the start of the #{activeChannel} channel.
             </p>
-            <div className="w-full h-px bg-neutral-900 mt-6" />
+            <div className="border-b border-neutral-900 mt-6" />
           </div>
 
-          {messages.map((msg) => {
-            const isMe = msg.uid === profile.uid;
-            
+          {/* Messages Stream */}
+          {filteredMessages.map((msg) => {
+            const isMe =
+              msg.uid === profile.uid ||
+              (msg.username === profile.username &&
+                msg.photoURL === profile.photoURL);
+
             return (
-              <div key={msg.id} className="group flex gap-4 hover:bg-neutral-900/40 p-2 -mx-2 rounded-lg transition-colors relative">
-                {/* Avatar */}
-                <div className="flex-shrink-0">
-                  <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-neutral-700 mt-0.5">
-                    {msg.photoURL ? (
-                      <img src={msg.photoURL} alt={msg.username} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-neutral-400 font-bold text-sm">
-                        {msg.username.charAt(0).toUpperCase()}
-                      </div>
-                    )}
-                  </div>
+              <div
+                key={msg.id}
+                className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
+              >
+                {/* Avatar Circle */}
+                <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex-shrink-0 flex items-center justify-center font-bold text-white text-sm">
+                  {msg.photoURL ? (
+                    <img
+                      src={msg.photoURL}
+                      alt={msg.username}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span>{msg.username.charAt(0).toUpperCase()}</span>
+                  )}
                 </div>
 
-                {/* Content */}
+                {/* Message Content */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline gap-2 mb-0.5">
-                    <span className="font-semibold text-neutral-200 text-sm">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm font-bold text-white hover:underline cursor-pointer">
                       {msg.username}
                     </span>
-                    <span className="text-[11px] text-neutral-500 font-medium">
-                      {format(new Date(msg.timestamp), 'MM/dd/yyyy h:mm a')}
+                    <span className="text-[11px] text-neutral-500 font-normal">
+                      {formatTimestamp(msg.timestamp)}
                     </span>
                   </div>
-                  
+
                   {msg.text && (
-                    <p className="text-neutral-300 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+                    <p className="text-sm text-neutral-200 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
                       {msg.text}
                     </p>
                   )}
-                  
+
                   {msg.gif && (
                     <img
                       src={msg.gif}
@@ -236,6 +473,7 @@ export default function ChatPanel({
                       className="rounded-xl mt-2 max-w-xs h-auto border border-neutral-800"
                     />
                   )}
+
                   {msg.attachment && (
                     <img
                       src={msg.attachment}
@@ -291,7 +529,7 @@ export default function ChatPanel({
           </div>
         )}
 
-        {/* Bottom Message Input Bar */}
+        {/* Bottom Message Input Bar matching Image 2 */}
         <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
           <form
             onSubmit={handleSendMessage}
@@ -305,7 +543,7 @@ export default function ChatPanel({
               placeholder={`Message #${activeChannel}...`}
               className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none"
             />
-            
+
             {/* Action Tools: Image, GIF, Send */}
             <div className="flex items-center gap-1.5">
               <button
@@ -323,7 +561,7 @@ export default function ChatPanel({
                 className="hidden"
                 onChange={handleFileChange}
               />
-              
+
               <button
                 type="button"
                 onClick={() => setShowGiphy(!showGiphy)}
@@ -332,7 +570,7 @@ export default function ChatPanel({
               >
                 GIF
               </button>
-              
+
               <button
                 type="submit"
                 disabled={!text.trim() && !attachment}
@@ -346,7 +584,7 @@ export default function ChatPanel({
         </div>
       </div>
 
-      {/* Right Members Sidebar ("ONLINE — N" & "OFFLINE / LEFT — N") */}
+      {/* Right Members Sidebar ("ONLINE — N" & "OFFLINE / LEFT — N") matching Image 2 */}
       {showMembersSidebar && (
         <aside className="w-56 bg-[#080808] border-l border-neutral-900 flex flex-col h-full flex-shrink-0 hidden md:flex">
           <div className="flex-1 overflow-y-auto p-3 space-y-5">
@@ -355,13 +593,12 @@ export default function ChatPanel({
               <h3 className="text-[10px] font-bold text-neutral-400 tracking-wider uppercase mb-2 px-1">
                 ONLINE — {activeOnlineUsers.length}
               </h3>
-              
               <div className="space-y-1">
                 {activeOnlineUsers.map((user) => {
                   const isCurrentUser = user.uid === profile.uid;
                   const voiceInfo = activeVoiceUsers[user.uid];
                   const isInVoice = !!voiceInfo;
-                  
+
                   return (
                     <div
                       key={user.uid}
@@ -382,7 +619,7 @@ export default function ChatPanel({
                         </div>
                         <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080808]" />
                       </div>
-                      
+
                       {/* Username & Status Label */}
                       <div className="flex-1 min-w-0 flex flex-col">
                         <div className="flex items-center gap-1.5">
@@ -395,7 +632,6 @@ export default function ChatPanel({
                             </span>
                           )}
                         </div>
-                        
                         <div className="flex items-center gap-1.5">
                           <span className="text-[10px] text-neutral-500 font-medium">
                             Online
