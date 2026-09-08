@@ -1,20 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import {
-  collection,
-  query,
-  orderBy,
-  limit,
-  getDocs,
-  onSnapshot,
-  addDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-  updateDoc,
-  db,
-  handleFirestoreError,
-  OperationType,
-} from "../firebase";
+import { supabase } from "../lib/supabase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -55,17 +40,7 @@ export default function ChatPanel({
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
-  // Initialize messages from local cache immediately so chat is always visible
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    try {
-      const cached = localStorage.getItem("lumiverse_cached_chat_messages");
-      if (cached) {
-        return JSON.parse(cached);
-      }
-    } catch (e) {}
-    return [];
-  });
-  const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
@@ -87,57 +62,64 @@ export default function ChatPanel({
     return () => clearInterval(timer);
   }, []);
 
-  // Real-time listener for voice users
+  // Real-time listener for voice users via Supabase
   useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "voice_users"),
-      (snapshot) => {
-        setActiveVoiceUsers(
-          Object.fromEntries(
-            snapshot.docs.map((d) => [d.id, d.data() as any])
-          )
-        );
-      },
-      (error) => {
-        console.warn("ChatPanel voice_users listener warning:", error);
-      }
-    );
-    return () => unsub();
+    let mounted = true;
+    const fetchVoiceUsers = async () => {
+      const { data } = await supabase.from("voice_users").select("*");
+      if (!mounted || !data) return;
+      setActiveVoiceUsers(
+        Object.fromEntries(
+          data.map((d: any) => [d.uid, d])
+        )
+      );
+    };
+    fetchVoiceUsers();
+
+    const channel = supabase
+      .channel("panel_voice_users")
+      .on("postgres_changes", { event: "*", schema: "public", table: "voice_users" }, () => {
+        fetchVoiceUsers();
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
   }, []);
 
-  // Presence & Left Website tracking with optimized 30s heartbeat
+  // Presence & Left Website tracking with fast 2.5s heartbeat via Supabase
   useEffect(() => {
     if (!profile) return;
-    db.setUid(profile.uid);
-    const presenceRef = doc(db, "presence", profile.uid);
 
     const markOnline = async () => {
       try {
-        await setDoc(presenceRef, {
+        await supabase.from("presence").upsert({
           uid: profile.uid,
           username: profile.username,
-          photoURL: profile.photoURL || "",
+          photo_url: profile.photoURL || "",
           status: "online",
-          lastSeen: Date.now(),
-        }, { merge: true });
+          last_seen: Date.now(),
+        }, { onConflict: "uid" });
       } catch (e) {}
     };
 
     const markLeft = async () => {
       try {
-        await setDoc(presenceRef, {
+        await supabase.from("presence").upsert({
           uid: profile.uid,
           username: profile.username,
-          photoURL: profile.photoURL || "",
+          photo_url: profile.photoURL || "",
           status: "left",
-          lastSeen: Date.now(),
-          inVoice: false,
-        }, { merge: true }).catch(() => {});
+          last_seen: Date.now(),
+          in_voice: false,
+        }, { onConflict: "uid" });
       } catch (e) {}
     };
 
     markOnline();
-    const interval = setInterval(markOnline, 30000); // 30s throttled heartbeat to protect free daily quota
+    const interval = setInterval(markOnline, 2500); // 2.5s rapid heartbeat for real-time accuracy
 
     const handleUnload = () => {
       markLeft();
@@ -151,121 +133,107 @@ export default function ChatPanel({
       }
     };
 
-    const handleFocus = () => {
-      markOnline();
-    };
-
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
-    window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
-      window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       markLeft();
     };
   }, [profile]);
 
-  // Real-time member presence listener
+  // Real-time member presence listener via Supabase
   useEffect(() => {
-    const q = query(collection(db, "presence"), limit(40));
-    const unsub = onSnapshot(
-      q,
-      (snapshot) => {
-        const users: MemberUser[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data() as MemberUser;
-          users.push({
-            uid: docSnap.id,
-            username: data.username || "Anonymous",
-            photoURL: data.photoURL || "",
-            status: data.status || "online",
-            lastSeen: data.lastSeen,
-            isMuted: data.isMuted || false,
-            inVoice: data.inVoice || false,
-          });
+    let mounted = true;
+    const fetchPresence = async () => {
+      const { data } = await supabase.from("presence").select("*").limit(40);
+      if (!mounted || !data) return;
+      const users: MemberUser[] = data.map((d: any) => ({
+        uid: d.uid,
+        username: d.username || "Anonymous",
+        photoURL: d.photo_url || d.photoURL || "",
+        status: d.status || "online",
+        lastSeen: d.last_seen || d.lastSeen,
+        isMuted: d.is_muted || d.isMuted || false,
+        inVoice: d.in_voice || d.inVoice || false,
+      }));
+
+      // Ensure current profile is present
+      if (!users.some((u) => u.uid === profile.uid)) {
+        users.unshift({
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL,
+          status: "online",
+          lastSeen: Date.now(),
         });
-
-        // Ensure current profile is present
-        if (!users.some((u) => u.uid === profile.uid)) {
-          users.unshift({
-            uid: profile.uid,
-            username: profile.username,
-            photoURL: profile.photoURL,
-            status: "online",
-            lastSeen: Date.now(),
-          });
-        }
-
-        setMemberUsers(users);
-      },
-      (error) => {
-        console.warn("ChatPanel presence listener warning:", error);
       }
-    );
-    return () => unsub();
+
+      setMemberUsers(users);
+    };
+
+    fetchPresence();
+
+    const channel = supabase
+      .channel("panel_presence")
+      .on("postgres_changes", { event: "*", schema: "public", table: "presence" }, () => {
+        fetchPresence();
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
   }, [profile]);
 
-  // Real-time message subscription with instant local rendering and fallback caching
+  // Real-time message subscription with instant local rendering via Supabase
   useEffect(() => {
-    const q = query(
-      collection(db, "messages"),
-      orderBy("timestamp", "desc"),
-      limit(50)
-    );
+    let mounted = true;
+    const fetchMessages = async () => {
+      const { data } = await supabase
+        .from("messages")
+        .select("*")
+        .order("timestamp", { ascending: false })
+        .limit(50);
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        setIsQuotaExceeded(false);
-        const newMessages: ChatMessage[] = [];
-        snapshot.forEach((docSnap) => {
-          newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
-        });
-        const reversed = newMessages.reverse();
+      if (!mounted || !data) return;
+      const reversed = [...data].reverse();
 
-        // Update local storage backup
-        try {
-          localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(reversed));
-        } catch (e) {}
+      setMessages((prev) => {
+        // Keep any local optimistic messages that haven't arrived in the query yet
+        const pending = prev.filter(
+          (m) =>
+            m.id.startsWith("temp_") &&
+            !reversed.some(
+              (sm: any) =>
+                sm.uid === m.uid &&
+                Math.abs(sm.timestamp - m.timestamp) < 6000 &&
+                (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
+            )
+        );
+        return [...reversed, ...pending];
+      });
+      window.setTimeout(() => scrollToBottom(), 50);
+    };
 
-        setMessages((prev) => {
-          // Keep any local optimistic messages that haven't arrived in the snapshot yet
-          const pending = prev.filter(
-            (m) =>
-              m.id.startsWith("temp_") &&
-              !reversed.some(
-                (sm) =>
-                  sm.uid === m.uid &&
-                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
-                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
-              )
-          );
-          return [...reversed, ...pending];
-        });
-        window.setTimeout(() => scrollToBottom(), 50);
-      },
-      (error) => {
-        const errStr = error instanceof Error ? error.message : String(error);
-        if (errStr.includes("Quota limit exceeded") || errStr.includes("quota metric")) {
-          setIsQuotaExceeded(true);
-        }
-        handleFirestoreError(error, OperationType.LIST, "messages");
-        // Ensure local cache is retained
-        try {
-          const cached = localStorage.getItem("lumiverse_cached_chat_messages");
-          if (cached) {
-            setMessages(JSON.parse(cached));
-          }
-        } catch (e) {}
-      }
-    );
+    fetchMessages();
 
-    return () => unsubscribe();
+    const channel = supabase
+      .channel("panel_messages")
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
+        fetchMessages();
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const scrollToBottom = () => {
@@ -292,14 +260,7 @@ export default function ChatPanel({
       ...(currentAttachment ? { attachment: currentAttachment } : {}),
     };
 
-    setMessages((prev) => {
-      const updated = [...prev, optimisticMsg];
-      try {
-        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated.slice(-50)));
-      } catch (e) {}
-      return updated;
-    });
-
+    setMessages((prev) => [...prev, optimisticMsg]);
     setText("");
     setAttachment(null);
     inputRef.current?.focus();
@@ -307,9 +268,10 @@ export default function ChatPanel({
 
     try {
       const msgData: Record<string, any> = {
+        id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
         uid: profile.uid,
         username: profile.username,
-        photoURL: profile.photoURL || "",
+        photo_url: profile.photoURL || "",
         timestamp: now,
       };
 
@@ -320,9 +282,11 @@ export default function ChatPanel({
         msgData.attachment = currentAttachment;
       }
 
-      await addDoc(collection(db, "messages"), msgData);
+      await supabase.from("messages").insert(msgData);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, "messages");
+      // Revert optimistic message if writing failed
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      console.warn("Error inserting message:", error);
     }
   };
 
@@ -341,29 +305,24 @@ export default function ChatPanel({
       timestamp: now,
     };
 
-    setMessages((prev) => {
-      const updated = [...prev, optimisticMsg];
-      try {
-        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated.slice(-50)));
-      } catch (e) {}
-      return updated;
-    });
-
+    setMessages((prev) => [...prev, optimisticMsg]);
     setShowGiphy(false);
     window.setTimeout(() => scrollToBottom(), 10);
 
     try {
       const msgData: Record<string, any> = {
+        id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
         uid: profile.uid,
         username: profile.username,
-        photoURL: profile.photoURL || "",
+        photo_url: profile.photoURL || "",
         gif: gifUrl,
         timestamp: now,
       };
 
-      await addDoc(collection(db, "messages"), msgData);
+      await supabase.from("messages").insert(msgData);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, "messages");
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      console.warn("Error inserting gif message:", error);
     }
   };
 
@@ -384,17 +343,11 @@ export default function ChatPanel({
 
   const handleDeleteMessage = async (msgId: string) => {
     // Optimistically remove from view immediately
-    setMessages((prev) => {
-      const updated = prev.filter((m) => m.id !== msgId);
-      try {
-        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated));
-      } catch (e) {}
-      return updated;
-    });
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
     try {
-      await deleteDoc(doc(db, "messages", msgId));
+      await supabase.from("messages").delete().eq("id", msgId);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+      console.warn("Error deleting message:", error);
     }
   };
 
@@ -412,22 +365,23 @@ export default function ChatPanel({
       )
     : messages;
 
-  // Real-time filtering: 60s threshold matches the 30s heartbeat to avoid excessive database operations
+  // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
+  // within a few seconds (7s) they will not be shown as online.
   const activeOnlineUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return true;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
     return u.status === "online" && isRecent;
   });
 
   const leftUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return false;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
     return u.status === "left" || !isRecent;
   });
 
   return (
     <div className="flex-1 flex w-full h-full min-h-0 bg-black text-white overflow-hidden">
-      {/* Center Chat View */}
+      {/* Center Chat View matching Image 2 */}
       <div className="flex-1 flex flex-col min-w-0 h-full bg-black">
         {/* Chat Header Bar */}
         <div className="h-12 px-4 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
@@ -470,17 +424,6 @@ export default function ChatPanel({
             )}
           </div>
         </div>
-
-        {/* Informative quota fallback notice */}
-        {isQuotaExceeded && (
-          <div className="px-4 py-2 bg-amber-950/40 border-b border-amber-800/50 flex items-center justify-between text-xs text-amber-300">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              <span>Free daily database quota limit reached. Chat is running in cached session mode.</span>
-            </div>
-            <span className="text-[10px] text-amber-400/80 font-mono">Offline Backup Active</span>
-          </div>
-        )}
 
         {/* Scrollable Chat Area */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">

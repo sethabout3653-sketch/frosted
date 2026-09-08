@@ -1,459 +1,320 @@
 import express from "express";
-import http from "http";
 import path from "path";
-import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-import { eq, desc } from "drizzle-orm";
-import { db as sqlDb } from "./src/db/index.ts";
-import { messages as sqlMessages, presence as sqlPresence, voiceUsers as sqlVoiceUsers } from "./src/db/schema.ts";
-
-// Real-time In-Memory Data Store (Zero quota limits, zero delay with PostgreSQL durable storage)
-interface ChatMessageData {
-  id: string;
-  uid: string;
-  username: string;
-  photoURL: string;
-  text?: string;
-  gif?: string;
-  attachment?: string;
-  timestamp: number;
-}
-
-interface VoiceUserData {
-  uid: string;
-  username: string;
-  photoURL: string;
-  isMuted?: boolean;
-  isVideoOn?: boolean;
-  isVideoLoading?: boolean;
-  timestamp: number;
-  lastSeen?: number;
-}
-
-interface PresenceData {
-  uid: string;
-  username: string;
-  photoURL: string;
-  status: "online" | "left" | "offline";
-  lastSeen: number;
-  isMuted?: boolean;
-  inVoice?: boolean;
-}
-
-interface VoiceSignalData {
-  id: string;
-  senderId: string;
-  receiverId: string;
-  type: "offer" | "answer" | "candidate";
-  data: string;
-  timestamp: number;
-}
-
-const store = {
-  messages: [] as ChatMessageData[],
-  voiceUsers: new Map<string, VoiceUserData>(),
-  presence: new Map<string, PresenceData>(),
-  signals: new Map<string, VoiceSignalData>(),
-};
-
-// Map connected WebSockets to metadata
-const connectedClients = new Map<WebSocket, { uid?: string }>();
-
-function broadcast(payload: any, excludeWs?: WebSocket) {
-  const messageStr = JSON.stringify(payload);
-  for (const [client] of connectedClients) {
-    if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(messageStr);
-      } catch (err) {}
-    }
-  }
-}
-
-function sendToUser(targetUid: string, payload: any) {
-  const messageStr = JSON.stringify(payload);
-  for (const [client, meta] of connectedClients) {
-    if (meta.uid === targetUid && client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(messageStr);
-      } catch (err) {}
-    }
-  }
-}
-
-// Auto-prune inactive voice users and presence
-setInterval(() => {
-  const now = Date.now();
-  let voiceChanged = false;
-  for (const [uid, user] of store.voiceUsers) {
-    const ts = user.timestamp || user.lastSeen || 0;
-    if (now - ts > 75000) {
-      store.voiceUsers.delete(uid);
-      voiceChanged = true;
-    }
-  }
-  if (voiceChanged) {
-    broadcast({
-      type: "sync_collection",
-      collection: "voice_users",
-      data: Array.from(store.voiceUsers.values()),
-    });
-  }
-
-  // Clear stale signals older than 30s
-  for (const [id, signal] of store.signals) {
-    if (now - signal.timestamp > 30000) {
-      store.signals.delete(id);
-    }
-  }
-}, 15000);
-
-async function initDatabaseHydration() {
-  try {
-    const dbMessages = await sqlDb
-      .select()
-      .from(sqlMessages)
-      .orderBy(desc(sqlMessages.timestamp))
-      .limit(100);
-
-    if (dbMessages && dbMessages.length > 0) {
-      store.messages = dbMessages.reverse().map((m) => ({
-        id: m.id,
-        uid: m.uid,
-        username: m.username,
-        photoURL: m.photoURL || "",
-        text: m.text || undefined,
-        gif: m.gif || undefined,
-        attachment: m.attachment || undefined,
-        timestamp: Number(m.timestamp),
-      }));
-    }
-  } catch (err) {
-    console.warn("SQL hydration notice:", err);
-  }
-}
-
-async function persistMessage(msg: ChatMessageData) {
-  try {
-    await sqlDb
-      .insert(sqlMessages)
-      .values({
-        id: msg.id,
-        uid: msg.uid,
-        username: msg.username,
-        photoURL: msg.photoURL || null,
-        text: msg.text || null,
-        gif: msg.gif || null,
-        attachment: msg.attachment || null,
-        timestamp: msg.timestamp,
-      })
-      .onConflictDoUpdate({
-        target: sqlMessages.id,
-        set: {
-          username: msg.username,
-          photoURL: msg.photoURL || null,
-          text: msg.text || null,
-          gif: msg.gif || null,
-          attachment: msg.attachment || null,
-          timestamp: msg.timestamp,
-        },
-      });
-  } catch (err) {
-    console.warn("SQL message persist error:", err);
-  }
-}
-
-async function deleteMessageFromSql(id: string) {
-  try {
-    await sqlDb.delete(sqlMessages).where(eq(sqlMessages.id, id));
-  } catch (err) {
-    console.warn("SQL message delete error:", err);
-  }
-}
-
-async function persistPresence(pres: PresenceData) {
-  try {
-    await sqlDb
-      .insert(sqlPresence)
-      .values({
-        uid: pres.uid,
-        username: pres.username,
-        photoURL: pres.photoURL || null,
-        status: pres.status,
-        lastSeen: pres.lastSeen,
-        inVoice: pres.inVoice ?? false,
-        isMuted: pres.isMuted ?? false,
-      })
-      .onConflictDoUpdate({
-        target: sqlPresence.uid,
-        set: {
-          username: pres.username,
-          photoURL: pres.photoURL || null,
-          status: pres.status,
-          lastSeen: pres.lastSeen,
-          inVoice: pres.inVoice ?? false,
-          isMuted: pres.isMuted ?? false,
-        },
-      });
-  } catch (err) {
-    console.warn("SQL presence persist error:", err);
-  }
-}
+import { pool } from "./src/db/index.ts";
 
 async function startServer() {
-  // Hydrate messages from PostgreSQL
-  await initDatabaseHydration();
-
   const app = express();
-  const server = http.createServer(app);
   const PORT = 3000;
 
   // JSON and URL parsing middleware
   app.use(express.json({ limit: "15mb" }));
   app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
-  // WebSocket Server setup
-  const wss = new WebSocketServer({ noServer: true });
+  // Realtime SSE Event Bus
+  const sseClients = new Set<express.Response>();
 
-  server.on("upgrade", (request, socket, head) => {
-    const pathname = request.url
-      ? new URL(request.url, `http://${request.headers.host || "localhost"}`).pathname
-      : "";
-    if (pathname === "/ws") {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
+  function normalizeRow(row: any) {
+    if (!row || typeof row !== "object") return row;
+    const result: any = { ...row };
+    if ("photo_url" in row) {
+      result.photoURL = row.photo_url;
+      result.photoUrl = row.photo_url;
     }
-  });
+    if ("last_seen" in row && row.last_seen !== null) {
+      result.lastSeen = Number(row.last_seen);
+    }
+    if ("in_voice" in row) {
+      result.inVoice = Boolean(row.in_voice);
+    }
+    if ("is_muted" in row) {
+      result.isMuted = Boolean(row.is_muted);
+    }
+    if ("is_video_on" in row) {
+      result.isVideoOn = Boolean(row.is_video_on);
+    }
+    if ("is_video_loading" in row) {
+      result.isVideoLoading = Boolean(row.is_video_loading);
+    }
+    if ("sender_id" in row) {
+      result.senderId = row.sender_id;
+    }
+    if ("receiver_id" in row) {
+      result.receiverId = row.receiver_id;
+    }
+    if ("timestamp" in row && row.timestamp !== null) {
+      result.timestamp = Number(row.timestamp);
+    }
+    return result;
+  }
 
-  wss.on("connection", (ws: WebSocket) => {
-    connectedClients.set(ws, {});
-
-    // Send full initial state snapshots on connection
-    ws.send(
-      JSON.stringify({
-        type: "sync_collection",
-        collection: "messages",
-        data: store.messages.slice(-100),
-      })
-    );
-    ws.send(
-      JSON.stringify({
-        type: "sync_collection",
-        collection: "voice_users",
-        data: Array.from(store.voiceUsers.values()),
-      })
-    );
-    ws.send(
-      JSON.stringify({
-        type: "sync_collection",
-        collection: "presence",
-        data: Array.from(store.presence.values()),
-      })
-    );
-
-    ws.on("message", (raw) => {
+  function broadcastDbEvent(table: string, eventType: string, record: any) {
+    const norm = normalizeRow(record);
+    const payload = JSON.stringify({
+      table,
+      eventType,
+      schema: "public",
+      new: eventType !== "DELETE" ? norm : null,
+      old: eventType !== "INSERT" ? norm : null,
+      record: norm,
+    });
+    for (const client of sseClients) {
       try {
-        const msg = JSON.parse(raw.toString());
-        const { action, collection: colName, data, id, uid, merge } = msg;
-
-        if (action === "identify" && uid) {
-          const meta = connectedClients.get(ws) || {};
-          meta.uid = uid;
-          connectedClients.set(ws, meta);
-          return;
-        }
-
-        if (action === "add_doc") {
-          const docId = id || "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
-          const fullDoc = { ...data, id: docId };
-
-          if (colName === "messages") {
-            store.messages.push(fullDoc);
-            if (store.messages.length > 500) {
-              store.messages = store.messages.slice(-500);
-            }
-            broadcast({ type: "add_doc", collection: "messages", doc: fullDoc });
-            persistMessage(fullDoc);
-          } else if (colName === "signals") {
-            store.signals.set(docId, fullDoc);
-            // Route signal immediately to receiver with 0ms delay
-            if (fullDoc.receiverId) {
-              sendToUser(fullDoc.receiverId, {
-                type: "signal",
-                collection: "signals",
-                doc: fullDoc,
-              });
-            }
-          }
-          ws.send(JSON.stringify({ type: "doc_added", docId, collection: colName }));
-        } else if (action === "set_doc") {
-          const docId = id || data?.uid || "doc_" + Date.now();
-          const docData = { ...data, id: docId };
-
-          if (colName === "voice_users") {
-            const existing = merge ? store.voiceUsers.get(docId) || {} : {};
-            const merged = { ...existing, ...docData, uid: docId };
-            store.voiceUsers.set(docId, merged as VoiceUserData);
-            broadcast({ type: "set_doc", collection: "voice_users", doc: merged });
-          } else if (colName === "presence") {
-            const existing = merge ? store.presence.get(docId) || {} : {};
-            const merged = { ...existing, ...docData, uid: docId };
-            store.presence.set(docId, merged as PresenceData);
-            broadcast({ type: "set_doc", collection: "presence", doc: merged });
-            persistPresence(merged as PresenceData);
-          } else if (colName === "messages") {
-            const idx = store.messages.findIndex((m) => m.id === docId);
-            if (idx >= 0) {
-              store.messages[idx] = { ...(merge ? store.messages[idx] : {}), ...docData };
-            } else {
-              store.messages.push(docData as ChatMessageData);
-            }
-            broadcast({ type: "set_doc", collection: "messages", doc: docData });
-            persistMessage(docData as ChatMessageData);
-          }
-        } else if (action === "update_doc") {
-          const docId = id;
-          if (colName === "voice_users") {
-            const existing = store.voiceUsers.get(docId);
-            if (existing) {
-              const updated = { ...existing, ...data };
-              store.voiceUsers.set(docId, updated);
-              broadcast({ type: "update_doc", collection: "voice_users", doc: updated });
-            }
-          } else if (colName === "presence") {
-            const existing = store.presence.get(docId);
-            if (existing) {
-              const updated = { ...existing, ...data };
-              store.presence.set(docId, updated);
-              broadcast({ type: "update_doc", collection: "presence", doc: updated });
-              persistPresence(updated as PresenceData);
-            }
-          } else if (colName === "messages") {
-            const idx = store.messages.findIndex((m) => m.id === docId);
-            if (idx >= 0) {
-              store.messages[idx] = { ...store.messages[idx], ...data };
-              broadcast({
-                type: "update_doc",
-                collection: "messages",
-                doc: store.messages[idx],
-              });
-              persistMessage(store.messages[idx]);
-            }
-          }
-        } else if (action === "delete_doc") {
-          const docId = id;
-          if (colName === "messages") {
-            store.messages = store.messages.filter((m) => m.id !== docId);
-            broadcast({ type: "delete_doc", collection: "messages", id: docId });
-            deleteMessageFromSql(docId);
-          } else if (colName === "voice_users") {
-            store.voiceUsers.delete(docId);
-            broadcast({ type: "delete_doc", collection: "voice_users", id: docId });
-          } else if (colName === "presence") {
-            store.presence.delete(docId);
-            broadcast({ type: "delete_doc", collection: "presence", id: docId });
-          } else if (colName === "signals") {
-            store.signals.delete(docId);
-            // Notify receiver that signal was consumed
-            broadcast({ type: "delete_doc", collection: "signals", id: docId });
-          }
-        }
-      } catch (err) {
-        console.error("WS message handling error:", err);
+        client.write(`data: ${payload}\n\n`);
+      } catch {
+        sseClients.delete(client);
       }
-    });
-
-    ws.on("close", () => {
-      const meta = connectedClients.get(ws);
-      connectedClients.delete(ws);
-      if (meta?.uid) {
-        // If no other connection for this UID exists, mark presence as left
-        const hasOtherConn = Array.from(connectedClients.values()).some(
-          (m) => m.uid === meta.uid
-        );
-        if (!hasOtherConn) {
-          const pres = store.presence.get(meta.uid);
-          if (pres) {
-            pres.status = "left";
-            pres.inVoice = false;
-            pres.lastSeen = Date.now();
-            broadcast({ type: "set_doc", collection: "presence", doc: pres });
-          }
-          if (store.voiceUsers.has(meta.uid)) {
-            store.voiceUsers.delete(meta.uid);
-            broadcast({ type: "delete_doc", collection: "voice_users", id: meta.uid });
-          }
-        }
-      }
-    });
-  });
-
-  // REST API Endpoints for Real-Time fallback and hydration
-  app.get("/api/realtime/messages", (req, res) => {
-    res.json(store.messages.slice(-100));
-  });
-
-  app.post("/api/realtime/messages", (req, res) => {
-    const docId = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
-    const msg: ChatMessageData = { ...req.body, id: docId, timestamp: req.body.timestamp || Date.now() };
-    store.messages.push(msg);
-    if (store.messages.length > 500) {
-      store.messages = store.messages.slice(-500);
     }
-    broadcast({ type: "add_doc", collection: "messages", doc: msg });
-    persistMessage(msg);
-    res.json(msg);
-  });
+  }
 
-  app.delete("/api/realtime/messages/:id", (req, res) => {
-    const { id } = req.params;
-    store.messages = store.messages.filter((m) => m.id !== id);
-    broadcast({ type: "delete_doc", collection: "messages", id });
-    deleteMessageFromSql(id);
-    res.json({ success: true, id });
-  });
+  // SSE Realtime Endpoint
+  app.get("/api/db-realtime", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
 
-  app.get("/api/realtime/voice_users", (req, res) => {
-    res.json(Array.from(store.voiceUsers.values()));
-  });
+    res.write(`data: ${JSON.stringify({ status: "connected" })}\n\n`);
+    sseClients.add(res);
 
-  app.post("/api/realtime/voice_users", (req, res) => {
-    const user: VoiceUserData = { ...req.body, uid: req.body.uid || "user_" + Date.now(), timestamp: Date.now() };
-    store.voiceUsers.set(user.uid, user);
-    broadcast({ type: "set_doc", collection: "voice_users", doc: user });
-    res.json(user);
-  });
+    const keepAlive = setInterval(() => {
+      res.write(": keepalive\n\n");
+    }, 15000);
 
-  app.delete("/api/realtime/voice_users/:uid", (req, res) => {
-    const { uid } = req.params;
-    store.voiceUsers.delete(uid);
-    broadcast({ type: "delete_doc", collection: "voice_users", id: uid });
-    res.json({ success: true, uid });
-  });
-
-  app.get("/api/realtime/presence", (req, res) => {
-    res.json(Array.from(store.presence.values()));
-  });
-
-  app.post("/api/realtime/presence", (req, res) => {
-    const pres: PresenceData = { ...req.body, uid: req.body.uid, lastSeen: Date.now() };
-    store.presence.set(pres.uid, pres);
-    broadcast({ type: "set_doc", collection: "presence", doc: pres });
-    persistPresence(pres);
-    res.json(pres);
-  });
-
-  app.post("/api/realtime/signals", (req, res) => {
-    const docId = "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
-    const signal: VoiceSignalData = { ...req.body, id: docId, timestamp: Date.now() };
-    store.signals.set(docId, signal);
-    sendToUser(signal.receiverId, {
-      type: "signal",
-      collection: "signals",
-      doc: signal,
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      sseClients.delete(res);
     });
-    res.json(signal);
+  });
+
+  const ALLOWED_TABLES = new Set(["messages", "presence", "voice_users", "signals"]);
+  const FIELD_MAP: Record<string, string> = {
+    photoURL: "photo_url",
+    photoUrl: "photo_url",
+    lastSeen: "last_seen",
+    inVoice: "in_voice",
+    isMuted: "is_muted",
+    isVideoOn: "is_video_on",
+    isVideoLoading: "is_video_loading",
+    senderId: "sender_id",
+    receiverId: "receiver_id",
+  };
+
+  function toDbField(field: string): string {
+    return FIELD_MAP[field] || field;
+  }
+
+  function parseFilter(query: any): { whereClauses: string[]; params: any[] } {
+    const whereClauses: string[] = [];
+    const params: any[] = [];
+    const reserved = new Set(["select", "order", "ascending", "limit", "on_conflict"]);
+
+    for (const [key, value] of Object.entries(query)) {
+      if (reserved.has(key)) continue;
+      const col = toDbField(key);
+      const strVal = String(value);
+      if (strVal.startsWith("eq.")) {
+        params.push(strVal.substring(3));
+        whereClauses.push(`"${col}" = $${params.length}`);
+      } else if (strVal.startsWith("neq.")) {
+        params.push(strVal.substring(4));
+        whereClauses.push(`"${col}" != $${params.length}`);
+      } else if (strVal.startsWith("gt.")) {
+        params.push(strVal.substring(3));
+        whereClauses.push(`"${col}" > $${params.length}`);
+      } else if (strVal.startsWith("gte.")) {
+        params.push(strVal.substring(4));
+        whereClauses.push(`"${col}" >= $${params.length}`);
+      } else if (strVal.startsWith("lt.")) {
+        params.push(strVal.substring(3));
+        whereClauses.push(`"${col}" < $${params.length}`);
+      } else if (strVal.startsWith("lte.")) {
+        params.push(strVal.substring(4));
+        whereClauses.push(`"${col}" <= $${params.length}`);
+      } else {
+        params.push(strVal);
+        whereClauses.push(`"${col}" = $${params.length}`);
+      }
+    }
+    return { whereClauses, params };
+  }
+
+  // Database Query API: GET /api/db/:table
+  app.get("/api/db/:table", async (req, res) => {
+    const table = req.params.table;
+    if (!ALLOWED_TABLES.has(table)) {
+      return res.status(400).json({ data: null, error: `Invalid table ${table}` });
+    }
+
+    try {
+      const { whereClauses, params } = parseFilter(req.query);
+      let queryText = `SELECT * FROM "${table}"`;
+      if (whereClauses.length > 0) {
+        queryText += ` WHERE ${whereClauses.join(" AND ")}`;
+      }
+
+      if (req.query.order) {
+        const orderCol = toDbField(String(req.query.order));
+        const dir = req.query.ascending === "true" ? "ASC" : "DESC";
+        queryText += ` ORDER BY "${orderCol}" ${dir}`;
+      }
+
+      if (req.query.limit) {
+        const limitNum = parseInt(String(req.query.limit), 10);
+        if (!isNaN(limitNum) && limitNum > 0) {
+          queryText += ` LIMIT ${limitNum}`;
+        }
+      }
+
+      const result = await pool.query(queryText, params);
+      const rows = result.rows.map(normalizeRow);
+      res.json({ data: rows, error: null });
+    } catch (err: any) {
+      console.error(`Error querying ${table}:`, err);
+      res.status(500).json({ data: null, error: err.message });
+    }
+  });
+
+  // Database Insert / Upsert API: POST /api/db/:table
+  app.post("/api/db/:table", async (req, res) => {
+    const table = req.params.table;
+    if (!ALLOWED_TABLES.has(table)) {
+      return res.status(400).json({ data: null, error: `Invalid table ${table}` });
+    }
+
+    try {
+      const rawRows = Array.isArray(req.body) ? req.body : [req.body];
+      const insertedRows: any[] = [];
+
+      for (const rawItem of rawRows) {
+        if (!rawItem || typeof rawItem !== "object") continue;
+
+        const record: Record<string, any> = {};
+        for (const [k, v] of Object.entries(rawItem)) {
+          record[toDbField(k)] = v;
+        }
+
+        // Auto-generate id if missing
+        if (!record.id && (table === "messages" || table === "signals")) {
+          record.id = "id_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+        }
+
+        const keys = Object.keys(record);
+        if (keys.length === 0) continue;
+
+        const cols = keys.map((k) => `"${k}"`).join(", ");
+        const placeholders = keys.map((_, i) => `$${i + 1}`).join(", ");
+        const values = keys.map((k) => record[k]);
+
+        const onConflict = String(req.query.on_conflict || (table === "presence" || table === "voice_users" ? "uid" : ""));
+
+        let queryText = `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`;
+
+        if (onConflict) {
+          const conflictCol = toDbField(onConflict);
+          const updateSets = keys
+            .filter((k) => k !== conflictCol)
+            .map((k) => `"${k}" = EXCLUDED."${k}"`)
+            .join(", ");
+
+          if (updateSets.length > 0) {
+            queryText += ` ON CONFLICT ("${conflictCol}") DO UPDATE SET ${updateSets}`;
+          } else {
+            queryText += ` ON CONFLICT ("${conflictCol}") DO NOTHING`;
+          }
+        }
+
+        queryText += " RETURNING *";
+
+        const result = await pool.query(queryText, values);
+        if (result.rows[0]) {
+          const norm = normalizeRow(result.rows[0]);
+          insertedRows.push(norm);
+          broadcastDbEvent(table, "INSERT", norm);
+        }
+      }
+
+      res.json({ data: insertedRows, error: null });
+    } catch (err: any) {
+      console.error(`Error inserting into ${table}:`, err);
+      res.status(500).json({ data: null, error: err.message });
+    }
+  });
+
+  // Database Update API: PATCH /api/db/:table
+  app.patch("/api/db/:table", async (req, res) => {
+    const table = req.params.table;
+    if (!ALLOWED_TABLES.has(table)) {
+      return res.status(400).json({ data: null, error: `Invalid table ${table}` });
+    }
+
+    try {
+      const updates: Record<string, any> = {};
+      for (const [k, v] of Object.entries(req.body)) {
+        updates[toDbField(k)] = v;
+      }
+
+      const updateKeys = Object.keys(updates);
+      if (updateKeys.length === 0) {
+        return res.json({ data: [], error: null });
+      }
+
+      const params: any[] = [];
+      const setClauses: string[] = [];
+
+      for (const key of updateKeys) {
+        params.push(updates[key]);
+        setClauses.push(`"${key}" = $${params.length}`);
+      }
+
+      const { whereClauses, params: whereParams } = parseFilter(req.query);
+      for (const wp of whereParams) {
+        params.push(wp);
+      }
+
+      const adjustedWhere = whereClauses.map((clause, idx) => {
+        return clause.replace(/\$\d+/, `$${updateKeys.length + idx + 1}`);
+      });
+
+      let queryText = `UPDATE "${table}" SET ${setClauses.join(", ")}`;
+      if (adjustedWhere.length > 0) {
+        queryText += ` WHERE ${adjustedWhere.join(" AND ")}`;
+      }
+      queryText += " RETURNING *";
+
+      const result = await pool.query(queryText, params);
+      const rows = result.rows.map(normalizeRow);
+      rows.forEach((r) => broadcastDbEvent(table, "UPDATE", r));
+      res.json({ data: rows, error: null });
+    } catch (err: any) {
+      console.error(`Error updating ${table}:`, err);
+      res.status(500).json({ data: null, error: err.message });
+    }
+  });
+
+  // Database Delete API: DELETE /api/db/:table
+  app.delete("/api/db/:table", async (req, res) => {
+    const table = req.params.table;
+    if (!ALLOWED_TABLES.has(table)) {
+      return res.status(400).json({ data: null, error: `Invalid table ${table}` });
+    }
+
+    try {
+      const { whereClauses, params } = parseFilter(req.query);
+      let queryText = `DELETE FROM "${table}"`;
+      if (whereClauses.length > 0) {
+        queryText += ` WHERE ${whereClauses.join(" AND ")}`;
+      }
+      queryText += " RETURNING *";
+
+      const result = await pool.query(queryText, params);
+      const rows = result.rows.map(normalizeRow);
+      rows.forEach((r) => broadcastDbEvent(table, "DELETE", r));
+      res.json({ data: rows, error: null });
+    } catch (err: any) {
+      console.error(`Error deleting from ${table}:`, err);
+      res.status(500).json({ data: null, error: err.message });
+    }
   });
 
   // API Proxy Route: Create session
@@ -725,8 +586,8 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT} with Realtime Engine & WebSockets active`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
