@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
+import {
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+  onSnapshot,
+  addDoc,
+  deleteDoc,
+  doc,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { db, handleFirestoreError, OperationType } from "../firebase";
 import { ChatMessage, ChatProfile } from "../types";
-import { realtime } from "../services/realtime";
 import {
   Send,
   Image as ImageIcon,
@@ -40,8 +53,17 @@ export default function ChatPanel({
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
-  // Initialize messages from realtime store immediately
-  const [messages, setMessages] = useState<ChatMessage[]>(() => realtime.getMessages());
+  // Initialize messages from local cache immediately so chat is always visible
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const cached = localStorage.getItem("lumiverse_cached_chat_messages");
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {}
+    return [];
+  });
+  const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
@@ -55,7 +77,7 @@ export default function ChatPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Real-time tick
+  // 1-second tick to continuously evaluate active vs dead/lagging peers in real-time
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(Date.now());
@@ -63,80 +85,184 @@ export default function ChatPanel({
     return () => clearInterval(timer);
   }, []);
 
-  // Real-time listener for voice users via WebSocket
+  // Real-time listener for voice users
   useEffect(() => {
-    const unsub = realtime.subscribeVoiceUsers((users) => {
-      const record: Record<string, { isMuted?: boolean; isVideoOn?: boolean }> = {};
-      users.forEach((u) => {
-        if (u && u.uid) {
-          record[u.uid] = { isMuted: u.isMuted, isVideoOn: u.isVideoOn };
-        }
-      });
-      setActiveVoiceUsers(record);
-    });
-    return unsub;
+    const unsub = onSnapshot(
+      collection(db, "voice_users"),
+      (snapshot) => {
+        setActiveVoiceUsers(
+          Object.fromEntries(
+            snapshot.docs.map((d) => [d.id, d.data() as any])
+          )
+        );
+      },
+      (error) => {
+        console.warn("ChatPanel voice_users listener warning:", error);
+      }
+    );
+    return () => unsub();
   }, []);
 
-  // Real-time presence management
+  // Presence & Left Website tracking with optimized 30s heartbeat
   useEffect(() => {
     if (!profile) return;
+    const presenceRef = doc(db, "presence", profile.uid);
 
-    realtime.updatePresence({
-      ...profile,
-      status: "online",
-    });
-
-    const handleFocus = () => {
-      realtime.updatePresence({
-        ...profile,
-        status: "online",
-      });
+    const markOnline = async () => {
+      try {
+        await setDoc(presenceRef, {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
+          status: "online",
+          lastSeen: Date.now(),
+        }, { merge: true });
+      } catch (e) {}
     };
+
+    const markLeft = async () => {
+      try {
+        await setDoc(presenceRef, {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
+          status: "left",
+          lastSeen: Date.now(),
+          inVoice: false,
+        }, { merge: true }).catch(() => {});
+      } catch (e) {}
+    };
+
+    markOnline();
+    const interval = setInterval(markOnline, 30000); // 30s throttled heartbeat to protect free daily quota
 
     const handleUnload = () => {
-      realtime.updatePresence({
-        ...profile,
-        status: "left",
-      });
+      markLeft();
     };
 
-    window.addEventListener("focus", handleFocus);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        markLeft();
+      } else {
+        markOnline();
+      }
+    };
+
+    const handleFocus = () => {
+      markOnline();
+    };
+
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      window.removeEventListener("focus", handleFocus);
+      clearInterval(interval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      markLeft();
     };
   }, [profile]);
 
   // Real-time member presence listener
   useEffect(() => {
-    const unsub = realtime.subscribePresence((users) => {
-      let list = [...users];
-      // Ensure current profile is listed if online
-      if (profile && !list.some((u) => u.uid === profile.uid)) {
-        list.unshift({
-          uid: profile.uid,
-          username: profile.username,
-          photoURL: profile.photoURL,
-          status: "online",
-          lastSeen: Date.now(),
+    const q = query(collection(db, "presence"), limit(40));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const users: MemberUser[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as MemberUser;
+          users.push({
+            uid: docSnap.id,
+            username: data.username || "Anonymous",
+            photoURL: data.photoURL || "",
+            status: data.status || "online",
+            lastSeen: data.lastSeen,
+            isMuted: data.isMuted || false,
+            inVoice: data.inVoice || false,
+          });
         });
+
+        // Ensure current profile is present
+        if (!users.some((u) => u.uid === profile.uid)) {
+          users.unshift({
+            uid: profile.uid,
+            username: profile.username,
+            photoURL: profile.photoURL,
+            status: "online",
+            lastSeen: Date.now(),
+          });
+        }
+
+        setMemberUsers(users);
+      },
+      (error) => {
+        console.warn("ChatPanel presence listener warning:", error);
       }
-      setMemberUsers(list);
-    });
-    return unsub;
+    );
+    return () => unsub();
   }, [profile]);
 
-  // Real-time message subscription
+  // Real-time message subscription with instant local rendering and fallback caching
   useEffect(() => {
-    const unsub = realtime.subscribeMessages((newMessages) => {
-      setMessages(newMessages);
-      window.setTimeout(() => scrollToBottom(), 40);
-    });
-    return unsub;
+    const q = query(
+      collection(db, "messages"),
+      orderBy("timestamp", "desc"),
+      limit(50)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setIsQuotaExceeded(false);
+        const newMessages: ChatMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
+        });
+        const reversed = newMessages.reverse();
+
+        // Update local storage backup
+        try {
+          localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(reversed));
+        } catch (e) {}
+
+        setMessages((prev) => {
+          // Keep any local optimistic messages that haven't arrived in the snapshot yet
+          const pending = prev.filter(
+            (m) =>
+              m.id.startsWith("temp_") &&
+              !reversed.some(
+                (sm) =>
+                  sm.uid === m.uid &&
+                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
+                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
+              )
+          );
+          return [...reversed, ...pending];
+        });
+        window.setTimeout(() => scrollToBottom(), 50);
+      },
+      (error) => {
+        const errStr = error instanceof Error ? error.message : String(error);
+        if (errStr.includes("Quota limit exceeded") || errStr.includes("quota metric")) {
+          setIsQuotaExceeded(true);
+        }
+        handleFirestoreError(error, OperationType.LIST, "messages");
+        // Ensure local cache is retained
+        try {
+          const cached = localStorage.getItem("lumiverse_cached_chat_messages");
+          if (cached) {
+            setMessages(JSON.parse(cached));
+          }
+        } catch (e) {}
+      }
+    );
+
+    return () => unsubscribe();
   }, []);
 
   const scrollToBottom = () => {
@@ -149,46 +275,100 @@ export default function ChatPanel({
     const currentAttachment = attachment;
     if (!currentText && !currentAttachment) return;
 
-    const newMsg: ChatMessage = {
-      id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show message immediately on sender's screen (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
-      timestamp: Date.now(),
+      timestamp: now,
       ...(currentText ? { text: currentText } : {}),
       ...(currentAttachment ? { attachment: currentAttachment } : {}),
     };
+
+    setMessages((prev) => {
+      const updated = [...prev, optimisticMsg];
+      try {
+        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated.slice(-50)));
+      } catch (e) {}
+      return updated;
+    });
 
     setText("");
     setAttachment(null);
     inputRef.current?.focus();
     window.setTimeout(() => scrollToBottom(), 10);
 
-    await realtime.sendMessage(newMsg);
+    try {
+      const msgData: Record<string, any> = {
+        uid: profile.uid,
+        username: profile.username,
+        photoURL: profile.photoURL || "",
+        timestamp: now,
+      };
+
+      if (currentText) {
+        msgData.text = currentText;
+      }
+      if (currentAttachment) {
+        msgData.attachment = currentAttachment;
+      }
+
+      await addDoc(collection(db, "messages"), msgData);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, "messages");
+    }
   };
 
   const handleSendGif = async (gifUrl: string) => {
     if (!gifUrl) return;
-    const newMsg: ChatMessage = {
-      id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+
+    // Optimistically show GIF immediately (0ms latency)
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
       gif: gifUrl,
-      timestamp: Date.now(),
+      timestamp: now,
     };
+
+    setMessages((prev) => {
+      const updated = [...prev, optimisticMsg];
+      try {
+        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated.slice(-50)));
+      } catch (e) {}
+      return updated;
+    });
 
     setShowGiphy(false);
     window.setTimeout(() => scrollToBottom(), 10);
 
-    await realtime.sendMessage(newMsg);
+    try {
+      const msgData: Record<string, any> = {
+        uid: profile.uid,
+        username: profile.username,
+        photoURL: profile.photoURL || "",
+        gif: gifUrl,
+        timestamp: now,
+      };
+
+      await addDoc(collection(db, "messages"), msgData);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, "messages");
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
-      if (file.size > 15 * 1024 * 1024) {
-        alert("File must be less than 15MB");
+      if (file.size > 2 * 1024 * 1024) {
+        alert("File must be less than 2MB");
         return;
       }
       const reader = new FileReader();
@@ -200,7 +380,19 @@ export default function ChatPanel({
   };
 
   const handleDeleteMessage = async (msgId: string) => {
-    await realtime.deleteMessage(msgId);
+    // Optimistically remove from view immediately
+    setMessages((prev) => {
+      const updated = prev.filter((m) => m.id !== msgId);
+      try {
+        localStorage.setItem("lumiverse_cached_chat_messages", JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+    try {
+      await deleteDoc(doc(db, "messages", msgId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+    }
   };
 
   const formatTimestamp = (ts: number) => {
@@ -275,6 +467,17 @@ export default function ChatPanel({
             )}
           </div>
         </div>
+
+        {/* Informative quota fallback notice */}
+        {isQuotaExceeded && (
+          <div className="px-4 py-2 bg-amber-950/40 border-b border-amber-800/50 flex items-center justify-between text-xs text-amber-300">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span>Free daily database quota limit reached. Chat is running in cached session mode.</span>
+            </div>
+            <span className="text-[10px] text-amber-400/80 font-mono">Offline Backup Active</span>
+          </div>
+        )}
 
         {/* Scrollable Chat Area */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
