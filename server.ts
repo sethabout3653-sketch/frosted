@@ -2,9 +2,10 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+import { Server as SocketIOServer } from "socket.io";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
 // JSON and URL parsing middleware
 app.use(express.json());
@@ -138,107 +139,7 @@ app.get("/api/game-frame", async (req, res) => {
   }
 });
 
-// --- Mock Sethbase Endpoints ---
-const DB_FILE = process.env.VERCEL ? '/tmp/sethbase.json' : './sethbase.json';
-let dbCollections: Record<string, Record<string, any>> = {};
-
-try {
-  if (fs.existsSync(DB_FILE)) {
-    dbCollections = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-  }
-} catch (e) {
-  dbCollections = {};
-}
-
-function saveDb() {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(dbCollections));
-  } catch (e) {}
-}
-
-app.get('/api/sethbase', (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  res.setHeader('Surrogate-Control', 'no-store');
-  const path = req.query.path as string;
-  if (!path) return res.status(400).send('No path');
-  const col = dbCollections[path] || {};
-  const docs = Object.values(col).sort((a, b) => {
-    const tA = a.createdAt || a.timestamp || 0;
-    const tB = b.createdAt || b.timestamp || 0;
-    return tA - tB;
-  });
-  res.json(docs);
-});
-
-app.post('/api/sethbase', (req, res) => {
-  const path = req.query.path as string;
-  if (!path) return res.status(400).send('No path');
-  if (!dbCollections[path]) dbCollections[path] = {};
-  
-  const id = Date.now().toString() + Math.random().toString(36).substring(7);
-  const docData = { ...req.body, id, _id: id };
-  dbCollections[path][id] = docData;
-  saveDb();
-  res.json({ id });
-});
-
-app.all('/api/sethbase/:collection/:id', (req, res) => {
-  const { collection, id } = req.params;
-  if (!dbCollections[collection]) dbCollections[collection] = {};
-  
-  if (req.method === 'DELETE') {
-    delete dbCollections[collection][id];
-    saveDb();
-    return res.json({ success: true });
-  }
-
-  if (req.method === 'PUT') {
-    const { data, options } = req.body;
-    if (options?.merge) {
-      dbCollections[collection][id] = { ...dbCollections[collection][id], ...data, id, _id: id };
-    } else {
-      dbCollections[collection][id] = { ...data, id, _id: id };
-    }
-    saveDb();
-    return res.json({ success: true });
-  }
-
-  if (req.method === 'PATCH') {
-    dbCollections[collection][id] = { ...dbCollections[collection][id], ...req.body, id, _id: id };
-    saveDb();
-    return res.json({ success: true });
-  }
-
-  res.status(405).send('Method not allowed');
-});
-
-app.post('/api/sethbase_batch', (req, res) => {
-  const ops = req.body.ops || [];
-  for (const op of ops) {
-    const parts = op.path.split('/');
-    const col = parts[0];
-    const id = parts[1];
-    if (!dbCollections[col]) dbCollections[col] = {};
-    
-    if (op.type === 'delete') {
-      delete dbCollections[col][id];
-    } else if (op.type === 'set') {
-      if (op.options?.merge) {
-        dbCollections[col][id] = { ...dbCollections[col][id], ...op.data, id, _id: id };
-      } else {
-        dbCollections[col][id] = { ...op.data, id, _id: id };
-      }
-    } else if (op.type === 'update') {
-      dbCollections[col][id] = { ...dbCollections[col][id], ...op.data, id, _id: id };
-    }
-  }
-  saveDb();
-  res.json({ success: true });
-});
 // --------------------------------
-
 // Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", mode: process.env.NODE_ENV });
@@ -264,8 +165,75 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
+  });
+
+  // ----------------------------------------------------
+  // UNLIMITED, OPEN SOURCE, REAL-TIME SOCKET.IO BACKEND
+  // ----------------------------------------------------
+  // NOTE: This requires a continuous Node.js server (e.g. Render, Railway, Fly.io, or AI Studio).
+  // Vercel Serverless Functions do NOT support WebSockets and will drop state.
+  const io = new SocketIOServer(httpServer, {
+    cors: { origin: "*" }
+  });
+
+  let messages: any[] = [];
+  const voiceUsers = new Map<string, any>();
+  const presenceUsers = new Map<string, any>();
+
+  io.on("connection", (socket: any) => {
+    // Send initial state
+    socket.emit("init_messages", messages);
+    socket.emit("voice_users", Array.from(voiceUsers.values()));
+    socket.emit("presence", Array.from(presenceUsers.values()));
+
+    socket.on("join", (profile: any) => {
+      presenceUsers.set(socket.id, { ...profile, socketId: socket.id, lastSeen: Date.now() });
+      io.emit("presence", Array.from(presenceUsers.values()));
+    });
+
+    socket.on("send_message", (msg: any) => {
+      messages.push(msg);
+      // Keep last 1000 messages to prevent memory leak
+      if (messages.length > 1000) messages.shift();
+      io.emit("new_message", msg);
+    });
+    
+    socket.on("delete_message", (msgId: string) => {
+      messages = messages.filter(m => m.id !== msgId);
+      io.emit("delete_message", msgId);
+    });
+
+    socket.on("join_voice", (user: any) => {
+      voiceUsers.set(socket.id, { ...user, socketId: socket.id });
+      io.emit("voice_users", Array.from(voiceUsers.values()));
+    });
+    
+    socket.on("update_voice", (user: any) => {
+      if (voiceUsers.has(socket.id)) {
+        voiceUsers.set(socket.id, { ...user, socketId: socket.id });
+        io.emit("voice_users", Array.from(voiceUsers.values()));
+      }
+    });
+
+    socket.on("leave_voice", () => {
+      voiceUsers.delete(socket.id);
+      io.emit("voice_users", Array.from(voiceUsers.values()));
+    });
+
+    socket.on("signal", (payload: any) => {
+      // payload: { to: socketId, signal: data, from: socket.id }
+      io.to(payload.to).emit("signal", { ...payload, from: socket.id });
+    });
+
+    socket.on("disconnect", () => {
+      if (voiceUsers.has(socket.id)) voiceUsers.delete(socket.id);
+      if (presenceUsers.has(socket.id)) presenceUsers.delete(socket.id);
+      
+      io.emit("voice_users", Array.from(voiceUsers.values()));
+      io.emit("presence", Array.from(presenceUsers.values()));
+    });
   });
 }
 

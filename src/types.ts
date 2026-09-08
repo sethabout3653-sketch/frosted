@@ -44,3 +44,7 @@ export interface VoiceSignal {
   data: string;
   timestamp: number;
 }
+
+export interface IceServerConfig {
+  servers?: RTCIceServer[];
+}
