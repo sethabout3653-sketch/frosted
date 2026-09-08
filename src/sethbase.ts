@@ -77,7 +77,7 @@ export function onSnapshot(q: any, onNext: (snap: any) => void, onError?: (e: an
   const poll = async () => {
     if (isUnsubscribed) return;
     try {
-      const res = await fetch(`/api/sethbase?path=${q.path}`);
+      const res = await fetch(`/api/sethbase?path=${q.path}`, { cache: 'no-store' });
       if (res.ok) {
         const text = await res.text();
         if (text.startsWith('<')) {
@@ -145,7 +145,7 @@ export function onSnapshot(q: any, onNext: (snap: any) => void, onError?: (e: an
 }
 
 export async function getDocs(q: any) {
-  const res = await fetch(`/api/sethbase?path=${q.path}`);
+  const res = await fetch(`/api/sethbase?path=${q.path}`, { cache: 'no-store' });
   const text = await res.text();
   if (text.startsWith('<')) throw new Error('Failed to fetch (HTML fallback)');
   let json = JSON.parse(text);

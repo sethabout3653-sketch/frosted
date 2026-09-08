@@ -157,6 +157,10 @@ function saveDb() {
 }
 
 app.get('/api/sethbase', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
   const path = req.query.path as string;
   if (!path) return res.status(400).send('No path');
   const col = dbCollections[path] || {};
