@@ -26,7 +26,7 @@ export function doc(dbOrCol: any, pathStr: string, idStr?: string) {
   return { path: pathStr, id: pathStr.split('/').pop() };
 }
 
-const POLLING_INTERVAL = 150;
+const POLLING_INTERVAL = 1500;
 
 function applyConstraints(json: any[], constraints: any[]) {
   if (!constraints) return json;
