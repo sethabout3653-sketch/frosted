@@ -94,6 +94,12 @@ export default function VoiceChannel({
   // Audio level and remote volume states
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
+  const [isEchoCancellationEnabled, setIsEchoCancellationEnabled] = useState(true);
+  const echoCancellationRef = useRef(true);
+
+  useEffect(() => {
+    echoCancellationRef.current = isEchoCancellationEnabled;
+  }, [isEchoCancellationEnabled]);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const rawStreamRef = useRef<MediaStream | null>(null);
@@ -118,12 +124,13 @@ export default function VoiceChannel({
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
-  // Automatically acquire studio uncapped microphone stream (no noise gate, no AGC, no compression cutoff)
+  // Automatically acquire studio microphone stream with smart echo/noise cancellation by default
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
+    const enableEcho = echoCancellationRef.current;
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: { ideal: false },
+          echoCancellation: enableEcho,
           noiseSuppression: false,
           autoGainControl: false,
           channelCount: { ideal: 2 },
@@ -132,11 +139,22 @@ export default function VoiceChannel({
         video: false,
       });
     } catch (err) {
-      console.warn("Uncapped mic constraints failed, using fallback:", err);
-      return await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+      console.warn("High fidelity mic constraints failed, using fallback:", err);
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: enableEcho,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+          video: false,
+         });
+      } catch (err2) {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+      }
     }
   }, []);
 
@@ -944,6 +962,34 @@ export default function VoiceChannel({
     }
   };
 
+  const toggleEchoCancellation = async () => {
+    const nextVal = !isEchoCancellationEnabled;
+    setIsEchoCancellationEnabled(nextVal);
+    echoCancellationRef.current = nextVal;
+    
+    // Apply constraints dynamically to the active tracks (disable gate and AGC to prevent cutoff)
+    const constraints = {
+      echoCancellation: nextVal,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    
+    if (rawStreamRef.current) {
+      rawStreamRef.current.getAudioTracks().forEach((track) => {
+        track.applyConstraints(constraints).catch((err) => {
+          console.warn("applyConstraints failed on raw track", err);
+        });
+      });
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.applyConstraints(constraints).catch((err) => {
+          console.warn("applyConstraints failed on local track", err);
+        });
+      });
+    }
+  };
+
   const handleLeave = () => {
     // 1. Immediately delete voice_users document and mark presence as left voice
     deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
@@ -1174,6 +1220,18 @@ export default function VoiceChannel({
           </button>
 
           <button
+            onClick={toggleEchoCancellation}
+            className={`p-2 rounded-xl transition-all cursor-pointer ${
+              isEchoCancellationEnabled
+                ? "bg-emerald-600/20 text-emerald-400 border border-emerald-800/80 hover:bg-emerald-600/30"
+                : "bg-[#2b2d31] text-neutral-400 hover:bg-[#35373c]"
+            }`}
+            title={isEchoCancellationEnabled ? "Disable Echo Filter (Studio Mode)" : "Enable Echo Filter (Echo-Free Mode)"}
+          >
+            {isEchoCancellationEnabled ? <Sparkles size={14} /> : <Zap size={14} />}
+          </button>
+
+          <button
             onClick={toggleVideo}
             disabled={isCameraLoading}
             className={`p-2 rounded-xl transition-all cursor-pointer ${
@@ -1254,6 +1312,8 @@ export default function VoiceChannel({
                   ? "bg-red-500"
                   : audioLevel > 5
                   ? "bg-emerald-400 animate-pulse"
+                  : isEchoCancellationEnabled
+                  ? "bg-emerald-400"
                   : "bg-cyan-400"
               }`}
             />
@@ -1262,6 +1322,11 @@ export default function VoiceChannel({
                 "MUTED"
               ) : audioLevel > 5 ? (
                 "SPEAKING"
+              ) : isEchoCancellationEnabled ? (
+                <>
+                  <Sparkles size={10} className="text-emerald-400 fill-emerald-400/40" />
+                  ECHO FILTERED
+                </>
               ) : (
                 <>
                   <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
@@ -1478,6 +1543,25 @@ export default function VoiceChannel({
           title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
         >
           {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+        </button>
+
+        <button
+          onClick={toggleEchoCancellation}
+          className={`p-3.5 rounded-2xl transition-all cursor-pointer flex items-center gap-2 ${
+            isEchoCancellationEnabled
+              ? "bg-emerald-600/20 text-emerald-400 border border-emerald-800/80 hover:bg-emerald-600/30 font-bold"
+              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+          }`}
+          title={
+            isEchoCancellationEnabled
+              ? "Disable Echo Filter (Studio Mode for Instruments/Soundboards)"
+              : "Enable Echo Filter (Echo-Free Communication Mode)"
+          }
+        >
+          {isEchoCancellationEnabled ? <Sparkles size={20} className="text-emerald-400 animate-pulse" /> : <Zap size={20} className="text-neutral-400" />}
+          <span className="text-xs hidden md:inline">
+            {isEchoCancellationEnabled ? "Echo Filter: ON" : "Echo Filter: OFF"}
+          </span>
         </button>
 
         <button
