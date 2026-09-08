@@ -255,6 +255,79 @@ async function startServer() {
     }
   });
 
+  // --- Mock Sethbase Endpoints ---
+  const dbCollections: Record<string, Record<string, any>> = {};
+
+  app.get('/api/sethbase', (req, res) => {
+    const path = req.query.path as string;
+    if (!path) return res.status(400).send('No path');
+    const col = dbCollections[path] || {};
+    const docs = Object.values(col).sort((a, b) => {
+      const tA = a.createdAt || a.timestamp || 0;
+      const tB = b.createdAt || b.timestamp || 0;
+      return tA - tB;
+    });
+    res.json(docs);
+  });
+
+  app.post('/api/sethbase', (req, res) => {
+    const path = req.query.path as string;
+    if (!path) return res.status(400).send('No path');
+    if (!dbCollections[path]) dbCollections[path] = {};
+    const id = Date.now().toString() + Math.random().toString(36).substring(7);
+    const docData = { ...req.body, id, _id: id };
+    dbCollections[path][id] = docData;
+    res.json({ id });
+  });
+
+  app.all('/api/sethbase/:collection/:id', (req, res) => {
+    const { collection, id } = req.params;
+    if (!dbCollections[collection]) dbCollections[collection] = {};
+    
+    if (req.method === 'DELETE') {
+      delete dbCollections[collection][id];
+      return res.json({ success: true });
+    }
+    if (req.method === 'PUT') {
+      const { data, options } = req.body;
+      if (options?.merge) {
+        dbCollections[collection][id] = { ...dbCollections[collection][id], ...data, id, _id: id };
+      } else {
+        dbCollections[collection][id] = { ...data, id, _id: id };
+      }
+      return res.json({ success: true });
+    }
+    if (req.method === 'PATCH') {
+      dbCollections[collection][id] = { ...dbCollections[collection][id], ...req.body, id, _id: id };
+      return res.json({ success: true });
+    }
+    res.status(405).send('Method not allowed');
+  });
+
+  app.post('/api/sethbase_batch', (req, res) => {
+    const ops = req.body.ops || [];
+    for (const op of ops) {
+      const parts = op.path.split('/');
+      const col = parts[0];
+      const id = parts[1];
+      if (!dbCollections[col]) dbCollections[col] = {};
+      
+      if (op.type === 'delete') {
+        delete dbCollections[col][id];
+      } else if (op.type === 'set') {
+        if (op.options?.merge) {
+          dbCollections[col][id] = { ...dbCollections[col][id], ...op.data, id, _id: id };
+        } else {
+          dbCollections[col][id] = { ...op.data, id, _id: id };
+        }
+      } else if (op.type === 'update') {
+        dbCollections[col][id] = { ...dbCollections[col][id], ...op.data, id, _id: id };
+      }
+    }
+    res.json({ success: true });
+  });
+  // --------------------------------
+
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });

@@ -29,8 +29,8 @@ import {
   deleteDoc,
   updateDoc,
   doc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  db, handleSethbaseError, OperationType
+} from "../sethbase";
 
 export default function Chat({
   isOpen,
@@ -178,7 +178,7 @@ export default function Chat({
         await batch.commit();
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, "messages");
+      handleSethbaseError(error, OperationType.UPDATE, "messages");
     }
   };
 

@@ -11,8 +11,8 @@ import {
   doc,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  db, handleSethbaseError, OperationType
+} from "../sethbase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -216,7 +216,7 @@ export default function ChatPanel({
         window.setTimeout(() => scrollToBottom(), 50);
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, "messages");
+        handleSethbaseError(error, OperationType.LIST, "messages");
       }
     );
 
@@ -272,7 +272,7 @@ export default function ChatPanel({
     } catch (error) {
       // Revert optimistic message if writing failed
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      handleFirestoreError(error, OperationType.CREATE, "messages");
+      handleSethbaseError(error, OperationType.CREATE, "messages");
     }
   };
 
@@ -307,7 +307,7 @@ export default function ChatPanel({
       await addDoc(collection(db, "messages"), msgData);
     } catch (error) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      handleFirestoreError(error, OperationType.CREATE, "messages");
+      handleSethbaseError(error, OperationType.CREATE, "messages");
     }
   };
 
@@ -332,7 +332,7 @@ export default function ChatPanel({
     try {
       await deleteDoc(doc(db, "messages", msgId));
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+      handleSethbaseError(error, OperationType.DELETE, `messages/${msgId}`);
     }
   };
 

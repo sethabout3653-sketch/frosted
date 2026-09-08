@@ -28,8 +28,8 @@ import {
   where,
   addDoc,
   updateDoc,
-} from "firebase/firestore";
-import { db } from "../firebase";
+  db
+} from "../sethbase";
 import { ChatProfile, VoiceSignal } from "../types";
 
 interface VoiceChannelProps {
