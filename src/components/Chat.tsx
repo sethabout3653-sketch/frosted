@@ -32,7 +32,7 @@ import {
   db,
   handleFirestoreError,
   OperationType,
-} from "../cassandra";
+} from "../supabase-adapter";
 
 export default function Chat({
   isOpen,

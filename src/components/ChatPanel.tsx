@@ -15,7 +15,7 @@ import {
   cassandra,
   handleFirestoreError,
   OperationType,
-} from "../cassandra";
+} from "../supabase-adapter";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,

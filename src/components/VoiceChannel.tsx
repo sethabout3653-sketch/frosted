@@ -29,7 +29,7 @@ import {
   addDoc,
   updateDoc,
   db,
-} from "../cassandra";
+} from "../supabase-adapter";
 import { ChatProfile, VoiceSignal } from "../types";
 
 interface VoiceChannelProps {
