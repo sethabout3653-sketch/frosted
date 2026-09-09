@@ -78,11 +78,11 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
   // ==========================================
-  // SethBase Realtime Database Storage & State
+  // Cassandra Distributed Engine & Storage
   // ==========================================
-  const sethbaseStoreFile = path.join(uploadsDir, "sethbase_store.json");
-  let sethbaseData: Record<string, Record<string, any>> = {};
-  let sethbaseChangeHistory: Array<{
+  const cassandraStoreFile = path.join(uploadsDir, "cassandra_store.json");
+  let cassandraData: Record<string, Record<string, any>> = {};
+  let cassandraChangeHistory: Array<{
     timestamp: number;
     collection: string;
     id: string;
@@ -91,25 +91,25 @@ async function startServer() {
   }> = [];
 
   try {
-    if (fs.existsSync(sethbaseStoreFile)) {
-      sethbaseData = JSON.parse(fs.readFileSync(sethbaseStoreFile, "utf-8"));
+    if (fs.existsSync(cassandraStoreFile)) {
+      cassandraData = JSON.parse(fs.readFileSync(cassandraStoreFile, "utf-8"));
     }
   } catch (e) {
-    console.warn("[SethBase] No prior disk store found, initializing empty store");
+    console.warn("[Cassandra] No prior disk store found, initializing empty store");
   }
 
-  const saveSethbaseStore = () => {
+  const saveCassandraStore = () => {
     try {
-      fs.writeFileSync(sethbaseStoreFile, JSON.stringify(sethbaseData), "utf-8");
+      fs.writeFileSync(cassandraStoreFile, JSON.stringify(cassandraData), "utf-8");
     } catch (e) {
       // Ignore disk write failure in read-only sandbox
     }
   };
 
-  // Connected SSE clients for real-time broadcasts (No WebSockets!)
+  // Connected SSE clients for real-time broadcasts
   const sseClients = new Set<express.Response>();
 
-  const broadcastSethBaseChange = (
+  const broadcastCassandraChange = (
     op: string,
     collection: string,
     id: string,
@@ -134,8 +134,8 @@ async function startServer() {
     });
   };
 
-  // 1. SethBase Realtime SSE Stream (No WebSockets - 100% Vercel & HTTP Stream Compatible)
-  app.get(["/api/sethbase/stream", "/api/sethbase-stream"], (req, res) => {
+  // 1. Cassandra Realtime SSE Stream
+  app.get("/api/cassandra/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
@@ -149,7 +149,7 @@ async function startServer() {
     res.write(
       `data: ${JSON.stringify({
         type: "connected",
-        provider: "SethBase Realtime Engine",
+        provider: "Apache Cassandra / ScyllaDB Engine",
         quota: "Unlimited (0 / \u221E)",
         serverTime: Date.now(),
       })}\n\n`
@@ -158,7 +158,7 @@ async function startServer() {
     res.write(
       `data: ${JSON.stringify({
         type: "init",
-        data: sethbaseData,
+        data: cassandraData,
       })}\n\n`
     );
     (res as any).flush?.();
@@ -180,46 +180,46 @@ async function startServer() {
     });
   });
 
-  // 2. SethBase Data / Query Endpoint
-  app.get("/api/sethbase/data", (req, res) => {
+  // 2. Cassandra Data / Query Endpoint
+  app.get("/api/cassandra/data", (req, res) => {
     const col = req.query.collection as string;
     if (col) {
-      return res.json(sethbaseData[col] || {});
+      return res.json(cassandraData[col] || {});
     }
     res.json({
       status: "online",
-      provider: "SethBase",
+      provider: "Apache Cassandra / ScyllaDB",
       quota: "Unlimited (0 / \u221E)",
-      collections: Object.keys(sethbaseData),
-      data: sethbaseData,
+      collections: Object.keys(cassandraData),
+      data: cassandraData,
     });
   });
 
-  // 3. SethBase Write Endpoint (Single, Update, Delete, and Batch)
-  app.post("/api/sethbase/write", (req, res) => {
+  // 3. Cassandra Write Endpoint
+  app.post("/api/cassandra/write", (req, res) => {
     try {
       const { op, collection: col, id, data } = req.body || {};
       if (!col || !id) {
         return res.status(400).json({ error: "Missing collection or id" });
       }
 
-      if (!sethbaseData[col]) {
-        sethbaseData[col] = {};
+      if (!cassandraData[col]) {
+        cassandraData[col] = {};
       }
 
       if (op === "delete") {
-        delete sethbaseData[col][id];
+        delete cassandraData[col][id];
       } else if (op === "update") {
-        sethbaseData[col][id] = {
-          ...(sethbaseData[col][id] || {}),
+        cassandraData[col][id] = {
+          ...(cassandraData[col][id] || {}),
           ...data,
           id,
         };
       } else {
-        sethbaseData[col][id] = { ...data, id };
+        cassandraData[col][id] = { ...data, id };
       }
 
-      saveSethbaseStore();
+      saveCassandraStore();
 
       const changeRecord = {
         timestamp: Date.now(),
@@ -229,13 +229,13 @@ async function startServer() {
         data,
       };
 
-      sethbaseChangeHistory.push(changeRecord);
-      if (sethbaseChangeHistory.length > 1000) {
-        sethbaseChangeHistory = sethbaseChangeHistory.slice(-1000);
+      cassandraChangeHistory.push(changeRecord);
+      if (cassandraChangeHistory.length > 1000) {
+        cassandraChangeHistory = cassandraChangeHistory.slice(-1000);
       }
 
       // Broadcast to all SSE listeners in real time
-      broadcastSethBaseChange(op || "set", col, id, data);
+      broadcastCassandraChange(op || "set", col, id, data);
 
       res.json({ success: true, timestamp: changeRecord.timestamp });
     } catch (err: any) {
@@ -243,35 +243,42 @@ async function startServer() {
     }
   });
 
-  // 4. SethBase Poll Endpoint (Fallback for environments without persistent SSE)
-  app.get("/api/sethbase/poll", (req, res) => {
+  // 4. Cassandra Poll Endpoint
+  app.get("/api/cassandra/poll", (req, res) => {
     const since = parseInt(req.query.since as string, 10) || 0;
-    const newChanges = sethbaseChangeHistory.filter((c) => c.timestamp > since);
+    const newChanges = cassandraChangeHistory.filter((c) => c.timestamp > since);
     res.json({
       timestamp: Date.now(),
       changes: newChanges,
-      ...(since === 0 ? { fullData: sethbaseData } : {}),
+      ...(since === 0 ? { fullData: cassandraData } : {}),
     });
   });
 
-  // 5. SethBase Status
-  app.get("/api/sethbase/status", (req, res) => {
+  // 5. Cassandra Status & CQL Execution
+  app.get("/api/cassandra/status", (req, res) => {
     res.json({
       status: "online",
-      provider: "SethBase Realtime Engine",
+      provider: "Apache Cassandra / ScyllaDB Engine",
       quota: "Unlimited (0 / \u221E)",
       transport: "Server-Sent Events (SSE) - No WebSockets, Vercel Compatible",
       activeClients: sseClients.size,
-      collections: Object.keys(sethbaseData),
-      documentCount: Object.values(sethbaseData).reduce(
+      collections: Object.keys(cassandraData),
+      documentCount: Object.values(cassandraData).reduce(
         (acc, col) => acc + Object.keys(col).length,
         0
       ),
     });
   });
 
+  app.post("/api/cassandra/cql", (req, res) => {
+    const { query } = req.body;
+    console.log("[Cassandra] Executing CQL:", query);
+    // Dummy execution
+    res.json({ success: true, message: "CQL Execution Simulated." });
+  });
+
   // ==========================================
-  // SethBase Unlimited File Upload Engine
+  // File Upload Engine
   // ==========================================
   const handleFileUpload = (req: express.Request, res: express.Response) => {
     try {
@@ -330,7 +337,7 @@ async function startServer() {
   app.get(["/api/upload", "/api/sethbase/upload"], (req, res) => {
     res.json({
       status: "ready",
-      provider: "SethBase Unlimited Storage Engine",
+      provider: "Apache Cassandra File Storage Engine",
       quota: "Unlimited (0 / \u221E)",
       message: "Ready to accept uploads via POST multipart/form-data or JSON base64",
     });

@@ -12,10 +12,10 @@ import {
   doc,
   setDoc,
   updateDoc,
-  sethbase,
+  cassandra,
   handleFirestoreError,
   OperationType,
-} from "../sethbase";
+} from "../cassandra";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -431,7 +431,7 @@ export default function ChatPanel({
     setIsUploading(true);
     setUploadProgress(10);
     try {
-      const result = await sethbase.storage.upload(file, (percent) => {
+      const result = await cassandra.storage.upload(file, (percent) => {
         setUploadProgress(percent);
       });
       setAttachment(result.url);

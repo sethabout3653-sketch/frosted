@@ -32,7 +32,7 @@ import {
   db,
   handleFirestoreError,
   OperationType,
-} from "../sethbase";
+} from "../cassandra";
 
 export default function Chat({
   isOpen,

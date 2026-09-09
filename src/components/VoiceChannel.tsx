@@ -29,7 +29,7 @@ import {
   addDoc,
   updateDoc,
   db,
-} from "../sethbase";
+} from "../cassandra";
 import { ChatProfile, VoiceSignal } from "../types";
 
 interface VoiceChannelProps {
