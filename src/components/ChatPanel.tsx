@@ -17,6 +17,7 @@ import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
   Image as ImageIcon,
+  Plus,
   X,
   Trash2,
   Users,
@@ -835,9 +836,9 @@ export default function ChatPanel({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors"
-                title="Attach File / Video"
+                title="Attach Any File"
               >
-                <ImageIcon size={18} />
+                <Plus size={18} />
               </button>
               <input
                 type="file"
