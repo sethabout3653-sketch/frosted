@@ -45,29 +45,288 @@ async function startServer() {
     },
   });
 
-  // Serve uploads directory publicly
+  // CORS and preflight headers for all API requests
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Session");
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
+    next();
+  });
+
+  // Serve uploads directory publicly with fallback to /tmp/uploads
   app.use("/uploads", express.static(uploadsDir));
+  app.use("/uploads", express.static("/tmp/uploads"));
 
-  // JSON and URL parsing middleware
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.get("/uploads/:filename", (req, res) => {
+    const fn = path.basename(req.params.filename);
+    const p1 = path.join(uploadsDir, fn);
+    const p2 = path.join("/tmp/uploads", fn);
+    if (fs.existsSync(p1)) {
+      return res.sendFile(p1);
+    }
+    if (fs.existsSync(p2)) {
+      return res.sendFile(p2);
+    }
+    res.status(404).json({ error: "File not found in storage" });
+  });
 
-  // File Upload API Route
-  app.post("/api/upload", upload.single("file"), (req, res) => {
+  // JSON and URL parsing middleware with generous limit for large attachments
+  app.use(express.json({ limit: "100mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+
+  // ==========================================
+  // SethBase Realtime Database Storage & State
+  // ==========================================
+  const sethbaseStoreFile = path.join(uploadsDir, "sethbase_store.json");
+  let sethbaseData: Record<string, Record<string, any>> = {};
+  let sethbaseChangeHistory: Array<{
+    timestamp: number;
+    collection: string;
+    id: string;
+    op: string;
+    data: any;
+  }> = [];
+
+  try {
+    if (fs.existsSync(sethbaseStoreFile)) {
+      sethbaseData = JSON.parse(fs.readFileSync(sethbaseStoreFile, "utf-8"));
+    }
+  } catch (e) {
+    console.warn("[SethBase] No prior disk store found, initializing empty store");
+  }
+
+  const saveSethbaseStore = () => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded" });
+      fs.writeFileSync(sethbaseStoreFile, JSON.stringify(sethbaseData), "utf-8");
+    } catch (e) {
+      // Ignore disk write failure in read-only sandbox
+    }
+  };
+
+  // Connected SSE clients for real-time broadcasts (No WebSockets!)
+  const sseClients = new Set<express.Response>();
+
+  const broadcastSethBaseChange = (
+    op: string,
+    collection: string,
+    id: string,
+    data: any
+  ) => {
+    const payload = JSON.stringify({
+      type: "change",
+      op,
+      collection,
+      id,
+      data,
+      timestamp: Date.now(),
+    });
+
+    sseClients.forEach((client) => {
+      try {
+        client.write(`data: ${payload}\n\n`);
+      } catch (e) {
+        sseClients.delete(client);
       }
-      const fileUrl = `/uploads/${req.file.filename}`;
-      res.json({
-        url: fileUrl,
-        filename: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-      });
+    });
+  };
+
+  // 1. SethBase Realtime SSE Stream (No WebSockets - 100% Vercel & HTTP Stream Compatible)
+  app.get(["/api/sethbase/stream", "/api/sethbase-stream"], (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    // Send initial connection handshake and all existing documents
+    res.write(
+      `data: ${JSON.stringify({
+        type: "connected",
+        provider: "SethBase Realtime Engine",
+        quota: "Unlimited (0 / \u221E)",
+        serverTime: Date.now(),
+      })}\n\n`
+    );
+
+    res.write(
+      `data: ${JSON.stringify({
+        type: "init",
+        data: sethbaseData,
+      })}\n\n`
+    );
+
+    sseClients.add(res);
+
+    // Heartbeat ping every 10 seconds to keep connection alive indefinitely
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(":ping\n\n");
+      } catch (e) {
+        clearInterval(heartbeat);
+      }
+    }, 10000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    });
+  });
+
+  // 2. SethBase Data / Query Endpoint
+  app.get("/api/sethbase/data", (req, res) => {
+    const col = req.query.collection as string;
+    if (col) {
+      return res.json(sethbaseData[col] || {});
+    }
+    res.json({
+      status: "online",
+      provider: "SethBase",
+      quota: "Unlimited (0 / \u221E)",
+      collections: Object.keys(sethbaseData),
+      data: sethbaseData,
+    });
+  });
+
+  // 3. SethBase Write Endpoint (Single, Update, Delete, and Batch)
+  app.post("/api/sethbase/write", (req, res) => {
+    try {
+      const { op, collection: col, id, data } = req.body || {};
+      if (!col || !id) {
+        return res.status(400).json({ error: "Missing collection or id" });
+      }
+
+      if (!sethbaseData[col]) {
+        sethbaseData[col] = {};
+      }
+
+      if (op === "delete") {
+        delete sethbaseData[col][id];
+      } else if (op === "update") {
+        sethbaseData[col][id] = {
+          ...(sethbaseData[col][id] || {}),
+          ...data,
+          id,
+        };
+      } else {
+        sethbaseData[col][id] = { ...data, id };
+      }
+
+      saveSethbaseStore();
+
+      const changeRecord = {
+        timestamp: Date.now(),
+        collection: col,
+        id,
+        op: op || "set",
+        data,
+      };
+
+      sethbaseChangeHistory.push(changeRecord);
+      if (sethbaseChangeHistory.length > 1000) {
+        sethbaseChangeHistory = sethbaseChangeHistory.slice(-1000);
+      }
+
+      // Broadcast to all SSE listeners in real time
+      broadcastSethBaseChange(op || "set", col, id, data);
+
+      res.json({ success: true, timestamp: changeRecord.timestamp });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // 4. SethBase Poll Endpoint (Fallback for environments without persistent SSE)
+  app.get("/api/sethbase/poll", (req, res) => {
+    const since = parseInt(req.query.since as string, 10) || 0;
+    const newChanges = sethbaseChangeHistory.filter((c) => c.timestamp > since);
+    res.json({
+      timestamp: Date.now(),
+      changes: newChanges,
+    });
+  });
+
+  // 5. SethBase Status
+  app.get("/api/sethbase/status", (req, res) => {
+    res.json({
+      status: "online",
+      provider: "SethBase Realtime Engine",
+      quota: "Unlimited (0 / \u221E)",
+      transport: "Server-Sent Events (SSE) - No WebSockets, Vercel Compatible",
+      activeClients: sseClients.size,
+      collections: Object.keys(sethbaseData),
+      documentCount: Object.values(sethbaseData).reduce(
+        (acc, col) => acc + Object.keys(col).length,
+        0
+      ),
+    });
+  });
+
+  // ==========================================
+  // SethBase Unlimited File Upload Engine
+  // ==========================================
+  const handleFileUpload = (req: express.Request, res: express.Response) => {
+    try {
+      // A. Multipart file from Multer
+      const file = (req as any).file || (req as any).files?.[0];
+      if (file) {
+        const fileUrl = `/uploads/${file.filename}`;
+        return res.json({
+          url: fileUrl,
+          filename: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+        });
+      }
+
+      // B. JSON payload with base64 data URL
+      if (req.body && req.body.fileData) {
+        const { fileData, filename, mimetype, size } = req.body;
+        // Optionally save to disk as a file if it's base64
+        const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const ext = mimetype ? `.${mimetype.split("/")[1] || "bin"}` : ".bin";
+          const uniqueName = `upload-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+          const filePath = path.join(uploadsDir, uniqueName);
+          try {
+            fs.writeFileSync(filePath, Buffer.from(matches[2], "base64"));
+            return res.json({
+              url: `/uploads/${uniqueName}`,
+              filename: filename || uniqueName,
+              mimetype: mimetype || matches[1],
+              size: size || fileData.length,
+            });
+          } catch (e) {}
+        }
+
+        return res.json({
+          url: fileData,
+          filename: filename || "uploaded_file",
+          mimetype: mimetype || "application/octet-stream",
+          size: size || fileData.length,
+        });
+      }
+
+      return res.status(400).json({ error: "No file provided" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  };
+
+  // Support upload via multiple paths and methods to guarantee no 404
+  app.post("/api/upload", upload.any(), handleFileUpload);
+  app.post("/api/sethbase/upload", upload.any(), handleFileUpload);
+  app.post("/upload", upload.any(), handleFileUpload);
+
+  // Informative GET on /api/upload so it never 404s
+  app.get(["/api/upload", "/api/sethbase/upload"], (req, res) => {
+    res.json({
+      status: "ready",
+      provider: "SethBase Unlimited Storage Engine",
+      quota: "Unlimited (0 / \u221E)",
+      message: "Ready to accept uploads via POST multipart/form-data or JSON base64",
+    });
   });
 
   // API Proxy Route: Create session

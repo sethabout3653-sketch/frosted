@@ -29,8 +29,10 @@ import {
   deleteDoc,
   updateDoc,
   doc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  db,
+  handleFirestoreError,
+  OperationType,
+} from "../sethbase";
 
 export default function Chat({
   isOpen,

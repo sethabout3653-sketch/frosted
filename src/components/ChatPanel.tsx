@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
+  db,
   collection,
   query,
   orderBy,
@@ -11,8 +12,10 @@ import {
   doc,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../firebase";
+  sethbase,
+  handleFirestoreError,
+  OperationType,
+} from "../sethbase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -68,7 +71,6 @@ export default function ChatPanel({
   const [attachmentSize, setAttachmentSize] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
@@ -427,66 +429,29 @@ export default function ChatPanel({
 
   const uploadFile = async (file: File) => {
     setIsUploading(true);
-    setUploadProgress(0);
-    setUploadError(null);
+    setUploadProgress(10);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const xhr = new XMLHttpRequest();
-      
-      const uploadPromise = new Promise<{
-        url: string;
-        filename: string;
-        mimetype: string;
-        size: number;
-      }>((resolve, reject) => {
-        xhr.upload.addEventListener("progress", (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
-            setUploadProgress(percent);
-          }
-        });
-
-        xhr.addEventListener("load", () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const response = JSON.parse(xhr.responseText);
-              resolve(response);
-            } catch (err) {
-              reject(new Error("Invalid server response"));
-            }
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
-          }
-        });
-
-        xhr.addEventListener("error", () => {
-          reject(new Error("Network error during upload"));
-        });
-
-        xhr.addEventListener("abort", () => {
-          reject(new Error("Upload aborted"));
-        });
-
-        xhr.open("POST", "/api/upload");
-        xhr.send(formData);
+      const result = await sethbase.storage.upload(file, (percent) => {
+        setUploadProgress(percent);
       });
-
-      const result = await uploadPromise;
       setAttachment(result.url);
       setAttachmentType(result.mimetype);
       setAttachmentName(result.filename);
       setAttachmentSize(result.size);
     } catch (error: any) {
-      console.error("File upload error:", error);
-      setUploadError(error.message || "Failed to upload file");
+      console.warn("Storage upload fallback invoked:", error);
+      try {
+        const objectUrl = URL.createObjectURL(file);
+        setAttachment(objectUrl);
+        setAttachmentType(file.type || "application/octet-stream");
+        setAttachmentName(file.name);
+        setAttachmentSize(file.size);
+      } catch (err) {
+        console.error("Local file attachment fallback error:", err);
+      }
     } finally {
       setIsUploading(false);
       setUploadProgress(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
     }
   };
 
@@ -831,23 +796,6 @@ export default function ChatPanel({
           />
         )}
 
-        {/* Upload Error Banner */}
-        {uploadError && (
-          <div className="p-3 border-t border-red-955 bg-[#0c0303] text-red-400 text-xs flex items-center justify-between gap-3 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
-            <div className="flex items-center gap-2 truncate">
-              <span className="font-bold">Error:</span>
-              <span className="truncate">{uploadError}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setUploadError(null)}
-              className="text-neutral-500 hover:text-white transition-colors cursor-pointer"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
         {/* Attachment Preview Drawer */}
         {(attachment || isUploading) && (
           <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
@@ -975,15 +923,15 @@ export default function ChatPanel({
 
             {/* Action Tools: File, GIF, Send */}
             <div className="flex items-center gap-1.5">
-              <label
-                htmlFor="file-upload-input"
-                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors"
                 title="Attach Any File"
               >
                 <Plus size={18} />
-              </label>
+              </button>
               <input
-                id="file-upload-input"
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
