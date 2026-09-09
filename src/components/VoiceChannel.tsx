@@ -114,6 +114,11 @@ export default function VoiceChannel({
   // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 45s)
   const activeParticipants = useMemo(() => {
     return participants.filter((p) => {
+      // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
+      const pc = peersRef.current[p.uid];
+      if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+        return true;
+      }
       const ts = p.timestamp || (p as any).lastSeen;
       return typeof ts === "number" ? currentTime - ts < 45000 : true;
     });
@@ -852,10 +857,22 @@ export default function VoiceChannel({
     const now = Date.now();
     participants.forEach((p) => {
       const ts = p.timestamp || (p as any).lastSeen;
-      if (typeof ts === "number" && now - ts > 45000) {
-        if (peersRef.current[p.uid]) {
+      if (typeof ts === "number") {
+        const isStaleOnFirestore = now - ts > 45000;
+        const isVeryStaleOnFirestore = now - ts > 180000; // 3 minutes fallback
+        const pc = peersRef.current[p.uid];
+        
+        // Only prune/close peer connection if:
+        // 1. The connection is stale on Firestore AND we don't have an active connected state, OR
+        // 2. The user has been completely silent on Firestore for over 3 minutes.
+        const shouldPrunePeer = pc && (
+          (isStaleOnFirestore && pc.connectionState !== "connected" && pc.iceConnectionState !== "connected") ||
+          isVeryStaleOnFirestore
+        );
+
+        if (shouldPrunePeer) {
           try {
-            peersRef.current[p.uid].close();
+            pc.close();
           } catch (e) {}
           delete peersRef.current[p.uid];
           delete iceCandidateQueuesRef.current[p.uid];
@@ -864,8 +881,9 @@ export default function VoiceChannel({
             delete remoteStreamsRef.current[p.uid];
           }
         }
-        // If dead for over 60 seconds, clean up from Firestore
-        if (now - ts > 60000) {
+        
+        // If dead for over 180 seconds, clean up from Firestore
+        if (now - ts > 180000) {
           deleteDoc(doc(db, "voice_users", p.uid)).catch(() => {});
         }
       }
