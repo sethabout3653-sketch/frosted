@@ -67,7 +67,7 @@ function getPk(colName: string) {
   return (colName === "presence" || colName === "voice_users") ? "uid" : "id";
 }
 
-export async function setDoc(docRef: { colName: string; id: string }, data: any) {
+export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
   const pk = getPk(docRef.colName);
   
   // Make sure we strip any accidental 'id' field if the PK is not 'id'
@@ -114,7 +114,7 @@ export async function addDoc(colName: string, data: any) {
 
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
-  let req = supabase.from(colName).select("*");
+  let req: any = supabase.from(colName).select("*");
   if (queryObj.constraints) {
     for (const c of queryObj.constraints) {
       if (c.type === "where" && c.op === "==") {
@@ -135,25 +135,29 @@ export async function getDocs(queryObj: any) {
   }
   const docs = data || [];
   return {
-    docs: docs.map(d => ({ id: d.uid || d.id, data: () => d })),
+    docs: docs.map((d: any) => ({ id: d.uid || d.id, data: () => d })),
     empty: docs.length === 0,
     size: docs.length,
     forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.uid || d.id, data: () => d }))
   };
 }
 
-export function onSnapshot(queryObj: any, onNext: (snap: any) => void) {
+export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {
   const colName = typeof queryObj === 'string' ? queryObj : queryObj.colName;
   
   // Initial fetch
-  getDocs(queryObj).then(onNext);
+  getDocs(queryObj).then(onNext).catch((e) => {
+    if (onError) onError(e);
+  });
 
   // Realtime subscription - make channel name unique to avoid reusing the same channel object
   const uniqueChannelName = `public:${colName}:${Math.random().toString(36).substring(2, 10)}`;
   const channel = supabase.channel(uniqueChannelName)
-    .on('postgres_changes', { event: '*', schema: 'public', table: colName }, (payload) => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: colName }, () => {
       // Re-fetch to satisfy constraints (order, limit, where)
-      getDocs(queryObj).then(onNext);
+      getDocs(queryObj).then(onNext).catch((e) => {
+        if (onError) onError(e);
+      });
     })
     .subscribe();
 

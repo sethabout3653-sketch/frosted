@@ -57,17 +57,17 @@ const ICE_SERVERS: RTCConfiguration = {
 };
 
 // Studio quality uncapped audio SDP optimizer:
-// - 510000 bps maximum Opus bitrate (no artificial compression)
+// - 320000 bps optimal Opus bitrate
 // - Stereo enabled (stereo=1, sprop-stereo=1) for music, soundboards, and rich audio
-// - usedtx=0 completely disables discontinuous transmission / voice-activity gating (never cuts off quiet/sustained sounds)
 // - maxplaybackrate=48000 for full 48kHz frequency spectrum
 // - cbr=1 (constant bitrate transmission, no ducking or compression drops)
+// - useinbandfec=1 for forward error correction on packet loss
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
       const base = lines[i].split(";")[0];
-      lines[i] = `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;usedtx=0;maxplaybackrate=48000;minptime=10;useinbandfec=1`;
+      lines[i] = `${base};maxaveragebitrate=320000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1`;
     }
   }
   return lines.join("\r\n");
@@ -92,9 +92,12 @@ export default function VoiceChannel({
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
 
-  // Audio level and remote volume states
+  // Audio level and smart speech detection states
   const [audioLevel, setAudioLevel] = useState<number>(0);
-  const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
+  const [isLocalSpeaking, setIsLocalSpeaking] = useState<boolean>(false);
+  const [remoteSpeaking, setRemoteSpeaking] = useState<{ [uid: string]: boolean }>({});
+  const localSpeakingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const remoteSpeakingTimersRef = useRef<{ [uid: string]: NodeJS.Timeout }>({});
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const rawStreamRef = useRef<MediaStream | null>(null);
@@ -117,6 +120,7 @@ export default function VoiceChannel({
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+  const remoteAnalysersRef = useRef<{ [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } }>({});
 
   // Keep refs in sync for heartbeat timer
   const isMutedRef = useRef(isMuted);
@@ -150,14 +154,14 @@ export default function VoiceChannel({
     });
   }, [participants, currentTime]);
 
-  // Automatically acquire studio microphone stream with automatic echo cancellation by default
+  // Automatically acquire studio microphone stream with smart noise cancellation and automatic gain control
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          noiseSuppression: false,
-          autoGainControl: false,
+          noiseSuppression: true, // Smart noise reduction
+          autoGainControl: true,  // Auto leveling to match system volume
           channelCount: { ideal: 2 },
           sampleRate: { ideal: 48000 },
         },
@@ -169,8 +173,8 @@ export default function VoiceChannel({
         return await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
+            noiseSuppression: true,
+            autoGainControl: true,
           },
           video: false,
          });
@@ -183,7 +187,7 @@ export default function VoiceChannel({
     }
   }, []);
 
-  // Connect microphone to live Web Audio pipeline for real-time level metering
+  // Connect microphone to live Web Audio pipeline with smart dynamics compressor, high-pass filter, and VAD
   const setupAudioPipeline = useCallback(
     async (sourceStream: MediaStream): Promise<MediaStream> => {
       if (animFrameRef.current) {
@@ -212,24 +216,88 @@ export default function VoiceChannel({
         }
 
         const source = ctx.createMediaStreamSource(sourceStream);
+
+        // 1. High-Pass Filter (85 Hz) - cuts background rumble, table vibrations, and fan hum while retaining voice warmth
+        const highpass = ctx.createBiquadFilter();
+        highpass.type = "highpass";
+        highpass.frequency.value = 85;
+        highpass.Q.value = 0.7;
+
+        // 2. Dynamics Compressor - protects eardrums by clamping sudden loud screams/clicks, while boosting quiet voices
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -24;
+        compressor.knee.value = 28;
+        compressor.ratio.value = 3.5;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        // 3. Smart Gain Node - calibrated boost for loud and crystal-clear voice transmission
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = 1.2;
+        gainNodeRef.current = gainNode;
+
+        // 4. Analyser for intelligent Voice Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.3;
-        source.connect(analyser);
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.2;
+
+        // Chain nodes together
+        source.connect(highpass);
+        highpass.connect(compressor);
+        compressor.connect(gainNode);
+        gainNode.connect(analyser);
+
         analyserRef.current = analyser;
 
-        // Monitor real-time volume levels for live UI feedback
+        // Monitor real-time volume levels & speech activity for local user and remote participants
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const updateLevel = () => {
           if (!isMountedRef.current) return;
+
+          // Local microphone voice energy detection (concentrate on human voice frequencies: bins 2 to 24)
           analyser.getByteFrequencyData(dataArray);
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            sum += dataArray[i];
+          let vocalSum = 0;
+          for (let i = 1; i <= Math.min(24, dataArray.length - 1); i++) {
+            vocalSum += dataArray[i];
           }
-          const avg = sum / dataArray.length;
-          const normalized = Math.min(100, Math.round((avg / 128) * 100));
+          const vocalAvg = vocalSum / 24;
+          const normalized = Math.min(100, Math.round((vocalAvg / 128) * 100));
           setAudioLevel(normalized);
+
+          // Intelligent speech detection threshold
+          if (normalized > 7 && !isMutedRef.current) {
+            setIsLocalSpeaking(true);
+            if (localSpeakingTimerRef.current) clearTimeout(localSpeakingTimerRef.current);
+            localSpeakingTimerRef.current = setTimeout(() => {
+              if (isMountedRef.current) setIsLocalSpeaking(false);
+            }, 350);
+          }
+
+          // Evaluate speech for remote participants
+          const remoteMap: { [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } } = remoteAnalysersRef.current;
+          for (const [pUid, rData] of Object.entries(remoteMap)) {
+            if (rData && rData.analyser) {
+              const rArray = new Uint8Array(rData.analyser.frequencyBinCount);
+              rData.analyser.getByteFrequencyData(rArray);
+              let rVocalSum = 0;
+              for (let i = 1; i <= Math.min(24, rArray.length - 1); i++) {
+                rVocalSum += rArray[i];
+              }
+              const rNormalized = Math.min(100, Math.round(((rVocalSum / 24) / 128) * 100));
+              if (rNormalized > 7) {
+                setRemoteSpeaking((prev) => (prev[pUid] ? prev : { ...prev, [pUid]: true }));
+                if (remoteSpeakingTimersRef.current[pUid]) {
+                  clearTimeout(remoteSpeakingTimersRef.current[pUid]);
+                }
+                remoteSpeakingTimersRef.current[pUid] = setTimeout(() => {
+                  if (isMountedRef.current) {
+                    setRemoteSpeaking((prev) => ({ ...prev, [pUid]: false }));
+                  }
+                }, 350);
+              }
+            }
+          }
+
           animFrameRef.current = requestAnimationFrame(updateLevel);
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
@@ -341,6 +409,14 @@ export default function VoiceChannel({
       });
     });
     remoteStreamsRef.current = {};
+
+    (Object.values(remoteAnalysersRef.current) as Array<{ analyser: AnalyserNode; source: MediaStreamAudioSourceNode }>).forEach((entry) => {
+      try {
+        entry.source.disconnect();
+      } catch {}
+    });
+    remoteAnalysersRef.current = {};
+    setRemoteSpeaking({});
   }, []);
 
   // Play globally when a remote participant joins or leaves the channel.
@@ -544,6 +620,23 @@ export default function VoiceChannel({
           audioEl.play().catch(() => {});
         }
 
+        // Attach remote audio track to analyser for accurate speaking detection
+        if (event.track.kind === "audio" && audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+          try {
+            if (remoteAnalysersRef.current[partnerUid]) {
+              remoteAnalysersRef.current[partnerUid].source.disconnect();
+            }
+            const rSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([event.track]));
+            const rAnalyser = audioCtxRef.current.createAnalyser();
+            rAnalyser.fftSize = 128;
+            rAnalyser.smoothingTimeConstant = 0.2;
+            rSource.connect(rAnalyser);
+            remoteAnalysersRef.current[partnerUid] = { analyser: rAnalyser, source: rSource };
+          } catch (e) {
+            console.warn("Could not create remote audio analyser:", e);
+          }
+        }
+
         // Attach to remote video player
         const videoEl = remoteVideoRefs.current[partnerUid];
         if (videoEl) {
@@ -565,6 +658,17 @@ export default function VoiceChannel({
           } catch (e) {}
           delete peersRef.current[partnerUid];
           delete iceCandidateQueuesRef.current[partnerUid];
+          if (remoteAnalysersRef.current[partnerUid]) {
+            try {
+              remoteAnalysersRef.current[partnerUid].source.disconnect();
+            } catch {}
+            delete remoteAnalysersRef.current[partnerUid];
+          }
+          setRemoteSpeaking((prev) => {
+            const next = { ...prev };
+            delete next[partnerUid];
+            return next;
+          });
         }
       };
 
@@ -1214,7 +1318,7 @@ export default function VoiceChannel({
                   src={profile.photoURL}
                   alt={profile.username}
                   className={`w-10 h-10 rounded-full object-cover border-2 transition-all ${
-                    audioLevel > 5 && !isMuted
+                    isLocalSpeaking && !isMuted
                       ? "border-emerald-400 ring-2 ring-emerald-500/30 scale-105"
                       : "border-[#2b2d31]"
                   }`}
@@ -1230,25 +1334,32 @@ export default function VoiceChannel({
               </span>
             </div>
 
-            {activeParticipants.slice(0, 3).map((p) => (
-              <div key={p.uid} className="flex flex-col items-center gap-1">
-                <div className="relative">
-                  <img
-                    src={p.photoURL}
-                    alt={p.username}
-                    className="w-10 h-10 rounded-full object-cover border-2 border-[#2b2d31]"
-                  />
-                  {p.isMuted && (
-                    <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
-                      <MicOff size={10} />
-                    </div>
-                  )}
+            {activeParticipants.slice(0, 3).map((p) => {
+              const isRemoteSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
+              return (
+                <div key={p.uid} className="flex flex-col items-center gap-1">
+                  <div className="relative">
+                    <img
+                      src={p.photoURL}
+                      alt={p.username}
+                      className={`w-10 h-10 rounded-full object-cover border-2 transition-all ${
+                        isRemoteSpeaking
+                          ? "border-emerald-400 ring-2 ring-emerald-500/30 scale-105"
+                          : "border-[#2b2d31]"
+                      }`}
+                    />
+                    {p.isMuted && (
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
+                        <MicOff size={10} />
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] font-medium text-neutral-300 truncate max-w-[60px]">
+                    {p.username}
+                  </span>
                 </div>
-                <span className="text-[10px] font-medium text-neutral-300 truncate max-w-[60px]">
-                  {p.username}
-                </span>
-              </div>
-            ))}
+              );
+            })}
             {activeParticipants.length > 3 && (
               <span className="text-[10px] text-neutral-400 font-bold self-center">
                 +{activeParticipants.length - 3}
@@ -1339,7 +1450,7 @@ export default function VoiceChannel({
         {/* Local User Tile */}
         <div
           className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-150 ${
-            audioLevel > 5 && !isMuted
+            isLocalSpeaking && !isMuted
               ? "border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
               : "border-neutral-800/90"
           }`}
@@ -1350,7 +1461,7 @@ export default function VoiceChannel({
               className={`w-2 h-2 rounded-full transition-colors ${
                 isMuted
                   ? "bg-red-500"
-                  : audioLevel > 5
+                  : isLocalSpeaking
                   ? "bg-emerald-400 animate-pulse"
                   : "bg-cyan-400"
               }`}
@@ -1358,7 +1469,7 @@ export default function VoiceChannel({
             <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
               {isMuted ? (
                 "MUTED"
-              ) : audioLevel > 5 ? (
+              ) : isLocalSpeaking ? (
                 "SPEAKING"
               ) : (
                 <>
@@ -1399,7 +1510,7 @@ export default function VoiceChannel({
               )}
             </div>
           ) : isCameraLoading ? (
-<div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
+            <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
               <img
                 src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                 alt="Loading camera"
@@ -1414,7 +1525,7 @@ export default function VoiceChannel({
                     src={profile.photoURL}
                     alt={profile.username}
                     className={`w-20 h-20 rounded-full object-cover border-2 shadow-md transition-all duration-150 ${
-                      audioLevel > 5 && !isMuted
+                      isLocalSpeaking && !isMuted
                         ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
                         : "border-neutral-700"
                     }`}
@@ -1422,7 +1533,7 @@ export default function VoiceChannel({
                 ) : (
                   <div
                     className={`w-20 h-20 rounded-full bg-neutral-800 border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150 ${
-                      audioLevel > 5 && !isMuted
+                      isLocalSpeaking && !isMuted
                         ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
                         : "border-neutral-700"
                     }`}
@@ -1453,32 +1564,39 @@ export default function VoiceChannel({
 
         {/* Remote Participants Tiles */}
         {activeParticipants.map((p) => {
-          const stream = remoteStreamsRef.current[p.uid];
+          const isSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
 
           return (
             <div
               key={p.uid}
-              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border border-neutral-800/90 overflow-hidden flex flex-col items-center justify-center shadow-lg"
+              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-150 ${
+                isSpeaking
+                  ? "border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+                  : "border-neutral-800/90"
+              }`}
             >
-              {/* Volume Slider for Remote User */}
-              <div className="absolute top-3 right-3 bg-black/80 backdrop-blur-md px-2 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
-                <Volume2 size={12} className="text-neutral-400" />
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10) / 100;
-                    setParticipantVolumes((prev) => ({ ...prev, [p.uid]: val }));
-                    const audioEl = remoteAudioRefs.current[p.uid];
-                    if (audioEl) audioEl.volume = Math.max(0, Math.min(1.0, val));
-                  }}
-                  className="w-14 h-1 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-cyan-400"
-                  title={`Volume: ${Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}%`}
+              {/* Audio Status Badge */}
+              <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+                <div
+                  className={`w-2 h-2 rounded-full transition-colors ${
+                    p.isMuted
+                      ? "bg-red-500"
+                      : isSpeaking
+                      ? "bg-emerald-400 animate-pulse"
+                      : "bg-cyan-400"
+                  }`}
                 />
-                <span className="text-[9px] text-neutral-300 font-mono w-6 text-right">
-                  {Math.round((participantVolumes[p.uid] ?? 1.0) * 100)}%
+                <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
+                  {p.isMuted ? (
+                    "MUTED"
+                  ) : isSpeaking ? (
+                    "SPEAKING"
+                  ) : (
+                    <>
+                      <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
+                      STUDIO
+                    </>
+                  )}
                 </span>
               </div>
 
@@ -1535,10 +1653,20 @@ export default function VoiceChannel({
                       <img
                         src={p.photoURL}
                         alt={p.username}
-                        className="w-20 h-20 rounded-full object-cover border-2 border-neutral-700 shadow-md"
+                        className={`w-20 h-20 rounded-full object-cover border-2 shadow-md transition-all duration-150 ${
+                          isSpeaking
+                            ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
+                            : "border-neutral-700"
+                        }`}
                       />
                     ) : (
-                      <div className="w-20 h-20 rounded-full bg-neutral-800 border-2 border-neutral-700 flex items-center justify-center text-2xl font-bold text-white">
+                      <div
+                        className={`w-20 h-20 rounded-full bg-neutral-800 border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150 ${
+                          isSpeaking
+                            ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
+                            : "border-neutral-700"
+                        }`}
+                      >
                         {p.username.charAt(0).toUpperCase()}
                       </div>
                     )}

@@ -429,13 +429,14 @@ export default function ChatPanel({
     setIsUploading(true);
     setUploadProgress(10);
     try {
-      const result = await cassandra.storage.upload(file, (percent) => {
+      const result: any = await cassandra.storage.upload(file, (percent) => {
         setUploadProgress(percent);
       });
-      setAttachment(result.url);
-      setAttachmentType(result.mimetype);
-      setAttachmentName(result.filename);
-      setAttachmentSize(result.size);
+      const url = typeof result === "string" ? result : result?.url || "";
+      setAttachment(url);
+      setAttachmentType(file.type || (typeof result === "object" ? result?.mimetype : "application/octet-stream"));
+      setAttachmentName(file.name || (typeof result === "object" ? result?.filename : "attachment"));
+      setAttachmentSize(file.size || (typeof result === "object" ? result?.size : 0));
     } catch (error: any) {
       console.warn("Storage upload fallback invoked:", error);
       try {

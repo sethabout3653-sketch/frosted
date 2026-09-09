@@ -199,9 +199,9 @@ export default function Chat({
       );
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
-        const batch = writeBatch(db);
-        snapshot.docs.forEach((doc) => {
-          batch.update(doc.ref, {
+        const batch = writeBatch();
+        snapshot.docs.forEach((d) => {
+          batch.update(doc(db, "messages", d.id), {
             username: newProfile.username,
             photoURL: newProfile.photoURL,
           });
