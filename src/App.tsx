@@ -338,6 +338,9 @@ export default function App() {
     text TEXT,
     gif TEXT,
     attachment TEXT,
+    "attachmentName" TEXT,
+    "attachmentType" TEXT,
+    "attachmentSize" BIGINT,
     timestamp BIGINT,
     edited BOOLEAN
 );

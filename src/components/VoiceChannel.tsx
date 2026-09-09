@@ -31,6 +31,8 @@ import {
   db,
 } from "../supabase-adapter";
 import { ChatProfile, VoiceSignal } from "../types";
+import { SmartVoiceDetector } from "../utils/audioVAD";
+import { extractDominantColor } from "../utils/colorExtractor";
 
 interface VoiceChannelProps {
   profile: ChatProfile;
@@ -86,18 +88,48 @@ export default function VoiceChannel({
   const previousParticipantIdsRef = useRef<Set<string> | null>(null);
   const joinSoundRef = useRef<HTMLAudioElement | null>(null);
   const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
+  const hasJoinedVoiceRef = useRef<boolean>(false);
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
 
-  // Audio level and smart speech detection states
+  // Audio level and smart speech detection states with AI VAD (whisper / normal talk / loud)
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState<boolean>(false);
+  const [localIntensity, setLocalIntensity] = useState<"whispering" | "talking" | "loud" | "none">("none");
   const [remoteSpeaking, setRemoteSpeaking] = useState<{ [uid: string]: boolean }>({});
-  const localSpeakingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const remoteSpeakingTimersRef = useRef<{ [uid: string]: NodeJS.Timeout }>({});
+  const [remoteIntensity, setRemoteIntensity] = useState<{ [uid: string]: "whispering" | "talking" | "loud" | "none" }>({});
+  const localVadRef = useRef<SmartVoiceDetector>(new SmartVoiceDetector());
+  const remoteVadMapRef = useRef<{ [uid: string]: SmartVoiceDetector }>({});
+
+  // Dynamic AI Profile Picture Color state
+  const [userColors, setUserColors] = useState<{
+    [uid: string]: { hex: string; rgb: [number, number, number]; glow: string; border: string; ring: string };
+  }>({});
+
+  // Asynchronously extract and cache dominant base colors from profile pictures
+  useEffect(() => {
+    let isCancelled = false;
+    extractDominantColor(profile.photoURL, profile.username).then((col) => {
+      if (!isCancelled) {
+        setUserColors((prev) => ({ ...prev, [profile.uid]: col }));
+      }
+    });
+
+    participants.forEach((p) => {
+      extractDominantColor(p.photoURL, p.username).then((col) => {
+        if (!isCancelled) {
+          setUserColors((prev) => ({ ...prev, [p.uid]: col }));
+        }
+      });
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [profile.photoURL, profile.username, profile.uid, participants]);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const rawStreamRef = useRef<MediaStream | null>(null);
@@ -141,17 +173,23 @@ export default function VoiceChannel({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 45s)
+  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 45s), sorted deterministically
   const activeParticipants = useMemo(() => {
-    return participants.filter((p) => {
-      // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
-      const pc = peersRef.current[p.uid];
-      if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
-        return true;
-      }
-      const ts = p.timestamp || (p as any).lastSeen;
-      return typeof ts === "number" ? currentTime - ts < 45000 : true;
-    });
+    return participants
+      .filter((p) => {
+        // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
+        const pc = peersRef.current[p.uid];
+        if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+          return true;
+        }
+        const ts = p.timestamp || (p as any).lastSeen;
+        return typeof ts === "number" ? currentTime - ts < 45000 : true;
+      })
+      .sort((a, b) => {
+        const nameCompare = (a.username || "").localeCompare(b.username || "");
+        if (nameCompare !== 0) return nameCompare;
+        return a.uid.localeCompare(b.uid);
+      });
   }, [participants, currentTime]);
 
   // Automatically acquire studio microphone stream with smart noise cancellation and automatic gain control
@@ -238,7 +276,7 @@ export default function VoiceChannel({
 
         // 4. Analyser for intelligent Voice Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 128;
+        analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
         // Chain nodes together
@@ -249,51 +287,41 @@ export default function VoiceChannel({
 
         analyserRef.current = analyser;
 
-        // Monitor real-time volume levels & speech activity for local user and remote participants
+        // Monitor real-time volume levels & speech activity for local user and remote participants using AI VAD
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const updateLevel = () => {
           if (!isMountedRef.current) return;
 
-          // Local microphone voice energy detection (concentrate on human voice frequencies: bins 2 to 24)
+          // Local microphone: AI voice vs noise detection (whisper / normal / loud)
           analyser.getByteFrequencyData(dataArray);
-          let vocalSum = 0;
-          for (let i = 1; i <= Math.min(24, dataArray.length - 1); i++) {
-            vocalSum += dataArray[i];
-          }
-          const vocalAvg = vocalSum / 24;
-          const normalized = Math.min(100, Math.round((vocalAvg / 128) * 100));
-          setAudioLevel(normalized);
+          const vadRes = localVadRef.current.analyze(dataArray, ctx.sampleRate);
+          setAudioLevel(vadRes.energy);
 
-          // Intelligent speech detection threshold
-          if (normalized > 7 && !isMutedRef.current) {
+          if (vadRes.isSpeaking && !isMutedRef.current) {
             setIsLocalSpeaking(true);
-            if (localSpeakingTimerRef.current) clearTimeout(localSpeakingTimerRef.current);
-            localSpeakingTimerRef.current = setTimeout(() => {
-              if (isMountedRef.current) setIsLocalSpeaking(false);
-            }, 350);
+            setLocalIntensity(vadRes.intensity);
+          } else {
+            setIsLocalSpeaking(false);
+            setLocalIntensity("none");
           }
 
-          // Evaluate speech for remote participants
+          // Evaluate speech for remote participants using SmartVoiceDetector
           const remoteMap: { [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } } = remoteAnalysersRef.current;
           for (const [pUid, rData] of Object.entries(remoteMap)) {
             if (rData && rData.analyser) {
+              if (!remoteVadMapRef.current[pUid]) {
+                remoteVadMapRef.current[pUid] = new SmartVoiceDetector();
+              }
               const rArray = new Uint8Array(rData.analyser.frequencyBinCount);
               rData.analyser.getByteFrequencyData(rArray);
-              let rVocalSum = 0;
-              for (let i = 1; i <= Math.min(24, rArray.length - 1); i++) {
-                rVocalSum += rArray[i];
-              }
-              const rNormalized = Math.min(100, Math.round(((rVocalSum / 24) / 128) * 100));
-              if (rNormalized > 7) {
+              const rVad = remoteVadMapRef.current[pUid].analyze(rArray, ctx.sampleRate);
+
+              if (rVad.isSpeaking) {
                 setRemoteSpeaking((prev) => (prev[pUid] ? prev : { ...prev, [pUid]: true }));
-                if (remoteSpeakingTimersRef.current[pUid]) {
-                  clearTimeout(remoteSpeakingTimersRef.current[pUid]);
-                }
-                remoteSpeakingTimersRef.current[pUid] = setTimeout(() => {
-                  if (isMountedRef.current) {
-                    setRemoteSpeaking((prev) => ({ ...prev, [pUid]: false }));
-                  }
-                }, 350);
+                setRemoteIntensity((prev) => ({ ...prev, [pUid]: rVad.intensity }));
+              } else {
+                setRemoteSpeaking((prev) => (prev[pUid] ? { ...prev, [pUid]: false } : prev));
+                setRemoteIntensity((prev) => ({ ...prev, [pUid]: "none" }));
               }
             }
           }
@@ -827,6 +855,8 @@ export default function VoiceChannel({
           inVoice: true,
         }, { merge: true }).catch(() => {});
 
+        hasJoinedVoiceRef.current = true;
+
         // Real-time listener for voice participants
         const unsubUsers = onSnapshot(
           collection(db, "voice_users"),
@@ -867,6 +897,12 @@ export default function VoiceChannel({
                   delete remoteStreamsRef.current[peerUid];
                 }
               }
+            });
+
+            users.sort((a, b) => {
+              const nameCompare = (a.username || "").localeCompare(b.username || "");
+              if (nameCompare !== 0) return nameCompare;
+              return a.uid.localeCompare(b.uid);
             });
 
             setParticipants(users);
@@ -939,6 +975,7 @@ export default function VoiceChannel({
       window.removeEventListener("pagehide", handleUnload);
 
       stopAllMediaTracks();
+      hasJoinedVoiceRef.current = false;
 
       deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
       updateDoc(doc(db, "presence", profile.uid), {
@@ -1154,13 +1191,16 @@ export default function VoiceChannel({
       isMuted: false,
     }).catch(() => {});
 
-    // 2. Play leave sound for user instantly
-    try {
-      leaveSoundRef.current ||= new Audio("/audio/LockChime.wav");
-      leaveSoundRef.current.currentTime = 0;
-      leaveSoundRef.current.volume = 1;
-      leaveSoundRef.current.play().catch(() => {});
-    } catch {}
+    // 2. Play leave sound ONLY if we had joined voice and are now leaving (never duplicate)
+    if (hasJoinedVoiceRef.current) {
+      hasJoinedVoiceRef.current = false;
+      try {
+        leaveSoundRef.current ||= new Audio("/audio/LockChime.wav");
+        leaveSoundRef.current.currentTime = 0;
+        leaveSoundRef.current.volume = 1;
+        leaveSoundRef.current.play().catch(() => {});
+      } catch {}
+    }
 
     // 3. Immediately stop local media tracks and release hardware
     stopAllMediaTracks();
@@ -1314,17 +1354,33 @@ export default function VoiceChannel({
           <div className="p-3 bg-[#111214] flex items-center justify-center gap-2.5">
             <div className="flex flex-col items-center gap-1">
               <div className="relative">
-                <img
-                  src={profile.photoURL}
-                  alt={profile.username}
-                  className={`w-10 h-10 rounded-full object-cover border-2 transition-all ${
-                    isLocalSpeaking && !isMuted
-                      ? "border-emerald-400 ring-2 ring-emerald-500/30 scale-105"
-                      : "border-[#2b2d31]"
-                  }`}
-                />
+                {profile.photoURL ? (
+                  <img
+                    src={profile.photoURL}
+                    alt={profile.username}
+                    className="w-10 h-10 rounded-full object-cover border-2 transition-all"
+                    style={{
+                      borderColor: isLocalSpeaking && !isMuted ? userColors[profile.uid]?.border || "#5865F2" : "#2b2d31",
+                      boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 2px ${userColors[profile.uid]?.ring || "rgba(88,101,242,0.3)"}, 0 0 8px ${userColors[profile.uid]?.glow || "rgba(88,101,242,0.4)"}` : undefined,
+                      transform: isLocalSpeaking && !isMuted ? "scale(1.06)" : "scale(1)",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-bold text-white transition-all"
+                    style={{
+                      backgroundColor: (userColors[profile.uid]?.hex || "#5865F2") + "22",
+                      borderColor: isLocalSpeaking && !isMuted ? userColors[profile.uid]?.border || "#5865F2" : "#2b2d31",
+                      color: userColors[profile.uid]?.hex || "#5865F2",
+                      boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 2px ${userColors[profile.uid]?.ring || "rgba(88,101,242,0.3)"}, 0 0 8px ${userColors[profile.uid]?.glow || "rgba(88,101,242,0.4)"}` : undefined,
+                      transform: isLocalSpeaking && !isMuted ? "scale(1.06)" : "scale(1)",
+                    }}
+                  >
+                    {profile.username.charAt(0).toUpperCase()}
+                  </div>
+                )}
                 {isMuted && (
-                  <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
+                  <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white shadow">
                     <MicOff size={10} />
                   </div>
                 )}
@@ -1336,20 +1392,37 @@ export default function VoiceChannel({
 
             {activeParticipants.slice(0, 3).map((p) => {
               const isRemoteSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
+              const pColor = userColors[p.uid] || { hex: "#5865F2", glow: "rgba(88,101,242,0.4)", border: "rgba(88,101,242,0.85)", ring: "rgba(88,101,242,0.3)" };
               return (
                 <div key={p.uid} className="flex flex-col items-center gap-1">
                   <div className="relative">
-                    <img
-                      src={p.photoURL}
-                      alt={p.username}
-                      className={`w-10 h-10 rounded-full object-cover border-2 transition-all ${
-                        isRemoteSpeaking
-                          ? "border-emerald-400 ring-2 ring-emerald-500/30 scale-105"
-                          : "border-[#2b2d31]"
-                      }`}
-                    />
+                    {p.photoURL ? (
+                      <img
+                        src={p.photoURL}
+                        alt={p.username}
+                        className="w-10 h-10 rounded-full object-cover border-2 transition-all"
+                        style={{
+                          borderColor: isRemoteSpeaking ? pColor.border : "#2b2d31",
+                          boxShadow: isRemoteSpeaking ? `0 0 0 2px ${pColor.ring}, 0 0 8px ${pColor.glow}` : undefined,
+                          transform: isRemoteSpeaking ? "scale(1.06)" : "scale(1)",
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-bold text-white transition-all"
+                        style={{
+                          backgroundColor: pColor.hex + "22",
+                          borderColor: isRemoteSpeaking ? pColor.border : "#2b2d31",
+                          color: pColor.hex,
+                          boxShadow: isRemoteSpeaking ? `0 0 0 2px ${pColor.ring}, 0 0 8px ${pColor.glow}` : undefined,
+                          transform: isRemoteSpeaking ? "scale(1.06)" : "scale(1)",
+                        }}
+                      >
+                        {p.username.charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     {p.isMuted && (
-                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white">
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-0.5 rounded-full text-white shadow">
                         <MicOff size={10} />
                       </div>
                     )}
@@ -1448,157 +1521,200 @@ export default function VoiceChannel({
       {/* Main Grid: Local User & Remote Participants */}
       <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
         {/* Local User Tile */}
-        <div
-          className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-150 ${
-            isLocalSpeaking && !isMuted
-              ? "border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
-              : "border-neutral-800/90"
-          }`}
-        >
-          {/* Audio Status Badge */}
-          <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+        {(() => {
+          const localColor = userColors[profile.uid] || {
+            hex: "#5865F2",
+            rgb: [88, 101, 242] as [number, number, number],
+            glow: "rgba(88, 101, 242, 0.45)",
+            border: "rgba(88, 101, 242, 0.85)",
+            ring: "rgba(88, 101, 242, 0.35)",
+          };
+
+          const localIntensityLabel = isMuted
+            ? "MUTED"
+            : localIntensity === "whispering"
+            ? "WHISPERING"
+            : localIntensity === "loud"
+            ? "LOUD"
+            : "SPEAKING";
+
+          const localScale = !isLocalSpeaking || isMuted
+            ? "scale(1)"
+            : localIntensity === "whispering"
+            ? "scale(1.03)"
+            : localIntensity === "loud"
+            ? "scale(1.09)"
+            : "scale(1.06)";
+
+          return (
             <div
-              className={`w-2 h-2 rounded-full transition-colors ${
-                isMuted
-                  ? "bg-red-500"
-                  : isLocalSpeaking
-                  ? "bg-emerald-400 animate-pulse"
-                  : "bg-cyan-400"
-              }`}
-            />
-            <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
-              {isMuted ? (
-                "MUTED"
-              ) : isLocalSpeaking ? (
-                "SPEAKING"
-              ) : (
-                <>
-                  <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
-                  STUDIO
-                </>
+              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200"
+              style={{
+                borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(38, 38, 38, 0.9)",
+                boxShadow: isLocalSpeaking && !isMuted 
+                  ? (localIntensity === "loud" ? `0 0 32px ${localColor.glow}` : `0 0 20px ${localColor.glow}`)
+                  : "0 4px 12px rgba(0,0,0,0.5)",
+              }}
+            >
+              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING/WHISPERING/LOUD) */}
+              {(isMuted || isLocalSpeaking) && (
+                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                  <div
+                    className="w-2 h-2 rounded-full transition-colors"
+                    style={{
+                      backgroundColor: isMuted ? "#ef4444" : localColor.hex,
+                      boxShadow: isLocalSpeaking && !isMuted ? `0 0 8px ${localColor.glow}` : undefined,
+                    }}
+                  />
+                  <span className="text-[10px] font-bold text-white tracking-wider">
+                    {localIntensityLabel}
+                  </span>
+                </div>
               )}
-            </span>
-          </div>
 
-          {isVideoOn ? (
-            <div className="relative w-full h-full">
-              <video
-                ref={(el) => {
-                  localVideoRef.current = el;
-                  if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
-                    el.srcObject = videoStreamRef.current;
-                    el.play().catch(() => {});
-                  }
-                }}
-                autoPlay
-                playsInline
-                muted
-                onLoadedData={() => setIsCameraLoading(false)}
-                className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
-                  isCameraLoading ? "opacity-0" : "opacity-100"
-                }`}
-              />
+              {isVideoOn ? (
+                <div className="relative w-full h-full">
+                  <video
+                    ref={(el) => {
+                      localVideoRef.current = el;
+                      if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                        el.srcObject = videoStreamRef.current;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    onLoadedData={() => setIsCameraLoading(false)}
+                    className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
+                      isCameraLoading ? "opacity-0" : "opacity-100"
+                    }`}
+                  />
 
-              {isCameraLoading && (
-                <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
+                  {isCameraLoading && (
+                    <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
+                      <img
+                        src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
+                        alt="Loading camera"
+                        className="w-12 h-12 object-contain"
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : isCameraLoading ? (
+                <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
                   <img
                     src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                     alt="Loading camera"
                     className="w-12 h-12 object-contain"
                   />
                 </div>
+              ) : (
+                <div className="flex flex-col items-center gap-3">
+                  <div className="relative">
+                    {profile.photoURL ? (
+                      <img
+                        src={profile.photoURL}
+                        alt={profile.username}
+                        className="w-20 h-20 rounded-full object-cover shadow-md transition-all duration-150"
+                        style={{
+                          borderWidth: "2px",
+                          borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
+                          boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 4px ${localColor.ring}, 0 0 16px ${localColor.glow}` : undefined,
+                          transform: localScale,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="w-20 h-20 rounded-full border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150"
+                        style={{
+                          backgroundColor: localColor.hex + "22",
+                          borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
+                          color: localColor.hex,
+                          boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 4px ${localColor.ring}, 0 0 16px ${localColor.glow}` : undefined,
+                          transform: localScale,
+                        }}
+                      >
+                        {profile.username.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    {isMuted && (
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                        <MicOff size={14} />
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
-            </div>
-          ) : isCameraLoading ? (
-            <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
-              <img
-                src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                alt="Loading camera"
-                className="w-12 h-12 object-contain"
-              />
-            </div>
-          ) : (
-            <div className="flex flex-col items-center gap-3">
-              <div className="relative">
-                {profile.photoURL ? (
-                  <img
-                    src={profile.photoURL}
-                    alt={profile.username}
-                    className={`w-20 h-20 rounded-full object-cover border-2 shadow-md transition-all duration-150 ${
-                      isLocalSpeaking && !isMuted
-                        ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
-                        : "border-neutral-700"
-                    }`}
-                  />
-                ) : (
-                  <div
-                    className={`w-20 h-20 rounded-full bg-neutral-800 border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150 ${
-                      isLocalSpeaking && !isMuted
-                        ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
-                        : "border-neutral-700"
-                    }`}
-                  >
-                    {profile.username.charAt(0).toUpperCase()}
-                  </div>
-                )}
+
+              <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
+                <span className="text-xs font-bold text-white">
+                  {profile.username} (You)
+                </span>
                 {isMuted && (
-                  <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
-                    <MicOff size={14} />
-                  </div>
+                  <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                    Muted
+                  </span>
                 )}
               </div>
             </div>
-          )}
-
-          <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
-            <span className="text-xs font-bold text-white">
-              {profile.username} (You)
-            </span>
-            {isMuted && (
-              <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
-                Muted
-              </span>
-            )}
-          </div>
-        </div>
+          );
+        })()}
 
         {/* Remote Participants Tiles */}
         {activeParticipants.map((p) => {
           const isSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
+          const pIntensity = remoteIntensity[p.uid] || "none";
+          const pIntensityLabel = p.isMuted
+            ? "MUTED"
+            : pIntensity === "whispering"
+            ? "WHISPERING"
+            : pIntensity === "loud"
+            ? "LOUD"
+            : "SPEAKING";
+
+          const pScale = !isSpeaking
+            ? "scale(1)"
+            : pIntensity === "whispering"
+            ? "scale(1.03)"
+            : pIntensity === "loud"
+            ? "scale(1.09)"
+            : "scale(1.06)";
+
+          const pColor = userColors[p.uid] || {
+            hex: "#5865F2",
+            rgb: [88, 101, 242] as [number, number, number],
+            glow: "rgba(88, 101, 242, 0.45)",
+            border: "rgba(88, 101, 242, 0.85)",
+            ring: "rgba(88, 101, 242, 0.35)",
+          };
 
           return (
             <div
               key={p.uid}
-              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-150 ${
-                isSpeaking
-                  ? "border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
-                  : "border-neutral-800/90"
-              }`}
+              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200"
+              style={{
+                borderColor: isSpeaking ? pColor.border : "rgba(38, 38, 38, 0.9)",
+                boxShadow: isSpeaking 
+                  ? (pIntensity === "loud" ? `0 0 32px ${pColor.glow}` : `0 0 20px ${pColor.glow}`)
+                  : "0 4px 12px rgba(0,0,0,0.5)",
+              }}
             >
-              {/* Audio Status Badge */}
-              <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
-                <div
-                  className={`w-2 h-2 rounded-full transition-colors ${
-                    p.isMuted
-                      ? "bg-red-500"
-                      : isSpeaking
-                      ? "bg-emerald-400 animate-pulse"
-                      : "bg-cyan-400"
-                  }`}
-                />
-                <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
-                  {p.isMuted ? (
-                    "MUTED"
-                  ) : isSpeaking ? (
-                    "SPEAKING"
-                  ) : (
-                    <>
-                      <Zap size={10} className="text-cyan-400 fill-cyan-400/40" />
-                      STUDIO
-                    </>
-                  )}
-                </span>
-              </div>
+              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
+              {(p.isMuted || isSpeaking) && (
+                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                  <div
+                    className="w-2 h-2 rounded-full transition-colors"
+                    style={{
+                      backgroundColor: p.isMuted ? "#ef4444" : pColor.hex,
+                      boxShadow: isSpeaking ? `0 0 8px ${pColor.glow}` : undefined,
+                    }}
+                  />
+                  <span className="text-[10px] font-bold text-white tracking-wider">
+                    {pIntensityLabel}
+                  </span>
+                </div>
+              )}
 
               {/* Video Element rendered when remote user enabled their camera */}
               {p.isVideoOn ? (
@@ -1653,19 +1769,24 @@ export default function VoiceChannel({
                       <img
                         src={p.photoURL}
                         alt={p.username}
-                        className={`w-20 h-20 rounded-full object-cover border-2 shadow-md transition-all duration-150 ${
-                          isSpeaking
-                            ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
-                            : "border-neutral-700"
-                        }`}
+                        className="w-20 h-20 rounded-full object-cover shadow-md transition-all duration-150"
+                        style={{
+                          borderWidth: "2px",
+                          borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
+                          boxShadow: isSpeaking ? `0 0 0 4px ${pColor.ring}, 0 0 16px ${pColor.glow}` : undefined,
+                          transform: pScale,
+                        }}
                       />
                     ) : (
                       <div
-                        className={`w-20 h-20 rounded-full bg-neutral-800 border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150 ${
-                          isSpeaking
-                            ? "border-emerald-400 ring-4 ring-emerald-500/25 scale-105"
-                            : "border-neutral-700"
-                        }`}
+                        className="w-20 h-20 rounded-full border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150"
+                        style={{
+                          backgroundColor: pColor.hex + "22",
+                          borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
+                          color: pColor.hex,
+                          boxShadow: isSpeaking ? `0 0 0 4px ${pColor.ring}, 0 0 16px ${pColor.glow}` : undefined,
+                          transform: pScale,
+                        }}
                       >
                         {p.username.charAt(0).toUpperCase()}
                       </div>

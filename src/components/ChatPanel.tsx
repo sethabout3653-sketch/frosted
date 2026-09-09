@@ -510,17 +510,31 @@ export default function ChatPanel({
 
   // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
   // within 60 seconds they will not be shown as online.
-  const activeOnlineUsers = memberUsers.filter((u) => {
-    if (u.uid === profile.uid) return true;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
-    return isRecent && u.status !== "left";
-  });
+  const activeOnlineUsers = memberUsers
+    .filter((u) => {
+      if (u.uid === profile.uid) return true;
+      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+      return isRecent && u.status !== "left";
+    })
+    .sort((a, b) => {
+      if (a.uid === profile.uid) return -1;
+      if (b.uid === profile.uid) return 1;
+      const nameCompare = (a.username || "").localeCompare(b.username || "");
+      if (nameCompare !== 0) return nameCompare;
+      return a.uid.localeCompare(b.uid);
+    });
 
-  const leftUsers = memberUsers.filter((u) => {
-    if (u.uid === profile.uid) return false;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
-    return u.status === "left" || !isRecent;
-  });
+  const leftUsers = memberUsers
+    .filter((u) => {
+      if (u.uid === profile.uid) return false;
+      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+      return u.status === "left" || !isRecent;
+    })
+    .sort((a, b) => {
+      const nameCompare = (a.username || "").localeCompare(b.username || "");
+      if (nameCompare !== 0) return nameCompare;
+      return a.uid.localeCompare(b.uid);
+    });
 
   const renderAttachment = (msg: ChatMessage) => {
     if (!msg.attachment) return null;

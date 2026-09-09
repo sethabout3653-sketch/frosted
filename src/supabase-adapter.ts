@@ -67,79 +67,254 @@ function getPk(colName: string) {
   return (colName === "presence" || colName === "voice_users") ? "uid" : "id";
 }
 
-export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  const pk = getPk(docRef.colName);
-  
-  // Make sure we strip any accidental 'id' field if the PK is not 'id'
-  const payload = { [pk]: docRef.id, ...data };
-  if (pk !== 'id' && 'id' in payload) {
-    delete payload.id;
+// Resilient helper to execute Supabase database operations with automated retry on network or schema discrepancies
+const isNetworkError = (err: any): boolean => {
+  if (!err) return false;
+  const msg = (err.message || err.details || String(err)).toLowerCase();
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("networkerror") ||
+    msg.includes("network request failed") ||
+    msg.includes("load failed") ||
+    msg.includes("offline")
+  );
+};
+
+// Resilient wrapper that strips unmapped/missing Postgres columns on PGRST204 and retries on transient network errors
+async function resilientInsert(colName: string, payload: any, maxTries = 10): Promise<{ data: any; error: any }> {
+  let currentPayload = { ...payload };
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      const { data, error } = await supabase.from(colName).insert(currentPayload);
+      if (!error) return { data, error: null };
+
+      if (error.code === "PGRST204") {
+        const match = error.message?.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in currentPayload) {
+          delete currentPayload[match[1]];
+          continue;
+        }
+      }
+
+      if (isNetworkError(error)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null }; // Silently handle network drop
+      }
+
+      return { data, error };
+    } catch (err: any) {
+      if (isNetworkError(err)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null };
+      }
+      return { data: null, error: err };
+    }
   }
-  
-  const { error } = await supabase.from(docRef.colName).upsert(payload, { onConflict: pk });
-  if (error) {
-    console.error(`setDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+  return { data: null, error: null };
+}
+
+async function resilientUpsert(colName: string, payload: any, pk: string, maxTries = 10): Promise<{ data: any; error: any }> {
+  let currentPayload = { ...payload };
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      const { data, error } = await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
+      if (!error) return { data, error: null };
+
+      if (error.code === "PGRST204") {
+        const match = error.message?.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in currentPayload) {
+          delete currentPayload[match[1]];
+          continue;
+        }
+      }
+
+      if (isNetworkError(error)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null };
+      }
+
+      return { data, error };
+    } catch (err: any) {
+      if (isNetworkError(err)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null };
+      }
+      return { data: null, error: err };
+    }
+  }
+  return { data: null, error: null };
+}
+
+async function resilientUpdate(colName: string, payload: any, pk: string, id: string, maxTries = 10): Promise<{ data: any; error: any }> {
+  let currentPayload = { ...payload };
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      const { data, error } = await supabase.from(colName).update(currentPayload).eq(pk, id);
+      if (!error) return { data, error: null };
+
+      if (error.code === "PGRST204") {
+        const match = error.message?.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in currentPayload) {
+          delete currentPayload[match[1]];
+          continue;
+        }
+      }
+
+      if (isNetworkError(error)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null };
+      }
+
+      return { data, error };
+    } catch (err: any) {
+      if (isNetworkError(err)) {
+        if (i < 3) {
+          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+          continue;
+        }
+        return { data: null, error: null };
+      }
+      return { data: null, error: err };
+    }
+  }
+  return { data: null, error: null };
+}
+
+export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
+  try {
+    const pk = getPk(docRef.colName);
+    
+    // Strip accidental 'id' field if the PK is not 'id'
+    const payload = { [pk]: docRef.id, ...data };
+    if (pk !== 'id' && 'id' in payload) {
+      delete payload.id;
+    }
+    
+    const { error } = await resilientUpsert(docRef.colName, payload, pk);
+    if (error) {
+      if (error.code === 'PGRST205') {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+      } else if (!isNetworkError(error)) {
+        console.warn(`setDoc note on ${docRef.colName}:`, error);
+      }
+    }
+  } catch (err) {
+    if (!isNetworkError(err)) {
+      console.warn(`setDoc catch on ${docRef.colName}:`, err);
+    }
   }
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  const pk = getPk(docRef.colName);
-  const { error } = await supabase.from(docRef.colName).update(data).eq(pk, docRef.id);
-  if (error) {
-    console.error(`updateDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+  try {
+    const pk = getPk(docRef.colName);
+    const { error } = await resilientUpdate(docRef.colName, data, pk, docRef.id);
+    if (error) {
+      if (error.code === 'PGRST205') {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+      } else if (!isNetworkError(error)) {
+        console.warn(`updateDoc note on ${docRef.colName}:`, error);
+      }
+    }
+  } catch (err) {
+    if (!isNetworkError(err)) {
+      console.warn(`updateDoc catch on ${docRef.colName}:`, err);
+    }
   }
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  const pk = getPk(docRef.colName);
-  const { error } = await supabase.from(docRef.colName).delete().eq(pk, docRef.id);
-  if (error) {
-    console.error(`deleteDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+  try {
+    const pk = getPk(docRef.colName);
+    const { error } = await supabase.from(docRef.colName).delete().eq(pk, docRef.id);
+    if (error) {
+      if (error.code === 'PGRST205') {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+      } else if (!isNetworkError(error)) {
+        console.warn(`deleteDoc note on ${docRef.colName}:`, error);
+      }
+    }
+  } catch (err) {
+    if (!isNetworkError(err)) {
+      console.warn(`deleteDoc catch on ${docRef.colName}:`, err);
+    }
   }
 }
 
 export async function addDoc(colName: string, data: any) {
   const pk = getPk(colName);
   const id = "doc_" + Date.now() + Math.random().toString(36).substring(2, 9);
-  const { error } = await supabase.from(colName).insert({ [pk]: id, ...data });
-  if (error) {
-    console.error(`addDoc error on ${colName}:`, error);
-    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+  const payload = { [pk]: id, ...data };
+  try {
+    const { error } = await resilientInsert(colName, payload);
+    if (error) {
+      if (error.code === 'PGRST205') {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+      } else if (!isNetworkError(error)) {
+        console.warn(`addDoc note on ${colName}:`, error);
+      }
+    }
+  } catch (err) {
+    if (!isNetworkError(err)) {
+      console.warn(`addDoc catch on ${colName}:`, err);
+    }
   }
   return { colName, id };
 }
 
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
-  let req: any = supabase.from(colName).select("*");
-  if (queryObj.constraints) {
-    for (const c of queryObj.constraints) {
-      if (c.type === "where" && c.op === "==") {
-        req = req.eq(c.field, c.value);
-      } else if (c.type === "orderBy") {
-        req = req.order(c.field, { ascending: c.direction === "asc" });
-      } else if (c.type === "limit") {
-        req = req.limit(c.limitCount);
+  try {
+    let req: any = supabase.from(colName).select("*");
+    if (queryObj.constraints) {
+      for (const c of queryObj.constraints) {
+        if (c.type === "where" && c.op === "==") {
+          req = req.eq(c.field, c.value);
+        } else if (c.type === "orderBy") {
+          req = req.order(c.field, { ascending: c.direction === "asc" });
+        } else if (c.type === "limit") {
+          req = req.limit(c.limitCount);
+        }
       }
     }
-  }
-  const { data, error } = await req;
-  if (error) {
-    console.error(`getDocs error on ${colName}:`, error);
-    if (error.code === 'PGRST205' || error.code === 'PGRST204') {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    const { data, error } = await req;
+    if (error) {
+      if (error.code === 'PGRST205') {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+      } else if (!isNetworkError(error)) {
+        console.warn(`getDocs note on ${colName}:`, error);
+      }
     }
+    const docs = data || [];
+    return {
+      docs: docs.map((d: any) => ({ id: d.uid || d.id, data: () => d })),
+      empty: docs.length === 0,
+      size: docs.length,
+      forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.uid || d.id, data: () => d }))
+    };
+  } catch (err) {
+    return {
+      docs: [],
+      empty: true,
+      size: 0,
+      forEach: () => {}
+    };
   }
-  const docs = data || [];
-  return {
-    docs: docs.map((d: any) => ({ id: d.uid || d.id, data: () => d })),
-    empty: docs.length === 0,
-    size: docs.length,
-    forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.uid || d.id, data: () => d }))
-  };
 }
 
 export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {

@@ -82,12 +82,20 @@ export default function Chat({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any voice participant whose heartbeat is older than 7 seconds
-  const voiceUsers = rawVoiceUsers.filter((u) => {
-    if (profile && u.uid === profile.uid) return true;
-    const ts = u.timestamp || u.lastSeen;
-    return typeof ts === "number" ? currentTime - ts < 7000 : true;
-  });
+  // Filter out any voice participant whose heartbeat is older than 7 seconds, sorted deterministically
+  const voiceUsers = rawVoiceUsers
+    .filter((u) => {
+      if (profile && u.uid === profile.uid) return true;
+      const ts = u.timestamp || u.lastSeen;
+      return typeof ts === "number" ? currentTime - ts < 7000 : true;
+    })
+    .sort((a, b) => {
+      if (profile && a.uid === profile.uid) return -1;
+      if (profile && b.uid === profile.uid) return 1;
+      const nameCompare = (a.username || "").localeCompare(b.username || "");
+      if (nameCompare !== 0) return nameCompare;
+      return a.uid.localeCompare(b.uid);
+    });
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
