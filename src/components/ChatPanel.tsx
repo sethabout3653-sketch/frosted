@@ -233,7 +233,7 @@ export default function ChatPanel({
       clearInterval(interval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
-      markLeft();
+      // Do not mark as left on component unmount; heartbeat timeout and beforeunload handle real disconnects
     };
   }, [profile]);
 
@@ -510,16 +510,16 @@ export default function ChatPanel({
     : messages;
 
   // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
-  // within a few seconds (45s) they will not be shown as online.
+  // within 60 seconds they will not be shown as online.
   const activeOnlineUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return true;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 45000;
-    return u.status === "online" && isRecent;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+    return isRecent && u.status !== "left";
   });
 
   const leftUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return false;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 45000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
     return u.status === "left" || !isRecent;
   });
 
@@ -962,7 +962,7 @@ export default function ChatPanel({
 
       {/* Right Members Sidebar ("ONLINE — N" & "OFFLINE / LEFT — N") matching Image 2 */}
       {showMembersSidebar && (
-        <aside className="w-56 bg-[#080808] border-l border-neutral-900 flex flex-col h-full flex-shrink-0 hidden md:flex">
+        <aside className="w-56 bg-[#080808] border-l border-neutral-900 flex flex-col h-full flex-shrink-0">
           <div className="flex-1 overflow-y-auto p-3 space-y-5">
             {/* ONLINE SECTION */}
             <div>

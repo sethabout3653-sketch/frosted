@@ -19,11 +19,19 @@ export interface DocumentSnapshot<T = SethDocData> {
   data: () => T | undefined;
 }
 
+export interface DocumentChange<T = SethDocData> {
+  type: "added" | "modified" | "removed";
+  doc: DocumentSnapshot<T>;
+  oldIndex?: number;
+  newIndex?: number;
+}
+
 export interface QuerySnapshot<T = SethDocData> {
   docs: DocumentSnapshot<T>[];
   empty: boolean;
   size: number;
   forEach: (callback: (doc: DocumentSnapshot<T>) => void) => void;
+  docChanges: () => DocumentChange<T>[];
 }
 
 export interface DocumentReference {
@@ -143,9 +151,8 @@ class SethBaseStore {
             const payload = JSON.parse(event.data);
             if (payload.type === "init") {
               if (payload.data) {
-                Object.keys(payload.data).forEach((col) => {
-                  this.data[col] = { ...(this.data[col] || {}), ...payload.data[col] };
-                });
+                // Authoritative server state replacement
+                this.data = payload.data;
                 this.saveToLocalStorage();
                 this.notify();
               }
@@ -170,13 +177,13 @@ class SethBaseStore {
             this.sse.close();
             this.sse = null;
           }
-          // Retry SSE in 3 seconds
-          setTimeout(connectSSE, 3000);
+          // Retry SSE in 2 seconds
+          setTimeout(connectSSE, 2000);
         };
       } catch (err) {
         this.isConnected = false;
         this.notifyStatus();
-        setTimeout(connectSSE, 5000);
+        setTimeout(connectSSE, 3000);
       }
     };
 
@@ -196,7 +203,11 @@ class SethBaseStore {
           const result = await res.json();
           this.isConnected = true;
           this.notifyStatus();
-          if (result.changes && Array.isArray(result.changes) && result.changes.length > 0) {
+          if (result.fullData && this.lastPollTimestamp === 0) {
+            this.data = result.fullData;
+            this.saveToLocalStorage();
+            this.notify();
+          } else if (result.changes && Array.isArray(result.changes) && result.changes.length > 0) {
             result.changes.forEach((ch: any) => {
               this.applyLocalChange(ch.collection, ch.id, ch.data, ch.op, false);
             });
@@ -208,7 +219,7 @@ class SethBaseStore {
       } catch (e) {
         // Silent poll error
       }
-    }, 2500);
+    }, 1500);
   }
 
   private applyLocalChange(
@@ -624,6 +635,8 @@ export function onSnapshot(
     ? targetAny.collectionName
     : targetAny.path || "default";
 
+  let previousDocsMap = new Map<string, string>();
+
   const runCallback = () => {
     try {
       if (isDoc) {
@@ -652,11 +665,63 @@ export function onSnapshot(
           data: () => ({ ...d }),
         }));
 
+        const docChangesList: DocumentChange[] = [];
+        const currentDocsMap = new Map<string, string>();
+
+        docSnapshots.forEach((docSnap, index) => {
+          const docDataStr = JSON.stringify(docSnap.data());
+          currentDocsMap.set(docSnap.id, docDataStr);
+          const prevStr = previousDocsMap.get(docSnap.id);
+          if (prevStr === undefined) {
+            docChangesList.push({
+              type: "added",
+              doc: docSnap,
+              oldIndex: -1,
+              newIndex: index,
+            });
+          } else if (prevStr !== docDataStr) {
+            docChangesList.push({
+              type: "modified",
+              doc: docSnap,
+              oldIndex: index,
+              newIndex: index,
+            });
+          }
+        });
+
+        // Detect removals
+        previousDocsMap.forEach((prevStr, id) => {
+          if (!currentDocsMap.has(id)) {
+            let parsed: SethDocData = { id };
+            try {
+              parsed = { ...JSON.parse(prevStr), id };
+            } catch (e) {}
+            docChangesList.push({
+              type: "removed",
+              doc: {
+                id,
+                ref: {
+                  id,
+                  path: `${colName}/${id}`,
+                  collectionName: colName,
+                },
+                exists: () => false,
+                data: () => parsed,
+              },
+              oldIndex: 0,
+              newIndex: -1,
+            });
+          }
+        });
+
+        previousDocsMap = currentDocsMap;
+
         const qSnap: QuerySnapshot = {
           docs: docSnapshots,
           empty: docSnapshots.length === 0,
           size: docSnapshots.length,
           forEach: (cb) => docSnapshots.forEach(cb),
+          docChanges: () => docChangesList,
         };
 
         onNext(qSnap);
@@ -702,6 +767,7 @@ export async function getDocs(
     empty: docSnapshots.length === 0,
     size: docSnapshots.length,
     forEach: (cb) => docSnapshots.forEach(cb),
+    docChanges: () => [],
   };
 }
 

@@ -127,6 +127,7 @@ async function startServer() {
     sseClients.forEach((client) => {
       try {
         client.write(`data: ${payload}\n\n`);
+        (client as any).flush?.();
       } catch (e) {
         sseClients.delete(client);
       }
@@ -138,7 +139,11 @@ async function startServer() {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
+
+    // Send initial 2KB comment padding to force proxies/nginx to flush buffer immediately
+    res.write(":" + " ".repeat(2048) + "\n\n");
 
     // Send initial connection handshake and all existing documents
     res.write(
@@ -156,6 +161,7 @@ async function startServer() {
         data: sethbaseData,
       })}\n\n`
     );
+    (res as any).flush?.();
 
     sseClients.add(res);
 
@@ -244,6 +250,7 @@ async function startServer() {
     res.json({
       timestamp: Date.now(),
       changes: newChanges,
+      ...(since === 0 ? { fullData: sethbaseData } : {}),
     });
   });
 
