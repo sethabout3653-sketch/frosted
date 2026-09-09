@@ -89,6 +89,7 @@ export default function VoiceChannel({
   const joinSoundRef = useRef<HTMLAudioElement | null>(null);
   const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
   const hasJoinedVoiceRef = useRef<boolean>(false);
+  const processedSignalsRef = useRef<Set<string>>(new Set());
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
@@ -267,9 +268,9 @@ export default function VoiceChannel({
         compressor.attack.value = 0.003;
         compressor.release.value = 0.25;
 
-        // 3. Smart Gain Node - calibrated boost for loud and crystal-clear voice transmission
+        // 3. Smart Gain Node - calibrated boost for loud and crystal-clear voice transmission (170% / 1.7x boost)
         const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.2;
+        gainNode.gain.value = 1.7;
         gainNodeRef.current = gainNode;
 
         // 4. Analyser for intelligent Voice Activity Detection (VAD)
@@ -722,6 +723,17 @@ export default function VoiceChannel({
 
   const handleSignal = useCallback(
     async (signal: VoiceSignal, micStream: MediaStream) => {
+      if (signal.id && processedSignalsRef.current.has(signal.id)) {
+        return;
+      }
+      if (signal.id) {
+        processedSignalsRef.current.add(signal.id);
+        if (processedSignalsRef.current.size > 200) {
+          const first = processedSignalsRef.current.values().next().value;
+          if (first) processedSignalsRef.current.delete(first);
+        }
+      }
+
       if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 10000) {
         return;
       }
@@ -736,39 +748,54 @@ export default function VoiceChannel({
           if (isDead) {
             pc = createPeerConnection(partnerUid, micStream);
           } else if (pc.signalingState !== "stable") {
-            if (profile.uid > partnerUid) {
+            const isPolite = profile.uid < partnerUid;
+            if (!isPolite && pc.signalingState === "have-local-offer") {
               return;
             }
-            await pc.setLocalDescription({ type: "rollback" }).catch(() => {});
+            try {
+              await pc.setLocalDescription({ type: "rollback" });
+            } catch (e) {
+              pc = createPeerConnection(partnerUid, micStream);
+            }
           }
 
-          const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
           if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
-            await pc.setRemoteDescription(offerDescription);
-            await processCandidateQueue(partnerUid, pc);
+            try {
+              const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              await pc.setRemoteDescription(offerDescription);
+              await processCandidateQueue(partnerUid, pc);
 
-            if (pc.signalingState === "have-remote-offer") {
-              const answer = await pc.createAnswer();
-              const highQualityAnswer = new RTCSessionDescription({
-                type: answer.type,
-                sdp: optimizeAudioSdp(answer.sdp || ""),
-              });
-              await pc.setLocalDescription(highQualityAnswer);
-              sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+              if (pc.signalingState === "have-remote-offer") {
+                const answer = await pc.createAnswer();
+                const highQualityAnswer = new RTCSessionDescription({
+                  type: answer.type,
+                  sdp: optimizeAudioSdp(answer.sdp || ""),
+                });
+                await pc.setLocalDescription(highQualityAnswer);
+                sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+              }
+            } catch (e) {
+              // Gracefully ignore state transitions
             }
           }
         } else if (signal.type === "answer") {
           const pc = peersRef.current[partnerUid];
           if (pc && pc.signalingState === "have-local-offer") {
-            const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
-            await pc.setRemoteDescription(answerDescription);
-            await processCandidateQueue(partnerUid, pc);
+            try {
+              const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              await pc.setRemoteDescription(answerDescription);
+              await processCandidateQueue(partnerUid, pc);
+            } catch (e) {
+              // Gracefully ignore stale/duplicate answer
+            }
           }
         } else if (signal.type === "candidate") {
           const candidateData = JSON.parse(signal.sdp);
           const pc = peersRef.current[partnerUid];
-          if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch(() => {});
+          if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== "closed") {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            } catch (e) {}
           } else {
             if (!iceCandidateQueuesRef.current[partnerUid]) {
               iceCandidateQueuesRef.current[partnerUid] = [];
@@ -776,8 +803,11 @@ export default function VoiceChannel({
             iceCandidateQueuesRef.current[partnerUid].push(candidateData);
           }
         }
-      } catch (err) {
-        console.warn("Signal handling error:", err);
+      } catch (err: any) {
+        const msg = String(err?.message || err || "");
+        if (!msg.includes("Called in wrong state") && !msg.includes("stable")) {
+          console.warn("Signal handling note:", err);
+        }
       }
     },
     [createPeerConnection, processCandidateQueue, profile.uid, sendSignal]
