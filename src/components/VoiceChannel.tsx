@@ -815,7 +815,6 @@ export default function VoiceChannel({
       try {
         await updateDoc(doc(db, "voice_users", profile.uid), {
           timestamp: Date.now(),
-          lastSeen: Date.now(),
           isMuted: isMutedRef.current,
           isVideoOn: isVideoOnRef.current,
           isVideoLoading: isCameraLoadingRef.current,
