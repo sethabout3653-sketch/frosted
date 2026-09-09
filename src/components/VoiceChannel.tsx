@@ -254,34 +254,25 @@ export default function VoiceChannel({
 
         const source = ctx.createMediaStreamSource(sourceStream);
 
-        // 1. High-Pass Filter (85 Hz) - cuts background rumble, table vibrations, and fan hum while retaining voice warmth
+        // 1. High-Pass Filter (85 Hz) - cuts low rumble while retaining full dynamic range and voice warmth
         const highpass = ctx.createBiquadFilter();
         highpass.type = "highpass";
         highpass.frequency.value = 85;
         highpass.Q.value = 0.7;
 
-        // 2. Dynamics Compressor - protects eardrums by clamping sudden loud screams/clicks, while boosting quiet voices
-        const compressor = ctx.createDynamicsCompressor();
-        compressor.threshold.value = -24;
-        compressor.knee.value = 28;
-        compressor.ratio.value = 3.5;
-        compressor.attack.value = 0.003;
-        compressor.release.value = 0.25;
-
-        // 3. Smart Gain Node - calibrated boost for loud and crystal-clear voice transmission (170% / 1.7x boost)
+        // 2. Direct Gain Node (170% / 1.7x boost) - Pure uncompressed audio with no dynamic compression
         const gainNode = ctx.createGain();
         gainNode.gain.value = 1.7;
         gainNodeRef.current = gainNode;
 
-        // 4. Analyser for intelligent Voice Activity Detection (VAD)
+        // 3. Analyser for intelligent Voice Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
-        // Chain nodes together
+        // Chain nodes directly without compression
         source.connect(highpass);
-        highpass.connect(compressor);
-        compressor.connect(gainNode);
+        highpass.connect(gainNode);
         gainNode.connect(analyser);
 
         analyserRef.current = analyser;
