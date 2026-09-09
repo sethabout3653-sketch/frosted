@@ -58,18 +58,19 @@ const ICE_SERVERS: RTCConfiguration = {
   ],
 };
 
-// Studio quality uncapped audio SDP optimizer:
-// - 320000 bps optimal Opus bitrate
-// - Stereo enabled (stereo=1, sprop-stereo=1) for music, soundboards, and rich audio
+// Studio quality uncapped raw audio SDP optimizer:
+// - 510000 bps uncapped Opus bitrate
+// - Stereo enabled (stereo=1, sprop-stereo=1) for pure uncompressed full spectrum audio
 // - maxplaybackrate=48000 for full 48kHz frequency spectrum
-// - cbr=1 (constant bitrate transmission, no ducking or compression drops)
-// - useinbandfec=1 for forward error correction on packet loss
+// - cbr=1 (constant bitrate transmission, no ducking, gating or compression drops)
+// - usedtx=0 (no voice gating or silence cutoffs)
+// - useinbandfec=1 for forward error correction
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
       const base = lines[i].split(";")[0];
-      lines[i] = `${base};maxaveragebitrate=320000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1`;
+      lines[i] = `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1;usedtx=0`;
     }
   }
   return lines.join("\r\n");
@@ -191,17 +192,24 @@ export default function VoiceChannel({
       });
   }, [participants, currentTime]);
 
-  // Automatically acquire studio microphone stream with smart noise cancellation and automatic gain control
+  // Automatically acquire studio microphone stream with zero AGC limiters, zero noise suppression filters, and zero compression
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true, // Smart noise reduction
-          autoGainControl: true,  // Auto leveling to match system volume
+          echoCancellation: false,
+          noiseSuppression: false, // Disables browser noise gate and suppression
+          autoGainControl: false,  // Disables browser hardware/software volume limiter and AGC compression
           channelCount: { ideal: 2 },
           sampleRate: { ideal: 48000 },
-        },
+          // Chromium non-standard flags to ensure raw uncompressed audio
+          googAutoGainControl: false,
+          googAutoGainControl2: false,
+          googNoiseSuppression: false,
+          googHighpassFilter: false,
+          googTypingNoiseDetection: false,
+          googAudioMirroring: false,
+        } as MediaTrackConstraints,
         video: false,
       });
     } catch (err) {
@@ -209,9 +217,9 @@ export default function VoiceChannel({
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
           },
           video: false,
          });
@@ -224,7 +232,7 @@ export default function VoiceChannel({
     }
   }, []);
 
-  // Connect microphone to live Web Audio pipeline with smart dynamics compressor, high-pass filter, and VAD
+  // Connect microphone to live Web Audio pipeline with 170% gain boost, zero limiter, zero compressor, and VAD
   const setupAudioPipeline = useCallback(
     async (sourceStream: MediaStream): Promise<MediaStream> => {
       if (animFrameRef.current) {
@@ -254,25 +262,22 @@ export default function VoiceChannel({
 
         const source = ctx.createMediaStreamSource(sourceStream);
 
-        // 1. High-Pass Filter (85 Hz) - cuts low rumble while retaining full dynamic range and voice warmth
-        const highpass = ctx.createBiquadFilter();
-        highpass.type = "highpass";
-        highpass.frequency.value = 85;
-        highpass.Q.value = 0.7;
-
-        // 2. Direct Gain Node (170% / 1.7x boost) - Pure uncompressed audio with no dynamic compression
+        // 1. Direct Gain Node (170% / 1.7x boost) - Pure uncompressed, unthrottled audio with zero limiters
         const gainNode = ctx.createGain();
         gainNode.gain.value = 1.7;
         gainNodeRef.current = gainNode;
+
+        // 2. MediaStreamDestination for WebRTC peer transmission
+        const dest = ctx.createMediaStreamDestination();
 
         // 3. Analyser for intelligent Voice Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
-        // Chain nodes directly without compression
-        source.connect(highpass);
-        highpass.connect(gainNode);
+        // Route: Source -> 1.7x Gain -> Destination (WebRTC) & Analyser (UI)
+        source.connect(gainNode);
+        gainNode.connect(dest);
         gainNode.connect(analyser);
 
         analyserRef.current = analyser;
@@ -316,8 +321,8 @@ export default function VoiceChannel({
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
 
-        localStreamRef.current = sourceStream;
-        return sourceStream;
+        localStreamRef.current = dest.stream;
+        return dest.stream;
       } catch (err) {
         console.warn("AudioContext setup fallback to raw stream:", err);
         localStreamRef.current = sourceStream;
