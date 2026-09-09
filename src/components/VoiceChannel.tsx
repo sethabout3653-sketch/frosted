@@ -440,16 +440,16 @@ export default function VoiceChannel({
 
   const sendSignal = useCallback(
     async (
-      receiverId: string,
+      targetUid: string,
       type: "offer" | "answer" | "candidate",
       data: string
     ) => {
       try {
         await addDoc(collection(db, "signals"), {
-          senderId: profile.uid,
-          receiverId,
+          uid: profile.uid,
+          targetUid,
           type,
-          data,
+          sdp: data,
           timestamp: Date.now(),
         });
       } catch (err) {
@@ -600,7 +600,7 @@ export default function VoiceChannel({
       if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 10000) {
         return;
       }
-      const partnerUid = signal.senderId;
+      const partnerUid = signal.uid;
 
       try {
         if (signal.type === "offer") {
@@ -617,7 +617,7 @@ export default function VoiceChannel({
             await pc.setLocalDescription({ type: "rollback" }).catch(() => {});
           }
 
-          const offerDescription = new RTCSessionDescription(JSON.parse(signal.data));
+          const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
           if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
             await pc.setRemoteDescription(offerDescription);
             await processCandidateQueue(partnerUid, pc);
@@ -635,12 +635,12 @@ export default function VoiceChannel({
         } else if (signal.type === "answer") {
           const pc = peersRef.current[partnerUid];
           if (pc && pc.signalingState === "have-local-offer") {
-            const answerDescription = new RTCSessionDescription(JSON.parse(signal.data));
+            const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
             await pc.setRemoteDescription(answerDescription);
             await processCandidateQueue(partnerUid, pc);
           }
         } else if (signal.type === "candidate") {
-          const candidateData = JSON.parse(signal.data);
+          const candidateData = JSON.parse(signal.sdp);
           const pc = peersRef.current[partnerUid];
           if (pc && pc.remoteDescription && pc.remoteDescription.type) {
             await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch(() => {});
@@ -777,24 +777,21 @@ export default function VoiceChannel({
         // Real-time listener for WebRTC signals directed to current user
         const qSignals = query(
           collection(db, "signals"),
-          where("receiverId", "==", profile.uid)
+          where("targetUid", "==", profile.uid)
         );
 
         const unsubSignals = onSnapshot(
           qSignals,
           (snapshot) => {
             if (!isMountedRef.current) return;
-            snapshot.docChanges().forEach(async (change) => {
-              if (change.type === "added") {
-                const signalDoc = change.doc;
-                const signal = {
-                  id: signalDoc.id,
-                  ...signalDoc.data(),
-                } as VoiceSignal;
-                deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
-                if (localStreamRef.current && isMountedRef.current) {
-                  await handleSignal(signal, localStreamRef.current);
-                }
+            snapshot.forEach(async (signalDoc: any) => {
+              const signal = {
+                id: signalDoc.id,
+                ...signalDoc.data(),
+              } as VoiceSignal;
+              deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
+              if (localStreamRef.current && isMountedRef.current) {
+                await handleSignal(signal, localStreamRef.current);
               }
             });
           },

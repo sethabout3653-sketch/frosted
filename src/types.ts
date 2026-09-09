@@ -43,9 +43,9 @@ export interface ChatMessage {
 
 export interface VoiceSignal {
   id: string;
-  senderId: string;
-  receiverId: string;
+  uid: string;
+  targetUid: string;
   type: "offer" | "answer" | "candidate";
-  data: string;
+  sdp: string;
   timestamp: number;
 }

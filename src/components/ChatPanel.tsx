@@ -89,8 +89,7 @@ export default function ChatPanel({
         uid: profile.uid,
         username: profile.username,
         channelId: activeChannel,
-        isTyping: true,
-        lastActive: Date.now(),
+        timestamp: Date.now(),
       }).catch((err) => console.warn("Error setting typing status:", err));
     } else {
       setIsLocalTyping(false);
@@ -112,8 +111,7 @@ export default function ChatPanel({
           if (
             data.uid !== profile.uid &&
             data.channelId === activeChannel &&
-            data.isTyping === true &&
-            data.lastActive > now - 10000
+            data.timestamp > now - 10000
           ) {
             list.push(data);
           }
@@ -133,7 +131,7 @@ export default function ChatPanel({
     const checkStale = setInterval(() => {
       const now = Date.now();
       setTypingUsers((prev) =>
-        prev.filter((user) => user.lastActive > now - 10000)
+        prev.filter((user) => user.timestamp > now - 10000)
       );
     }, 1500);
     return () => clearInterval(checkStale);

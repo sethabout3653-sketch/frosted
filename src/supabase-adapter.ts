@@ -63,36 +63,51 @@ export function limit(limitCount: number) {
   return { type: "limit", limitCount };
 }
 
+function getPk(colName: string) {
+  return (colName === "presence" || colName === "voice_users") ? "uid" : "id";
+}
+
 export async function setDoc(docRef: { colName: string; id: string }, data: any) {
-  const { error } = await supabase.from(docRef.colName).upsert({ id: docRef.id, ...data });
+  const pk = getPk(docRef.colName);
+  
+  // Make sure we strip any accidental 'id' field if the PK is not 'id'
+  const payload = { [pk]: docRef.id, ...data };
+  if (pk !== 'id' && 'id' in payload) {
+    delete payload.id;
+  }
+  
+  const { error } = await supabase.from(docRef.colName).upsert(payload, { onConflict: pk });
   if (error) {
     console.error(`setDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
   }
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  const { error } = await supabase.from(docRef.colName).update(data).eq("id", docRef.id);
+  const pk = getPk(docRef.colName);
+  const { error } = await supabase.from(docRef.colName).update(data).eq(pk, docRef.id);
   if (error) {
     console.error(`updateDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
   }
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  const { error } = await supabase.from(docRef.colName).delete().eq("id", docRef.id);
+  const pk = getPk(docRef.colName);
+  const { error } = await supabase.from(docRef.colName).delete().eq(pk, docRef.id);
   if (error) {
     console.error(`deleteDoc error on ${docRef.colName}:`, error);
-    if (error.code === 'PGRST205') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
+    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
   }
 }
 
 export async function addDoc(colName: string, data: any) {
+  const pk = getPk(colName);
   const id = "doc_" + Date.now() + Math.random().toString(36).substring(2, 9);
-  const { error } = await supabase.from(colName).insert({ id, ...data });
+  const { error } = await supabase.from(colName).insert({ [pk]: id, ...data });
   if (error) {
     console.error(`addDoc error on ${colName}:`, error);
-    if (error.code === 'PGRST205') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    if (error.code === 'PGRST205' || error.code === 'PGRST204') window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
   }
   return { colName, id };
 }
@@ -114,16 +129,16 @@ export async function getDocs(queryObj: any) {
   const { data, error } = await req;
   if (error) {
     console.error(`getDocs error on ${colName}:`, error);
-    if (error.code === 'PGRST205') {
+    if (error.code === 'PGRST205' || error.code === 'PGRST204') {
       window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
     }
   }
   const docs = data || [];
   return {
-    docs: docs.map(d => ({ id: d.id, data: () => d })),
+    docs: docs.map(d => ({ id: d.uid || d.id, data: () => d })),
     empty: docs.length === 0,
     size: docs.length,
-    forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.id, data: () => d }))
+    forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.uid || d.id, data: () => d }))
   };
 }
 
