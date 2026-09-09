@@ -68,6 +68,7 @@ export default function ChatPanel({
   const [attachmentSize, setAttachmentSize] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
@@ -427,6 +428,7 @@ export default function ChatPanel({
   const uploadFile = async (file: File) => {
     setIsUploading(true);
     setUploadProgress(0);
+    setUploadError(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -478,10 +480,13 @@ export default function ChatPanel({
       setAttachmentSize(result.size);
     } catch (error: any) {
       console.error("File upload error:", error);
-      alert("Failed to upload file: " + error.message);
+      setUploadError(error.message || "Failed to upload file");
     } finally {
       setIsUploading(false);
       setUploadProgress(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
   };
 
@@ -826,6 +831,23 @@ export default function ChatPanel({
           />
         )}
 
+        {/* Upload Error Banner */}
+        {uploadError && (
+          <div className="p-3 border-t border-red-955 bg-[#0c0303] text-red-400 text-xs flex items-center justify-between gap-3 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
+            <div className="flex items-center gap-2 truncate">
+              <span className="font-bold">Error:</span>
+              <span className="truncate">{uploadError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setUploadError(null)}
+              className="text-neutral-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {/* Attachment Preview Drawer */}
         {(attachment || isUploading) && (
           <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
@@ -953,15 +975,15 @@ export default function ChatPanel({
 
             {/* Action Tools: File, GIF, Send */}
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors"
+              <label
+                htmlFor="file-upload-input"
+                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
                 title="Attach Any File"
               >
                 <Plus size={18} />
-              </button>
+              </label>
               <input
+                id="file-upload-input"
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
