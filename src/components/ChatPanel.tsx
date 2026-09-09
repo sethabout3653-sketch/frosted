@@ -62,9 +62,24 @@ export default function ChatPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [showGiphy, setShowGiphy] = useState(false);
   const [attachment, setAttachment] = useState<string | null>(null);
+  const [attachmentType, setAttachmentType] = useState<string | null>(null);
+  const [attachmentName, setAttachmentName] = useState<string | null>(null);
+  const [attachmentSize, setAttachmentSize] = useState<number | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // 1-second tick to continuously evaluate active vs dead/lagging peers in real-time
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Real-time listener for voice users
   useEffect(() => {
@@ -84,7 +99,7 @@ export default function ChatPanel({
     return () => unsub();
   }, []);
 
-  // Presence & Left Website tracking
+  // Presence & Left Website tracking with fast 2.5s heartbeat
   useEffect(() => {
     if (!profile) return;
     const presenceRef = doc(db, "presence", profile.uid);
@@ -115,7 +130,7 @@ export default function ChatPanel({
     };
 
     markOnline();
-    const interval = setInterval(markOnline, 20000); // 20s heartbeat
+    const interval = setInterval(markOnline, 2500); // 2.5s rapid heartbeat for real-time accuracy
 
     const handleUnload = () => {
       markLeft();
@@ -231,6 +246,9 @@ export default function ChatPanel({
     if (e) e.preventDefault();
     const currentText = text.trim();
     const currentAttachment = attachment;
+    const currentType = attachmentType;
+    const currentName = attachmentName;
+    const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
     const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
@@ -244,12 +262,20 @@ export default function ChatPanel({
       photoURL: profile.photoURL || "",
       timestamp: now,
       ...(currentText ? { text: currentText } : {}),
-      ...(currentAttachment ? { attachment: currentAttachment } : {}),
+      ...(currentAttachment ? { 
+        attachment: currentAttachment,
+        attachmentType: currentType || undefined,
+        attachmentName: currentName || undefined,
+        attachmentSize: currentSize || undefined,
+      } : {}),
     };
 
     setMessages((prev) => [...prev, optimisticMsg]);
     setText("");
     setAttachment(null);
+    setAttachmentType(null);
+    setAttachmentName(null);
+    setAttachmentSize(null);
     inputRef.current?.focus();
     window.setTimeout(() => scrollToBottom(), 10);
 
@@ -266,6 +292,9 @@ export default function ChatPanel({
       }
       if (currentAttachment) {
         msgData.attachment = currentAttachment;
+        if (currentType) msgData.attachmentType = currentType;
+        if (currentName) msgData.attachmentName = currentName;
+        if (currentSize) msgData.attachmentSize = currentSize;
       }
 
       await addDoc(collection(db, "messages"), msgData);
@@ -311,18 +340,94 @@ export default function ChatPanel({
     }
   };
 
+  const uploadFile = async (file: File) => {
+    setIsUploading(true);
+    setUploadProgress(0);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      
+      const uploadPromise = new Promise<{
+        url: string;
+        filename: string;
+        mimetype: string;
+        size: number;
+      }>((resolve, reject) => {
+        xhr.upload.addEventListener("progress", (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+          }
+        });
+
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const response = JSON.parse(xhr.responseText);
+              resolve(response);
+            } catch (err) {
+              reject(new Error("Invalid server response"));
+            }
+          } else {
+            reject(new Error(`Upload failed with status ${xhr.status}`));
+          }
+        });
+
+        xhr.addEventListener("error", () => {
+          reject(new Error("Network error during upload"));
+        });
+
+        xhr.addEventListener("abort", () => {
+          reject(new Error("Upload aborted"));
+        });
+
+        xhr.open("POST", "/api/upload");
+        xhr.send(formData);
+      });
+
+      const result = await uploadPromise;
+      setAttachment(result.url);
+      setAttachmentType(result.mimetype);
+      setAttachmentName(result.filename);
+      setAttachmentSize(result.size);
+    } catch (error: any) {
+      console.error("File upload error:", error);
+      alert("Failed to upload file: " + error.message);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(null);
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
-      if (file.size > 2 * 1024 * 1024) {
-        alert("File must be less than 2MB");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachment(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      uploadFile(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      uploadFile(file);
     }
   };
 
@@ -350,20 +455,156 @@ export default function ChatPanel({
       )
     : messages;
 
+  // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
+  // within a few seconds (7s) they will not be shown as online.
   const activeOnlineUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return true;
-    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
     return u.status === "online" && isRecent;
   });
 
   const leftUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return false;
-    const isRecent = u.lastSeen && Date.now() - u.lastSeen < 60000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
     return u.status === "left" || !isRecent;
   });
 
+  const renderAttachment = (msg: ChatMessage) => {
+    if (!msg.attachment) return null;
+
+    const mimeType = msg.attachmentType?.toLowerCase() || "";
+    const url = msg.attachment.toLowerCase();
+    
+    const isImage = mimeType.startsWith("image/") || 
+                    url.endsWith(".png") || 
+                    url.endsWith(".jpg") || 
+                    url.endsWith(".jpeg") || 
+                    url.endsWith(".gif") || 
+                    url.endsWith(".webp") ||
+                    msg.attachment.startsWith("data:image/");
+
+    const isVideo = mimeType.startsWith("video/") || 
+                    url.endsWith(".mp4") || 
+                    url.endsWith(".mov") || 
+                    url.endsWith(".webm") || 
+                    url.endsWith(".m4v") ||
+                    url.endsWith(".ogg");
+
+    const isAudio = mimeType.startsWith("audio/") || 
+                    url.endsWith(".mp3") || 
+                    url.endsWith(".wav") || 
+                    url.endsWith(".m4a") ||
+                    url.endsWith(".flac");
+
+    if (isImage) {
+      return (
+        <a href={msg.attachment} target="_blank" rel="noopener noreferrer" className="block max-w-xs mt-2 group relative overflow-hidden rounded-xl border border-neutral-800 shadow-sm cursor-zoom-in">
+          <img
+            src={msg.attachment}
+            alt={msg.attachmentName || "Attached Image"}
+            className="w-full h-auto max-h-72 object-contain group-hover:scale-[1.02] transition-transform duration-200"
+          />
+        </a>
+      );
+    }
+
+    if (isVideo) {
+      return (
+        <div className="max-w-md w-full mt-2">
+          <video
+            src={msg.attachment}
+            controls
+            preload="metadata"
+            className="rounded-xl w-full border border-neutral-800 shadow-md bg-black"
+          />
+          {msg.attachmentName && (
+            <span className="text-[10px] text-neutral-500 mt-1 block truncate">
+              {msg.attachmentName}
+            </span>
+          )}
+        </div>
+      );
+    }
+
+    if (isAudio) {
+      return (
+        <div className="max-w-sm w-full mt-2 bg-neutral-900/60 p-3 rounded-xl border border-neutral-800 flex flex-col gap-1.5">
+          <span className="text-xs font-semibold text-neutral-300 truncate">
+            {msg.attachmentName || "Audio file"}
+          </span>
+          <audio
+            src={msg.attachment}
+            controls
+            className="w-full h-8"
+          />
+        </div>
+      );
+    }
+
+    const formatFileSize = (bytes?: number) => {
+      if (!bytes) return "";
+      if (bytes < 1024) return `${bytes} B`;
+      const kb = bytes / 1024;
+      if (kb < 1024) return `${kb.toFixed(1)} KB`;
+      const mb = kb / 1024;
+      if (mb < 1024) return `${mb.toFixed(1)} MB`;
+      const gb = mb / 1024;
+      return `${gb.toFixed(1)} GB`;
+    };
+
+    const displayName = msg.attachmentName || msg.attachment.split("/").pop() || "Attached File";
+
+    return (
+      <div className="max-w-sm mt-2 p-3 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 rounded-xl flex items-center justify-between gap-3 shadow-md group">
+        <div className="flex items-center gap-3 truncate">
+          <div className="w-10 h-10 rounded-lg bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-400 group-hover:text-white transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="text-xs font-bold text-white truncate hover:underline cursor-pointer">
+              <a href={msg.attachment} target="_blank" rel="noopener noreferrer">
+                {displayName}
+              </a>
+            </span>
+            <span className="text-[10px] text-neutral-500 font-medium">
+              {formatFileSize(msg.attachmentSize)}
+            </span>
+          </div>
+        </div>
+        <a
+          href={msg.attachment}
+          download={displayName}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-lg transition-colors border border-neutral-700 shadow-sm"
+          title="Download File"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+        </a>
+      </div>
+    );
+  };
+
   return (
-    <div className="flex-1 flex w-full h-full min-h-0 bg-black text-white overflow-hidden">
+    <div 
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`flex-1 flex w-full h-full min-h-0 bg-black text-white overflow-hidden relative ${
+        isDragging ? "ring-2 ring-indigo-500 ring-inset bg-neutral-950/90" : ""
+      }`}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center border-4 border-dashed border-indigo-500 m-4 rounded-2xl pointer-events-none animate-in fade-in">
+          <div className="p-4 bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl flex flex-col items-center gap-3">
+            <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-bounce"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+            </div>
+            <p className="text-sm font-bold text-white">Drop to upload file</p>
+            <p className="text-xs text-neutral-500">Upload video, audio, image, document, or ZIP of any size</p>
+          </div>
+        </div>
+      )}
       {/* Center Chat View matching Image 2 */}
       <div className="flex-1 flex flex-col min-w-0 h-full bg-black">
         {/* Chat Header Bar */}
@@ -474,13 +715,7 @@ export default function ChatPanel({
                     />
                   )}
 
-                  {msg.attachment && (
-                    <img
-                      src={msg.attachment}
-                      alt="Attachment"
-                      className="rounded-xl mt-2 max-w-xs h-auto border border-neutral-800"
-                    />
-                  )}
+                  {msg.attachment && renderAttachment(msg)}
                 </div>
 
                 {/* Delete button on hover for user's own message */}
@@ -508,24 +743,74 @@ export default function ChatPanel({
         )}
 
         {/* Attachment Preview Drawer */}
-        {attachment && (
-          <div className="p-3 border-t border-neutral-900 bg-neutral-950 flex items-center gap-3 flex-shrink-0">
-            <div className="relative inline-block">
-              <img
-                src={attachment}
-                alt="Preview"
-                className="h-16 w-16 object-cover rounded-lg border border-neutral-800"
-              />
-              <button
-                onClick={() => setAttachment(null)}
-                className="absolute -top-2 -right-2 bg-neutral-900 text-white rounded-full p-1 border border-neutral-700 hover:bg-neutral-800 transition-colors"
-              >
-                <X size={12} />
-              </button>
-            </div>
-            <span className="text-xs text-neutral-400">
-              Image ready to send
-            </span>
+        {(attachment || isUploading) && (
+          <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
+            {isUploading ? (
+              <div className="flex items-center gap-3 w-full">
+                <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 relative">
+                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-semibold text-white">Uploading file...</span>
+                    <span className="text-xs text-neutral-400 font-bold">{uploadProgress !== null ? `${uploadProgress}%` : ""}</span>
+                  </div>
+                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300"
+                      style={{ width: `${uploadProgress ?? 0}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="relative flex items-center gap-3 w-full max-w-md">
+                <div className="relative">
+                  {attachmentType?.startsWith("image/") ? (
+                    <img
+                      src={attachment!}
+                      alt="Preview"
+                      className="h-12 w-12 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
+                    />
+                  ) : attachmentType?.startsWith("video/") ? (
+                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-indigo-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                    </div>
+                  ) : attachmentType?.startsWith("audio/") ? (
+                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-emerald-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                    </div>
+                  ) : (
+                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAttachment(null);
+                      setAttachmentType(null);
+                      setAttachmentName(null);
+                      setAttachmentSize(null);
+                    }}
+                    className="absolute -top-1.5 -right-1.5 bg-neutral-900 text-neutral-400 hover:text-white rounded-full p-0.5 border border-neutral-700 transition-colors shadow-md"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-bold text-white truncate">
+                    {attachmentName || "Attached file"}
+                  </span>
+                  <span className="text-[10px] text-neutral-500 font-medium">
+                    Ready to send
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -544,19 +829,18 @@ export default function ChatPanel({
               className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none"
             />
 
-            {/* Action Tools: Image, GIF, Send */}
+            {/* Action Tools: File, GIF, Send */}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors"
-                title="Attach Image"
+                title="Attach File / Video"
               >
                 <ImageIcon size={18} />
               </button>
               <input
                 type="file"
-                accept="image/*"
                 ref={fileInputRef}
                 className="hidden"
                 onChange={handleFileChange}
@@ -573,7 +857,7 @@ export default function ChatPanel({
 
               <button
                 type="submit"
-                disabled={!text.trim() && !attachment}
+                disabled={(!text.trim() && !attachment) || isUploading}
                 className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white disabled:opacity-40 disabled:hover:bg-neutral-800 transition-all ml-1 cursor-pointer"
                 title="Send Message"
               >

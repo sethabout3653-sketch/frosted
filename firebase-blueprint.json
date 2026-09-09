@@ -11,7 +11,10 @@
         "photoURL": { "type": "string", "maxLength": 500 },
         "timestamp": { "type": "number" },
         "gif": { "type": "string", "maxLength": 500 },
-        "attachment": { "type": "string", "maxLength": 5000000 }
+        "attachment": { "type": "string", "maxLength": 5000000 },
+        "attachmentType": { "type": "string", "maxLength": 256 },
+        "attachmentName": { "type": "string", "maxLength": 512 },
+        "attachmentSize": { "type": "number" }
       },
       "required": ["uid", "username", "timestamp"]
     },

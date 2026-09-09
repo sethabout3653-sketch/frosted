@@ -59,15 +59,33 @@ export default function Chat({
   const [notification, setNotification] = useState<ChatMessage | null>(null);
   const messageSoundRef = useRef<HTMLAudioElement | null>(null);
 
-  const [voiceUsers, setVoiceUsers] = useState<
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [rawVoiceUsers, setRawVoiceUsers] = useState<
     Array<{
       uid: string;
       username: string;
       photoURL: string;
       isMuted?: boolean;
       isVideoOn?: boolean;
+      timestamp?: number;
+      lastSeen?: number;
     }>
   >([]);
+
+  // 1-second tick to continuously drop dead/disconnected users within a few seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Filter out any voice participant whose heartbeat is older than 7 seconds
+  const voiceUsers = rawVoiceUsers.filter((u) => {
+    if (profile && u.uid === profile.uid) return true;
+    const ts = u.timestamp || u.lastSeen;
+    return typeof ts === "number" ? currentTime - ts < 7000 : true;
+  });
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
@@ -78,7 +96,18 @@ export default function Chat({
     const unsubscribe = onSnapshot(
       collection(db, "voice_users"),
       (snapshot) => {
-        setVoiceUsers(snapshot.docs.map((d) => d.data() as any));
+        const users = snapshot.docs.map((d) => d.data() as any);
+        setRawVoiceUsers(users);
+
+        // Lazily clean up any zombie records that have been dead for over 15 seconds
+        const now = Date.now();
+        snapshot.docs.forEach((d) => {
+          const data = d.data();
+          const ts = data.timestamp || data.lastSeen;
+          if (typeof ts === "number" && now - ts > 15000) {
+            deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+          }
+        });
       },
       (error) => {
         console.warn("Chat voice_users listener error:", error);
@@ -410,7 +439,7 @@ export default function Chat({
                         inVoice: false,
                         isMuted: false,
                       }).catch(() => {});
-                      setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+                      setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
                     }
                     setIsInVoiceSession(false);
                   }}
@@ -484,7 +513,7 @@ export default function Chat({
             inVoice: false,
             isMuted: false,
           }).catch(() => {});
-          setVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
+          setRawVoiceUsers((prev) => prev.filter((u) => u.uid !== profile.uid));
         }
         setIsInVoiceSession(false);
         setActiveTab("chat");

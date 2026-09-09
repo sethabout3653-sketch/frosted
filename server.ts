@@ -1,14 +1,63 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import fs from "fs";
+import multer from "multer";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Ensure uploads directory exists
+  const uploadsDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  // Configure multer storage
+  const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, uploadsDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const ext = path.extname(file.originalname);
+      const safeName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
+      cb(null, `${safeName}-${uniqueSuffix}${ext}`);
+    },
+  });
+
+  const upload = multer({
+    storage: storage,
+    limits: {
+      fileSize: Infinity, // Allow any file size (videos, GBs, etc.)
+    },
+  });
+
+  // Serve uploads directory publicly
+  app.use("/uploads", express.static(uploadsDir));
+
   // JSON and URL parsing middleware
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+
+  // File Upload API Route
+  app.post("/api/upload", upload.single("file"), (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      const fileUrl = `/uploads/${req.file.filename}`;
+      res.json({
+        url: fileUrl,
+        filename: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // API Proxy Route: Create session
   app.post("/api/lumin-session", async (req, res) => {

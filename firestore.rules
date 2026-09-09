@@ -17,7 +17,10 @@ service cloud.firestore {
         && (!('text' in data) || data.text == null || (data.text is string && data.text.size() <= 10000))
         && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 10000000))
         && (!('gif' in data) || data.gif == null || (data.gif is string && data.gif.size() <= 10000))
-        && (!('attachment' in data) || data.attachment == null || (data.attachment is string && data.attachment.size() <= 10000000));
+        && (!('attachment' in data) || data.attachment == null || (data.attachment is string && data.attachment.size() <= 10000000))
+        && (!('attachmentType' in data) || data.attachmentType == null || (data.attachmentType is string && data.attachmentType.size() <= 256))
+        && (!('attachmentName' in data) || data.attachmentName == null || (data.attachmentName is string && data.attachmentName.size() <= 512))
+        && (!('attachmentSize' in data) || data.attachmentSize == null || data.attachmentSize is number);
     }
 
     match /messages/{messageId} {

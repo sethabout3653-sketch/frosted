@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Mic,
   MicOff,
@@ -88,8 +88,36 @@ export default function VoiceChannel({
   const leaveSoundRef = useRef<HTMLAudioElement | null>(null);
   const [trackTrigger, setTrackTrigger] = useState(0);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
+
+  // Keep refs in sync for heartbeat timer
+  const isMutedRef = useRef(isMuted);
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  const isCameraLoadingRef = useRef(isCameraLoading);
+  useEffect(() => {
+    isCameraLoadingRef.current = isCameraLoading;
+  }, [isCameraLoading]);
+
+  // 1-second interval to continuously re-evaluate presence and prune disconnected/lagging participants
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 6s)
+  const activeParticipants = useMemo(() => {
+    return participants.filter((p) => {
+      const ts = p.timestamp || (p as any).lastSeen;
+      return typeof ts === "number" ? currentTime - ts < 6000 : true;
+    });
+  }, [participants, currentTime]);
 
   // Audio level and remote volume states
   const [audioLevel, setAudioLevel] = useState<number>(0);
@@ -780,8 +808,29 @@ export default function VoiceChannel({
 
     initVoice();
 
+    // Fast 2-second heartbeat to ensure other peers know this client is alive
+    const heartbeatInterval = setInterval(async () => {
+      if (!isMountedRef.current) return;
+      try {
+        await updateDoc(doc(db, "voice_users", profile.uid), {
+          timestamp: Date.now(),
+          lastSeen: Date.now(),
+          isMuted: isMutedRef.current,
+          isVideoOn: isVideoOnRef.current,
+          isVideoLoading: isCameraLoadingRef.current,
+        }).catch(() => {});
+        await updateDoc(doc(db, "presence", profile.uid), {
+          lastSeen: Date.now(),
+          status: "online",
+          inVoice: true,
+          isMuted: isMutedRef.current,
+        }).catch(() => {});
+      } catch (e) {}
+    }, 2000);
+
     return () => {
       isMountedRef.current = false;
+      clearInterval(heartbeatInterval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
 
@@ -797,6 +846,31 @@ export default function VoiceChannel({
       if (unsubscribeUsers) unsubscribeUsers();
     };
   }, [handleSignal, initiateCall, profile, stopAllMediaTracks]);
+
+  // Continuously prune and close dead/lagging peer connections when a peer loses connection or battery
+  useEffect(() => {
+    const now = Date.now();
+    participants.forEach((p) => {
+      const ts = p.timestamp || (p as any).lastSeen;
+      if (typeof ts === "number" && now - ts > 6000) {
+        if (peersRef.current[p.uid]) {
+          try {
+            peersRef.current[p.uid].close();
+          } catch (e) {}
+          delete peersRef.current[p.uid];
+          delete iceCandidateQueuesRef.current[p.uid];
+          if (remoteStreamsRef.current[p.uid]) {
+            remoteStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteStreamsRef.current[p.uid];
+          }
+        }
+        // If dead for over 12 seconds, clean up from Firestore
+        if (now - ts > 12000) {
+          deleteDoc(doc(db, "voice_users", p.uid)).catch(() => {});
+        }
+      }
+    });
+  }, [currentTime, participants]);
 
   // Toggle Microphone Mute
   const toggleMute = async () => {
@@ -1006,14 +1080,14 @@ export default function VoiceChannel({
     );
   }
 
-  const activeRemoteWithVideo = participants.find((p) => p.isVideoOn);
+  const activeRemoteWithVideo = activeParticipants.find((p) => p.isVideoOn);
   const anyVideoOn = !!activeRemoteWithVideo || isVideoOn;
 
   return (
     <>
       {/* Hidden persistent audio playback elements for all remote peers (never unmounted on view mode toggle) */}
       <div className="hidden" aria-hidden="true">
-        {participants.map((p) => (
+        {activeParticipants.map((p) => (
           <audio
             key={`audio-playback-${p.uid}`}
             ref={(el) => {
@@ -1143,7 +1217,7 @@ export default function VoiceChannel({
               </span>
             </div>
 
-            {participants.slice(0, 3).map((p) => (
+            {activeParticipants.slice(0, 3).map((p) => (
               <div key={p.uid} className="flex flex-col items-center gap-1">
                 <div className="relative">
                   <img
@@ -1162,9 +1236,9 @@ export default function VoiceChannel({
                 </span>
               </div>
             ))}
-            {participants.length > 3 && (
+            {activeParticipants.length > 3 && (
               <span className="text-[10px] text-neutral-400 font-bold self-center">
-                +{participants.length - 3}
+                +{activeParticipants.length - 3}
               </span>
             )}
           </div>
@@ -1226,7 +1300,7 @@ export default function VoiceChannel({
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm font-semibold text-neutral-400 hidden sm:inline">
-              General Voice ({participants.length + 1})
+              General Voice ({activeParticipants.length + 1})
             </span>
             <button
               onClick={handleLeave}
@@ -1365,7 +1439,7 @@ export default function VoiceChannel({
         </div>
 
         {/* Remote Participants Tiles */}
-        {participants.map((p) => {
+        {activeParticipants.map((p) => {
           const stream = remoteStreamsRef.current[p.uid];
 
           return (

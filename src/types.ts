@@ -23,6 +23,8 @@ export interface ChatProfile {
   isVideoOn?: boolean;
   isVideoLoading?: boolean;
   status?: "online" | "left" | "offline";
+  lastSeen?: number;
+  timestamp?: number;
 }
 
 export interface ChatMessage {
@@ -33,6 +35,9 @@ export interface ChatMessage {
   text?: string;
   gif?: string;
   attachment?: string;
+  attachmentType?: string;
+  attachmentName?: string;
+  attachmentSize?: number;
   timestamp: number;
 }
 
