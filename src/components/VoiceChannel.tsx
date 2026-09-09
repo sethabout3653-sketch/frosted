@@ -92,6 +92,32 @@ export default function VoiceChannel({
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
 
+  // Audio level and remote volume states
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
+
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const sessionStartTimeRef = useRef<number>(Date.now());
+  const isMountedRef = useRef<boolean>(true);
+  const isVideoOnRef = useRef<boolean>(false);
+
+  // Reusable dummy video track generator for initial WebRTC video m-line negotiation
+  const dummyCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dummyTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
+  const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
+  const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
+  const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+
   // Keep refs in sync for heartbeat timer
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
@@ -123,33 +149,6 @@ export default function VoiceChannel({
       return typeof ts === "number" ? currentTime - ts < 45000 : true;
     });
   }, [participants, currentTime]);
-
-  // Audio level and remote volume states
-  const [audioLevel, setAudioLevel] = useState<number>(0);
-  const [participantVolumes, setParticipantVolumes] = useState<{ [uid: string]: number }>({});
-
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const rawStreamRef = useRef<MediaStream | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animFrameRef = useRef<number | null>(null);
-
-  const videoStreamRef = useRef<MediaStream | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const sessionStartTimeRef = useRef<number>(Date.now());
-  const isMountedRef = useRef<boolean>(true);
-  const isVideoOnRef = useRef<boolean>(false);
-
-  // Reusable dummy video track generator for initial WebRTC video m-line negotiation
-  const dummyCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const dummyTrackRef = useRef<MediaStreamTrack | null>(null);
-
-  const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
-  const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
-  const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
-  const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
-  const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
 
   // Automatically acquire studio microphone stream with automatic echo cancellation by default
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
