@@ -44,6 +44,9 @@
     "/presence/{userId}": {
       "description": "User presence status"
     },
+    "/typing/{typingId}": {
+      "description": "Real-time typing status indicators for channels"
+    },
     "/voice_users/{userId}": {
       "description": "Voice room participants"
     }

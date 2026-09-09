@@ -62,5 +62,9 @@ service cloud.firestore {
     match /presence/{userId} {
       allow read, write, create, update, delete: if true;
     }
+
+    match /typing/{typingId} {
+      allow read, write, create, update, delete: if true;
+    }
   }
 }

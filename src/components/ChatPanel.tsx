@@ -70,9 +70,95 @@ export default function ChatPanel({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [typingUsers, setTypingUsers] = useState<any[]>([]);
+  const [isLocalTyping, setIsLocalTyping] = useState(false);
+  const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const updateTypingStatus = async (typing: boolean) => {
+    if (!profile) return;
+    const typingRef = doc(db, "typing", `${activeChannel}_${profile.uid}`);
+    if (typing) {
+      setIsLocalTyping(true);
+      await setDoc(typingRef, {
+        uid: profile.uid,
+        username: profile.username,
+        channelId: activeChannel,
+        isTyping: true,
+        lastActive: Date.now(),
+      }).catch((err) => console.warn("Error setting typing status:", err));
+    } else {
+      setIsLocalTyping(false);
+      await deleteDoc(typingRef).catch((err) => console.warn("Error deleting typing status:", err));
+    }
+  };
+
+  // Listen for active typing users in the current channel
+  useEffect(() => {
+    if (!profile?.uid) return;
+    const q = query(collection(db, "typing"));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: any[] = [];
+        const now = Date.now();
+        snapshot.docs.forEach((d) => {
+          const data = d.data();
+          if (
+            data.uid !== profile.uid &&
+            data.channelId === activeChannel &&
+            data.isTyping === true &&
+            data.lastActive > now - 10000
+          ) {
+            list.push(data);
+          }
+        });
+        setTypingUsers(list);
+      },
+      (error) => {
+        console.warn("Typing listener error:", error);
+      }
+    );
+
+    return () => unsub();
+  }, [activeChannel, profile?.uid]);
+
+  // Periodic pruning of dead typing heartbeats
+  useEffect(() => {
+    const checkStale = setInterval(() => {
+      const now = Date.now();
+      setTypingUsers((prev) =>
+        prev.filter((user) => user.lastActive > now - 10000)
+      );
+    }, 1500);
+    return () => clearInterval(checkStale);
+  }, []);
+
+  // Cleanup local typing state on active channel change
+  useEffect(() => {
+    if (isLocalTyping) {
+      updateTypingStatus(false);
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+  }, [activeChannel]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (profile) {
+        const typingRef = doc(db, "typing", `${activeChannel}_${profile.uid}`);
+        deleteDoc(typingRef).catch(() => {});
+      }
+    };
+  }, []);
 
   // 1-second tick to continuously evaluate active vs dead/lagging peers in real-time
   useEffect(() => {
@@ -273,6 +359,13 @@ export default function ChatPanel({
 
     setMessages((prev) => [...prev, optimisticMsg]);
     setText("");
+    if (isLocalTyping) {
+      updateTypingStatus(false);
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
     setAttachment(null);
     setAttachmentType(null);
     setAttachmentName(null);
@@ -817,6 +910,22 @@ export default function ChatPanel({
 
         {/* Bottom Message Input Bar matching Image 2 */}
         <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
+          {typingUsers.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-neutral-400 mb-2 pl-2 animate-in fade-in duration-200">
+              <div className="flex items-center gap-1">
+                <span className="relative flex h-1.5 w-1.5 mr-1">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
+                </span>
+                <span className="font-bold text-neutral-300">
+                  {typingUsers.length <= 3 
+                    ? typingUsers.map((u) => u.username).join(", ") 
+                    : "Several people"}
+                </span>
+                <span>{typingUsers.length === 1 ? " is typing..." : " are typing..."}</span>
+              </div>
+            </div>
+          )}
           <form
             onSubmit={handleSendMessage}
             className="bg-neutral-900/90 border border-neutral-800 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-neutral-700 transition-colors"
@@ -825,7 +934,29 @@ export default function ChatPanel({
               ref={inputRef}
               type="text"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setText(val);
+                if (val.trim()) {
+                  if (!isLocalTyping) {
+                    updateTypingStatus(true);
+                  }
+                  if (typingTimeoutRef.current) {
+                    clearTimeout(typingTimeoutRef.current);
+                  }
+                  typingTimeoutRef.current = setTimeout(() => {
+                    updateTypingStatus(false);
+                  }, 4000);
+                } else {
+                  if (isLocalTyping) {
+                    updateTypingStatus(false);
+                  }
+                  if (typingTimeoutRef.current) {
+                    clearTimeout(typingTimeoutRef.current);
+                    typingTimeoutRef.current = null;
+                  }
+                }
+              }}
               placeholder={`Message #${activeChannel}...`}
               className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none"
             />

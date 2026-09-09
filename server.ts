@@ -8,10 +8,21 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Ensure uploads directory exists
-  const uploadsDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+  // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
+  let uploadsDir = path.join(process.cwd(), "uploads");
+  try {
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    const testFile = path.join(uploadsDir, ".test");
+    fs.writeFileSync(testFile, "test");
+    fs.unlinkSync(testFile);
+  } catch (e) {
+    console.warn("Workspace uploads directory is not writable, falling back to /tmp/uploads");
+    uploadsDir = "/tmp/uploads";
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
   }
 
   // Configure multer storage
