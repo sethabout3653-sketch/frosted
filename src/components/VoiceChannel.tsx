@@ -98,9 +98,7 @@ export default function VoiceChannel({
   // Audio level and smart speech detection states with AI VAD (whisper / normal talk / loud)
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState<boolean>(false);
-  const [localIntensity, setLocalIntensity] = useState<"whispering" | "talking" | "loud" | "none">("none");
   const [remoteSpeaking, setRemoteSpeaking] = useState<{ [uid: string]: boolean }>({});
-  const [remoteIntensity, setRemoteIntensity] = useState<{ [uid: string]: "whispering" | "talking" | "loud" | "none" }>({});
   const localVadRef = useRef<SmartVoiceDetector>(new SmartVoiceDetector());
   const remoteVadMapRef = useRef<{ [uid: string]: SmartVoiceDetector }>({});
 
@@ -292,17 +290,15 @@ export default function VoiceChannel({
         const updateLevel = () => {
           if (!isMountedRef.current) return;
 
-          // Local microphone: AI voice vs noise detection (whisper / normal / loud)
+          // Local microphone: AI voice vs noise detection
           analyser.getByteFrequencyData(dataArray);
           const vadRes = localVadRef.current.analyze(dataArray, ctx.sampleRate);
           setAudioLevel(vadRes.energy);
 
           if (vadRes.isSpeaking && !isMutedRef.current) {
             setIsLocalSpeaking(true);
-            setLocalIntensity(vadRes.intensity);
           } else {
             setIsLocalSpeaking(false);
-            setLocalIntensity("none");
           }
 
           // Evaluate speech for remote participants using SmartVoiceDetector
@@ -318,10 +314,8 @@ export default function VoiceChannel({
 
               if (rVad.isSpeaking) {
                 setRemoteSpeaking((prev) => (prev[pUid] ? prev : { ...prev, [pUid]: true }));
-                setRemoteIntensity((prev) => ({ ...prev, [pUid]: rVad.intensity }));
               } else {
                 setRemoteSpeaking((prev) => (prev[pUid] ? { ...prev, [pUid]: false } : prev));
-                setRemoteIntensity((prev) => ({ ...prev, [pUid]: "none" }));
               }
             }
           }
@@ -1530,33 +1524,17 @@ export default function VoiceChannel({
             ring: "rgba(88, 101, 242, 0.35)",
           };
 
-          const localIntensityLabel = isMuted
-            ? "MUTED"
-            : localIntensity === "whispering"
-            ? "WHISPERING"
-            : localIntensity === "loud"
-            ? "LOUD"
-            : "SPEAKING";
-
-          const localScale = !isLocalSpeaking || isMuted
-            ? "scale(1)"
-            : localIntensity === "whispering"
-            ? "scale(1.03)"
-            : localIntensity === "loud"
-            ? "scale(1.09)"
-            : "scale(1.06)";
-
           return (
             <div
               className="relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200"
               style={{
                 borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(38, 38, 38, 0.9)",
                 boxShadow: isLocalSpeaking && !isMuted 
-                  ? (localIntensity === "loud" ? `0 0 32px ${localColor.glow}` : `0 0 20px ${localColor.glow}`)
+                  ? `0 0 24px ${localColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
             >
-              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING/WHISPERING/LOUD) */}
+              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
               {(isMuted || isLocalSpeaking) && (
                 <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
                   <div
@@ -1567,7 +1545,7 @@ export default function VoiceChannel({
                     }}
                   />
                   <span className="text-[10px] font-bold text-white tracking-wider">
-                    {localIntensityLabel}
+                    {isMuted ? "MUTED" : "SPEAKING"}
                   </span>
                 </div>
               )}
@@ -1621,7 +1599,7 @@ export default function VoiceChannel({
                           borderWidth: "2px",
                           borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
                           boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 4px ${localColor.ring}, 0 0 16px ${localColor.glow}` : undefined,
-                          transform: localScale,
+                          transform: isLocalSpeaking && !isMuted ? "scale(1.05)" : "scale(1)",
                         }}
                       />
                     ) : (
@@ -1632,7 +1610,7 @@ export default function VoiceChannel({
                           borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
                           color: localColor.hex,
                           boxShadow: isLocalSpeaking && !isMuted ? `0 0 0 4px ${localColor.ring}, 0 0 16px ${localColor.glow}` : undefined,
-                          transform: localScale,
+                          transform: isLocalSpeaking && !isMuted ? "scale(1.05)" : "scale(1)",
                         }}
                       >
                         {profile.username.charAt(0).toUpperCase()}
@@ -1664,22 +1642,6 @@ export default function VoiceChannel({
         {/* Remote Participants Tiles */}
         {activeParticipants.map((p) => {
           const isSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
-          const pIntensity = remoteIntensity[p.uid] || "none";
-          const pIntensityLabel = p.isMuted
-            ? "MUTED"
-            : pIntensity === "whispering"
-            ? "WHISPERING"
-            : pIntensity === "loud"
-            ? "LOUD"
-            : "SPEAKING";
-
-          const pScale = !isSpeaking
-            ? "scale(1)"
-            : pIntensity === "whispering"
-            ? "scale(1.03)"
-            : pIntensity === "loud"
-            ? "scale(1.09)"
-            : "scale(1.06)";
 
           const pColor = userColors[p.uid] || {
             hex: "#5865F2",
@@ -1696,7 +1658,7 @@ export default function VoiceChannel({
               style={{
                 borderColor: isSpeaking ? pColor.border : "rgba(38, 38, 38, 0.9)",
                 boxShadow: isSpeaking 
-                  ? (pIntensity === "loud" ? `0 0 32px ${pColor.glow}` : `0 0 20px ${pColor.glow}`)
+                  ? `0 0 24px ${pColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
             >
@@ -1711,7 +1673,7 @@ export default function VoiceChannel({
                     }}
                   />
                   <span className="text-[10px] font-bold text-white tracking-wider">
-                    {pIntensityLabel}
+                    {p.isMuted ? "MUTED" : "SPEAKING"}
                   </span>
                 </div>
               )}
@@ -1774,7 +1736,7 @@ export default function VoiceChannel({
                           borderWidth: "2px",
                           borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
                           boxShadow: isSpeaking ? `0 0 0 4px ${pColor.ring}, 0 0 16px ${pColor.glow}` : undefined,
-                          transform: pScale,
+                          transform: isSpeaking ? "scale(1.05)" : "scale(1)",
                         }}
                       />
                     ) : (
@@ -1785,7 +1747,7 @@ export default function VoiceChannel({
                           borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
                           color: pColor.hex,
                           boxShadow: isSpeaking ? `0 0 0 4px ${pColor.ring}, 0 0 16px ${pColor.glow}` : undefined,
-                          transform: pScale,
+                          transform: isSpeaking ? "scale(1.05)" : "scale(1)",
                         }}
                       >
                         {p.username.charAt(0).toUpperCase()}
