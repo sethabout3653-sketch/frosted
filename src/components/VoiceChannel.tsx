@@ -111,11 +111,11 @@ export default function VoiceChannel({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 6s)
+  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 45s)
   const activeParticipants = useMemo(() => {
     return participants.filter((p) => {
       const ts = p.timestamp || (p as any).lastSeen;
-      return typeof ts === "number" ? currentTime - ts < 6000 : true;
+      return typeof ts === "number" ? currentTime - ts < 45000 : true;
     });
   }, [participants, currentTime]);
 
@@ -852,7 +852,7 @@ export default function VoiceChannel({
     const now = Date.now();
     participants.forEach((p) => {
       const ts = p.timestamp || (p as any).lastSeen;
-      if (typeof ts === "number" && now - ts > 6000) {
+      if (typeof ts === "number" && now - ts > 45000) {
         if (peersRef.current[p.uid]) {
           try {
             peersRef.current[p.uid].close();
@@ -864,8 +864,8 @@ export default function VoiceChannel({
             delete remoteStreamsRef.current[p.uid];
           }
         }
-        // If dead for over 12 seconds, clean up from Firestore
-        if (now - ts > 12000) {
+        // If dead for over 60 seconds, clean up from Firestore
+        if (now - ts > 60000) {
           deleteDoc(doc(db, "voice_users", p.uid)).catch(() => {});
         }
       }

@@ -223,23 +223,13 @@ export default function ChatPanel({
       markLeft();
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        markLeft();
-      } else {
-        markOnline();
-      }
-    };
-
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
       markLeft();
     };
   }, [profile]);
@@ -550,16 +540,16 @@ export default function ChatPanel({
     : messages;
 
   // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
-  // within a few seconds (7s) they will not be shown as online.
+  // within a few seconds (45s) they will not be shown as online.
   const activeOnlineUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return true;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 45000;
     return u.status === "online" && isRecent;
   });
 
   const leftUsers = memberUsers.filter((u) => {
     if (u.uid === profile.uid) return false;
-    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 7000;
+    const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 45000;
     return u.status === "left" || !isRecent;
   });
 
