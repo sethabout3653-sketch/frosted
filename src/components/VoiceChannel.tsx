@@ -68,7 +68,12 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" },
     { urls: "stun:global.stun.twilio.com:3478" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.nextcloud.com:443" },
   ],
+  iceCandidatePoolSize: 10,
+  bundlePolicy: "max-bundle",
+  rtcpMuxPolicy: "require",
 };
 
 // Studio quality uncapped raw audio SDP optimizer:

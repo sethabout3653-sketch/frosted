@@ -3,7 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = "https://jtocgfqurrlyyvhfmfsc.supabase.co";
 const supabaseAnonKey = "sb_publishable_o5pFWa88vKImudzqdbVWkw_AyBOzXOj";
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  realtime: {
+    params: {
+      eventsPerSecond: 40,
+    },
+  },
+});
 export const db = supabase;
 
 export const cassandra = {
@@ -123,330 +129,187 @@ function getPk(colName: string) {
   return (colName === "presence" || colName === "voice_users") ? "uid" : "id";
 }
 
-// Resilient helper to execute Supabase database operations with automated retry on network or schema discrepancies
-const isNetworkError = (err: any): boolean => {
-  if (!err) return false;
-  const msg = (err.message || err.details || String(err)).toLowerCase();
-  return (
-    msg.includes("failed to fetch") ||
-    msg.includes("networkerror") ||
-    msg.includes("network request failed") ||
-    msg.includes("load failed") ||
-    msg.includes("offline")
-  );
-};
+// ---------------------------------------------------------
+// Ultra-Low Latency In-Memory State & Realtime Broadcast Bus
+// ---------------------------------------------------------
 
-// Resilient wrapper that strips unmapped/missing Postgres columns on PGRST204 and retries on transient network errors
-async function resilientInsert(colName: string, payload: any, maxTries = 10): Promise<{ data: any; error: any }> {
-  let currentPayload = { ...payload };
-  for (let i = 0; i < maxTries; i++) {
-    try {
-      const { data, error } = await supabase.from(colName).insert(currentPayload);
-      if (!error) return { data, error: null };
+const inMemoryStore = new Map<string, Map<string, any>>();
+const initialFetchDone = new Set<string>();
+const activeListeners = new Set<{
+  id: string;
+  queryObj: any;
+  onNext: (snap: any) => void;
+  onError?: (err: any) => void;
+}>();
 
-      if (error.code === "PGRST204") {
-        const match = error.message?.match(/Could not find the '([^']+)' column/i);
-        if (match && match[1] && match[1] in currentPayload) {
-          delete currentPayload[match[1]];
-          continue;
-        }
-      }
-
-      if (isNetworkError(error)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null }; // Silently handle network drop
-      }
-
-      return { data, error };
-    } catch (err: any) {
-      if (isNetworkError(err)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null };
-      }
-      return { data: null, error: err };
-    }
+function getColMap(colName: string): Map<string, any> {
+  let map = inMemoryStore.get(colName);
+  if (!map) {
+    map = new Map();
+    inMemoryStore.set(colName, map);
   }
-  return { data: null, error: null };
+  return map;
 }
 
-async function resilientUpsert(colName: string, payload: any, pk: string, maxTries = 10): Promise<{ data: any; error: any }> {
-  let currentPayload = { ...payload };
-  for (let i = 0; i < maxTries; i++) {
-    try {
-      const { data, error } = await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
-      if (!error) return { data, error: null };
-
-      if (error.code === "PGRST204") {
-        const match = error.message?.match(/Could not find the '([^']+)' column/i);
-        if (match && match[1] && match[1] in currentPayload) {
-          delete currentPayload[match[1]];
-          continue;
-        }
-      }
-
-      if (isNetworkError(error)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null };
-      }
-
-      return { data, error };
-    } catch (err: any) {
-      if (isNetworkError(err)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null };
-      }
-      return { data: null, error: err };
-    }
-  }
-  return { data: null, error: null };
-}
-
-async function resilientUpdate(colName: string, payload: any, pk: string, id: string, maxTries = 10): Promise<{ data: any; error: any }> {
-  let currentPayload = { ...payload };
-  for (let i = 0; i < maxTries; i++) {
-    try {
-      const { data, error } = await supabase.from(colName).update(currentPayload).eq(pk, id);
-      if (!error) return { data, error: null };
-
-      if (error.code === "PGRST204") {
-        const match = error.message?.match(/Could not find the '([^']+)' column/i);
-        if (match && match[1] && match[1] in currentPayload) {
-          delete currentPayload[match[1]];
-          continue;
-        }
-      }
-
-      if (isNetworkError(error)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null };
-      }
-
-      return { data, error };
-    } catch (err: any) {
-      if (isNetworkError(err)) {
-        if (i < 3) {
-          await new Promise((res) => setTimeout(res, 300 * (i + 1)));
-          continue;
-        }
-        return { data: null, error: null };
-      }
-      return { data: null, error: err };
-    }
-  }
-  return { data: null, error: null };
-}
-
-export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  try {
-    const pk = getPk(docRef.colName);
-    
-    // Strip accidental 'id' field if the PK is not 'id'
-    const payload = { [pk]: docRef.id, ...data };
-    if (pk !== 'id' && 'id' in payload) {
-      delete payload.id;
-    }
-    
-    const { error } = await resilientUpsert(docRef.colName, payload, pk);
-    if (error) {
-      if (error.code === 'PGRST205') {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
-      } else if (!isNetworkError(error)) {
-        console.warn(`setDoc note on ${docRef.colName}:`, error);
-      }
-    }
-  } catch (err) {
-    if (!isNetworkError(err)) {
-      console.warn(`setDoc catch on ${docRef.colName}:`, err);
-    }
-  }
-}
-
-export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  try {
-    const pk = getPk(docRef.colName);
-    const { error } = await resilientUpdate(docRef.colName, data, pk, docRef.id);
-    if (error) {
-      if (error.code === 'PGRST205') {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
-      } else if (!isNetworkError(error)) {
-        console.warn(`updateDoc note on ${docRef.colName}:`, error);
-      }
-    }
-  } catch (err) {
-    if (!isNetworkError(err)) {
-      console.warn(`updateDoc catch on ${docRef.colName}:`, err);
-    }
-  }
-}
-
-export async function deleteDoc(docRef: { colName: string; id: string }) {
-  try {
-    const pk = getPk(docRef.colName);
-    const { error } = await supabase.from(docRef.colName).delete().eq(pk, docRef.id);
-    if (error) {
-      if (error.code === 'PGRST205') {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: docRef.colName }));
-      } else if (!isNetworkError(error)) {
-        console.warn(`deleteDoc note on ${docRef.colName}:`, error);
-      }
-    }
-  } catch (err) {
-    if (!isNetworkError(err)) {
-      console.warn(`deleteDoc catch on ${docRef.colName}:`, err);
-    }
-  }
-}
-
-export async function addDoc(colName: string, data: any) {
+function applyQuery(colName: string, constraints: any[] = []): { docs: any[]; empty: boolean; size: number; forEach: (cb: any) => void } {
+  const colMap = getColMap(colName);
   const pk = getPk(colName);
-  const id = "doc_" + Date.now() + Math.random().toString(36).substring(2, 9);
-  const payload = { [pk]: id, ...data };
-  try {
-    const { error } = await resilientInsert(colName, payload);
-    if (error) {
-      if (error.code === 'PGRST205') {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-      } else if (!isNetworkError(error)) {
-        console.warn(`addDoc note on ${colName}:`, error);
-      }
-    }
-  } catch (err) {
-    if (!isNetworkError(err)) {
-      console.warn(`addDoc catch on ${colName}:`, err);
-    }
-  }
-  return { colName, id };
-}
+  let items = Array.from(colMap.values());
 
-export async function getDocs(queryObj: any) {
-  const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
-  try {
-    let req: any = supabase.from(colName).select("*");
-    if (queryObj.constraints) {
-      for (const c of queryObj.constraints) {
-        if (c.type === "where" && c.op === "==") {
-          req = req.eq(c.field, c.value);
-        } else if (c.type === "orderBy") {
-          req = req.order(c.field, { ascending: c.direction === "asc" });
-        } else if (c.type === "limit") {
-          req = req.limit(c.limitCount);
+  for (const c of constraints) {
+    if (c.type === "where") {
+      if (c.op === "==") {
+        items = items.filter((d) => d[c.field] === c.value);
+      } else if (c.op === "!=") {
+        items = items.filter((d) => d[c.field] !== c.value);
+      } else if (c.op === ">") {
+        items = items.filter((d) => d[c.field] > c.value);
+      } else if (c.op === "<") {
+        items = items.filter((d) => d[c.field] < c.value);
+      }
+    } else if (c.type === "orderBy") {
+      items.sort((a, b) => {
+        const valA = a[c.field] ?? 0;
+        const valB = b[c.field] ?? 0;
+        if (typeof valA === "string" && typeof valB === "string") {
+          return c.direction === "desc" ? valB.localeCompare(valA) : valA.localeCompare(valB);
         }
-      }
+        return c.direction === "desc" ? Number(valB) - Number(valA) : Number(valA) - Number(valB);
+      });
+    } else if (c.type === "limit") {
+      items = items.slice(0, c.limitCount);
     }
-    const { data, error } = await req;
-    if (error) {
-      if (error.code === 'PGRST205') {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-      } else if (!isNetworkError(error)) {
-        console.warn(`getDocs note on ${colName}:`, error);
-      }
-    }
-    const docs = data || [];
-    const pk = getPk(colName);
-    return {
-      docs: docs.map((d: any) => ({ id: d[pk], data: () => d })),
-      empty: docs.length === 0,
-      size: docs.length,
-      forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d[pk], data: () => d }))
-    };
-  } catch (err) {
-    return {
-      docs: [],
-      empty: true,
-      size: 0,
-      forEach: () => {}
-    };
   }
-}
 
-export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {
-  const colName = typeof queryObj === 'string' ? queryObj : queryObj.colName;
-  let isMounted = true;
-  
-  // Initial fetch
-  getDocs(queryObj).then((snap) => {
-    if (isMounted) onNext(snap);
-  }).catch((e) => {
-    if (isMounted && onError) onError(e);
-  });
+  const docs = items.map((d: any) => ({
+    id: d[pk] || d.id || d.uid,
+    data: () => d,
+  }));
 
-  // Realtime subscription
-  const uniqueChannelName = `public:${colName}:${Math.random().toString(36).substring(2, 10)}`;
-  let fetchTimeout: any = null;
-  const channel = supabase.channel(uniqueChannelName)
-    .on('postgres_changes', { event: '*', schema: 'public', table: colName }, () => {
-      if (!isMounted) return;
-      if (fetchTimeout) clearTimeout(fetchTimeout);
-      fetchTimeout = setTimeout(() => {
-        if (!isMounted) return;
-        getDocs(queryObj).then((snap) => {
-          if (isMounted) onNext(snap);
-        }).catch((e) => {
-          if (isMounted && onError) onError(e);
-        });
-      }, 50);
-    })
-    .subscribe();
-
-  // Robust polling fallback to ensure 100% reliable state even if Realtime websocket is blocked or drops
-  const pollIntervalMs = colName === "signals" ? 300 : (colName === "voice_users" || colName === "presence") ? 1000 : 2500;
-  const pollTimer = setInterval(() => {
-    if (!isMounted) return;
-    getDocs(queryObj).then((snap) => {
-      if (isMounted) onNext(snap);
-    }).catch(() => {});
-  }, pollIntervalMs);
-
-  return () => {
-    isMounted = false;
-    clearInterval(pollTimer);
-    if (fetchTimeout) clearTimeout(fetchTimeout);
-    supabase.removeChannel(channel);
+  return {
+    docs,
+    empty: docs.length === 0,
+    size: docs.length,
+    forEach: (cb: any) => docs.forEach((d: any) => cb(d)),
   };
 }
 
-// Global Supabase Realtime Broadcast Channel for zero-latency peer-to-peer WebRTC signals
-let globalSignalChannel: any = null;
+function notifyListeners(colName: string) {
+  activeListeners.forEach((listener) => {
+    const lCol = typeof listener.queryObj === "string" ? listener.queryObj : listener.queryObj.colName;
+    if (lCol === colName) {
+      try {
+        const constraints = listener.queryObj?.constraints || [];
+        const snap = applyQuery(colName, constraints);
+        listener.onNext(snap);
+      } catch (err) {
+        console.warn("Error notifying listener:", err);
+      }
+    }
+  });
+}
+
+// Global multiplexed Supabase Realtime Channel
+let globalRealtimeChannel: any = null;
 const broadcastListeners = new Set<(signal: any) => void>();
 
-export function getOrCreateSignalChannel() {
-  if (!globalSignalChannel) {
-    globalSignalChannel = supabase.channel("webrtc-voice-broadcast-room", {
+export function getOrCreateGlobalChannel() {
+  if (!globalRealtimeChannel) {
+    globalRealtimeChannel = supabase.channel("app-global-realtime-bus", {
       config: { broadcast: { self: false } },
     });
-    globalSignalChannel
+
+    globalRealtimeChannel
+      // 1. Zero-latency Broadcast Signals for WebRTC & Voice
       .on("broadcast", { event: "webrtc_signal" }, ({ payload }: { payload: any }) => {
         broadcastListeners.forEach((listener) => {
           try {
             listener(payload);
-          } catch (e) {
-            console.warn("Broadcast listener note:", e);
-          }
+          } catch (e) {}
         });
       })
-      .subscribe();
+      // 2. Zero-latency Mutation Broadcast (instant state across all clients without waiting for SQL)
+      .on("broadcast", { event: "db_mutation" }, ({ payload }: { payload: any }) => {
+        if (!payload || !payload.colName) return;
+        const { colName, action, data, id, pk } = payload;
+        const colMap = getColMap(colName);
+        const actualPk = pk || getPk(colName);
+
+        if (action === "insert" || action === "upsert") {
+          const docId = data[actualPk] || data.id || data.uid;
+          if (docId) {
+            colMap.set(docId, data);
+            notifyListeners(colName);
+          }
+        } else if (action === "update") {
+          const docId = id || data?.[actualPk];
+          if (docId) {
+            const existing = colMap.get(docId) || {};
+            colMap.set(docId, { ...existing, ...data });
+            notifyListeners(colName);
+          }
+        } else if (action === "delete") {
+          const docId = id;
+          if (docId) {
+            colMap.delete(docId);
+            notifyListeners(colName);
+          }
+        }
+      })
+      // 3. Postgres Database Changes Subscription (instant merge from SQL replication)
+      .on("postgres_changes", { event: "*", schema: "public" }, (payload: any) => {
+        const colName = payload.table;
+        if (!colName) return;
+        const colMap = getColMap(colName);
+        const pk = getPk(colName);
+
+        if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
+          const row = payload.new;
+          const rowId = row[pk] || row.id || row.uid;
+          if (rowId) {
+            colMap.set(rowId, row);
+            notifyListeners(colName);
+          }
+        } else if (payload.eventType === "DELETE") {
+          const oldRow = payload.old;
+          const rowId = oldRow?.[pk] || oldRow?.id || oldRow?.uid;
+          if (rowId) {
+            colMap.delete(rowId);
+            notifyListeners(colName);
+          }
+        }
+      })
+      .subscribe((status: string) => {
+        if (status === "SUBSCRIBED") {
+          // Connected cleanly
+        }
+      });
   }
-  return globalSignalChannel;
+  return globalRealtimeChannel;
+}
+
+// Broadcast mutation over zero-latency WebSocket
+function broadcastMutation(colName: string, action: "insert" | "upsert" | "update" | "delete", data: any, id?: string) {
+  try {
+    const ch = getOrCreateGlobalChannel();
+    ch.send({
+      type: "broadcast",
+      event: "db_mutation",
+      payload: {
+        colName,
+        action,
+        data,
+        id,
+        pk: getPk(colName),
+        timestamp: Date.now(),
+      },
+    }).catch(() => {});
+  } catch (err) {}
 }
 
 export function sendBroadcastSignal(payload: { uid: string; targetUid: string; type: string; sdp?: string; timestamp: number }) {
   try {
-    const ch = getOrCreateSignalChannel();
+    const ch = getOrCreateGlobalChannel();
     ch.send({
       type: "broadcast",
       event: "webrtc_signal",
@@ -456,7 +319,7 @@ export function sendBroadcastSignal(payload: { uid: string; targetUid: string; t
 }
 
 export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-  getOrCreateSignalChannel();
+  getOrCreateGlobalChannel();
   const handler = (payload: any) => {
     if (payload && (payload.targetUid === myUid || payload.targetUid === "all")) {
       onSignal(payload);
@@ -468,9 +331,255 @@ export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any)
   };
 }
 
-export function handleFirestoreError(error: any, op: string, path: string) {
-  console.warn(`[Supabase] Operation ${op} on ${path}:`, error);
+// ---------------------------------------------------------
+// Fast DB Helpers with optimistic local state & background sync
+// ---------------------------------------------------------
+
+const isNetworkOrTimeoutError = (err: any): boolean => {
+  if (!err) return false;
+  const msg = (err.message || err.details || String(err)).toLowerCase();
+  return (
+    msg.includes("timeout") ||
+    msg.includes("upstream request timeout") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("networkerror") ||
+    msg.includes("network request failed") ||
+    msg.includes("load failed") ||
+    msg.includes("offline")
+  );
+};
+
+// Asynchronous background insert without blocking UI
+async function backgroundInsert(colName: string, payload: any) {
+  let currentPayload = { ...payload };
+  try {
+    const { error } = await supabase.from(colName).insert(currentPayload);
+    if (!error) return;
+
+    if (error.code === "PGRST204") {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in currentPayload) {
+        delete currentPayload[match[1]];
+        await supabase.from(colName).insert(currentPayload);
+      }
+    } else if (error.code === "PGRST205") {
+      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    }
+  } catch (err) {}
 }
+
+// Asynchronous background upsert without blocking UI
+async function backgroundUpsert(colName: string, payload: any, pk: string) {
+  let currentPayload = { ...payload };
+  try {
+    const { error } = await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
+    if (!error) return;
+
+    if (error.code === "PGRST204") {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in currentPayload) {
+        delete currentPayload[match[1]];
+        await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
+      }
+    } else if (error.code === "PGRST205") {
+      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    }
+  } catch (err) {}
+}
+
+// Asynchronous background update without blocking UI
+async function backgroundUpdate(colName: string, payload: any, pk: string, id: string) {
+  let currentPayload = { ...payload };
+  try {
+    const { error } = await supabase.from(colName).update(currentPayload).eq(pk, id);
+    if (!error) return;
+
+    if (error.code === "PGRST204") {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in currentPayload) {
+        delete currentPayload[match[1]];
+        await supabase.from(colName).update(currentPayload).eq(pk, id);
+      }
+    } else if (error.code === "PGRST205") {
+      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    }
+  } catch (err) {}
+}
+
+// Asynchronous background delete without blocking UI
+async function backgroundDelete(colName: string, pk: string, id: string) {
+  try {
+    const { error } = await supabase.from(colName).delete().eq(pk, id);
+    if (error && error.code === "PGRST205") {
+      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    }
+  } catch (err) {}
+}
+
+export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
+  const pk = getPk(docRef.colName);
+  const payload = { [pk]: docRef.id, ...data };
+  if (pk !== "id" && "id" in payload) {
+    delete payload.id;
+  }
+
+  // 1. Instant optimistic in-memory update (0ms)
+  const colMap = getColMap(docRef.colName);
+  const existing = colMap.get(docRef.id) || {};
+  colMap.set(docRef.id, { ...existing, ...payload });
+  notifyListeners(docRef.colName);
+
+  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  broadcastMutation(docRef.colName, "upsert", payload, docRef.id);
+
+  // 3. Non-blocking background database persist
+  backgroundUpsert(docRef.colName, payload, pk);
+}
+
+export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
+  const pk = getPk(docRef.colName);
+
+  // 1. Instant optimistic in-memory update (0ms)
+  const colMap = getColMap(docRef.colName);
+  const existing = colMap.get(docRef.id) || {};
+  const updated = { ...existing, ...data };
+  colMap.set(docRef.id, updated);
+  notifyListeners(docRef.colName);
+
+  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  broadcastMutation(docRef.colName, "update", data, docRef.id);
+
+  // 3. Non-blocking background database persist
+  backgroundUpdate(docRef.colName, data, pk, docRef.id);
+}
+
+export async function deleteDoc(docRef: { colName: string; id: string }) {
+  const pk = getPk(docRef.colName);
+
+  // 1. Instant optimistic in-memory update (0ms)
+  const colMap = getColMap(docRef.colName);
+  colMap.delete(docRef.id);
+  notifyListeners(docRef.colName);
+
+  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  broadcastMutation(docRef.colName, "delete", null, docRef.id);
+
+  // 3. Non-blocking background database persist
+  backgroundDelete(docRef.colName, pk, docRef.id);
+}
+
+export async function addDoc(colName: string, data: any) {
+  const pk = getPk(colName);
+  const id = "doc_" + Date.now() + Math.random().toString(36).substring(2, 9);
+  const payload = { [pk]: id, ...data };
+
+  // 1. Instant optimistic in-memory update (0ms)
+  const colMap = getColMap(colName);
+  colMap.set(id, payload);
+  notifyListeners(colName);
+
+  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  broadcastMutation(colName, "insert", payload, id);
+
+  // 3. Non-blocking background database persist
+  backgroundInsert(colName, payload);
+
+  return { colName, id };
+}
+
+// Safe throttled REST table fetch to hydrate in-memory cache
+const lastFetchTime = new Map<string, number>();
+
+async function fetchCollectionFromSupabase(colName: string) {
+  const now = Date.now();
+  const lastTime = lastFetchTime.get(colName) || 0;
+  // Throttle queries to at most once every 6 seconds per collection to prevent upstream timeout
+  if (now - lastTime < 6000) return;
+  lastFetchTime.set(colName, now);
+
+  try {
+    let req = supabase.from(colName).select("*");
+    if (colName === "messages") {
+      req = req.order("timestamp", { ascending: false }).limit(80);
+    } else if (colName === "presence" || colName === "voice_users") {
+      req = req.limit(100);
+    }
+    const { data, error } = await req;
+    if (!error && Array.isArray(data)) {
+      const colMap = getColMap(colName);
+      const pk = getPk(colName);
+      data.forEach((row: any) => {
+        const rowId = row[pk] || row.id || row.uid;
+        if (rowId && !colMap.has(rowId)) {
+          colMap.set(rowId, row);
+        } else if (rowId && colMap.has(rowId)) {
+          // Merge newer timestamp if available
+          const existing = colMap.get(rowId);
+          if ((row.timestamp || 0) >= (existing.timestamp || 0)) {
+            colMap.set(rowId, { ...existing, ...row });
+          }
+        }
+      });
+      initialFetchDone.add(colName);
+      notifyListeners(colName);
+    } else if (error && error.code === "PGRST205") {
+      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+    }
+  } catch (err) {}
+}
+
+export async function getDocs(queryObj: any) {
+  const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
+  const constraints = queryObj?.constraints || [];
+
+  // 1. Background non-blocking hydration if not yet done
+  if (!initialFetchDone.has(colName)) {
+    fetchCollectionFromSupabase(colName).catch(() => {});
+  }
+
+  // 2. Return current in-memory results instantly
+  return applyQuery(colName, constraints);
+}
+
+export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {
+  const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
+  const constraints = queryObj?.constraints || [];
+  const listenerId = "listener_" + Math.random().toString(36).substring(2, 10);
+
+  // 1. Ensure global Realtime WebSocket is connected
+  getOrCreateGlobalChannel();
+
+  // 2. Register active listener
+  const listener = { id: listenerId, queryObj, onNext, onError };
+  activeListeners.add(listener);
+
+  // 3. Immediately emit current in-memory state (0ms instant response)
+  const snap = applyQuery(colName, constraints);
+  onNext(snap);
+
+  // 4. Initial fetch from database to seed data
+  fetchCollectionFromSupabase(colName).then(() => {
+    const updatedSnap = applyQuery(colName, constraints);
+    onNext(updatedSnap);
+  }).catch(() => {});
+
+  // 5. Periodic gentle background sync (every 12 seconds, not every 300ms) to avoid timeouts
+  const syncInterval = setInterval(() => {
+    fetchCollectionFromSupabase(colName).catch(() => {});
+  }, 12000);
+
+  return () => {
+    clearInterval(syncInterval);
+    activeListeners.delete(listener);
+  };
+}
+
+export function handleFirestoreError(error: any, op: string, path: string) {
+  if (!isNetworkOrTimeoutError(error)) {
+    console.warn(`[Supabase] Operation ${op} on ${path}:`, error);
+  }
+}
+
 export enum OperationType {
   GET = "get",
   LIST = "list",
