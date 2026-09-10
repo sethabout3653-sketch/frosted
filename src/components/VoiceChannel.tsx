@@ -20,6 +20,11 @@ import {
   ScreenShare,
   ScreenShareOff,
   MonitorUp,
+  Layout,
+  Columns,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from "lucide-react";
 import {
   collection,
@@ -169,6 +174,9 @@ export default function VoiceChannel({
   const [isScreenAudioOn, setIsScreenAudioOn] = useState(false);
   const [screenAudioVolume, setScreenAudioVolume] = useState<number>(1.0);
   const [fullscreenType, setFullscreenType] = useState<"camera" | "screen">("camera");
+  const [zoomLayoutMode, setZoomLayoutMode] = useState<"side-by-side" | "gallery-strip">("side-by-side");
+  const [screenZoom, setScreenZoom] = useState<number>(1.0);
+  const [screenFitMode, setScreenFitMode] = useState<"contain" | "cover">("contain");
 
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localScreenVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -526,6 +534,11 @@ export default function VoiceChannel({
           animFrameRef.current = requestAnimationFrame(updateLevel);
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
+
+        if (mixedDest && mixedDest.stream && mixedDest.stream.getAudioTracks().length > 0) {
+          localStreamRef.current = mixedDest.stream;
+          return mixedDest.stream;
+        }
 
         return sourceStream;
       } catch (err) {
@@ -946,8 +959,13 @@ export default function VoiceChannel({
             }
           }
         } else if (event.track.kind === "video") {
-          const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
-          const isScreen = event.transceiver === videoTransceivers[1] || event.transceiver.mid === "2";
+          const transceivers = pc.getTransceivers();
+          const videoTransceivers = transceivers.filter((t) => t.receiver.track.kind === "video");
+          const isScreen =
+            event.transceiver === videoTransceivers[1] ||
+            event.transceiver.mid === "2" ||
+            transceivers.indexOf(event.transceiver) === 2 ||
+            (videoTransceivers.length >= 2 && event.transceiver === videoTransceivers[videoTransceivers.length - 1]);
 
           if (isScreen) {
             if (!remoteScreenStreamsRef.current[partnerUid]) {
@@ -1657,14 +1675,30 @@ export default function VoiceChannel({
       const screenAudioTracks = displayStream.getAudioTracks();
       const hasAudio = screenAudioTracks.length > 0;
 
+      if (screenVideoTrack && "contentHint" in screenVideoTrack) {
+        try {
+          (screenVideoTrack as any).contentHint = "detail";
+        } catch (e) {}
+      }
+
       // Handle user clicking native browser "Stop sharing" button
       screenVideoTrack.onended = () => {
         stopScreenShare();
       };
+      screenAudioTracks.forEach((at) => {
+        at.onended = () => {
+          if (!screenStreamRef.current || screenStreamRef.current.getVideoTracks().every((v) => v.readyState === "ended")) {
+            stopScreenShare();
+          }
+        };
+      });
 
       // Connect screen audio to the live AudioContext mix if audio track is present
       if (hasAudio && audioCtxRef.current && mixedDestinationRef.current) {
         try {
+          if (audioCtxRef.current.state === "suspended") {
+            await audioCtxRef.current.resume().catch(() => {});
+          }
           const screenAudioSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
           const screenGain = audioCtxRef.current.createGain();
           screenGain.gain.value = screenAudioVolume;
@@ -1693,6 +1727,16 @@ export default function VoiceChannel({
             const screenSender = screenSendersRef.current[pUid];
             if (screenSender) {
               await screenSender.replaceTrack(screenVideoTrack);
+              try {
+                const params = screenSender.getParameters();
+                if (!params.encodings || params.encodings.length === 0) {
+                  params.encodings = [{}];
+                }
+                params.encodings[0].maxBitrate = 3000000;
+                params.encodings[0].priority = "high";
+                params.encodings[0].networkPriority = "high";
+                await screenSender.setParameters(params);
+              } catch (e) {}
             }
           }
         })
@@ -2536,94 +2580,319 @@ export default function VoiceChannel({
 
         if (activeScreenShare) {
           return (
-            <div className="flex-1 min-h-0 flex flex-col p-4 md:p-6 gap-4 overflow-hidden">
-              {/* Zoom-style Main Presentation Stage */}
-              <div
-                className="relative flex-1 min-h-0 bg-[#07080a] rounded-2xl border border-neutral-800/90 overflow-hidden shadow-2xl flex items-center justify-center group"
-                onDoubleClick={() => {
-                  setFullscreenUid(activeScreenShare.uid);
-                  setFullscreenType("screen");
-                }}
-              >
-                {activeScreenShare.isLocal ? (
-                  <video
-                    ref={(el) => {
-                      localScreenVideoRef.current = el;
-                      if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
-                        el.srcObject = screenStreamRef.current;
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <video
-                    ref={(el) => {
-                      remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
-                      const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
-                      if (el && stream && el.srcObject !== stream) {
-                        el.srcObject = stream;
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-contain"
-                  />
-                )}
-
-                {/* Stage Header Badge */}
-                <div className="absolute top-4 left-4 flex items-center gap-2 z-20">
-                  <div className="bg-black/85 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2.5 shadow-lg">
-                    <MonitorUp size={15} className="text-emerald-400 animate-pulse" />
-                    <span className="text-xs font-bold text-white tracking-wide">
-                      {activeScreenShare.username}'s Screen
-                    </span>
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider">
-                      LIVE
-                    </span>
-                    {activeScreenShare.hasAudio && (
-                      <span className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider flex items-center gap-1">
-                        <Volume2 size={11} /> Screen Audio
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Stage Controls: Stop Sharing & Fullscreen */}
-                <div className="absolute top-4 right-4 flex items-center gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {activeScreenShare.isLocal && (
-                    <button
-                      onClick={stopScreenShare}
-                      className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all cursor-pointer shadow-xl flex items-center gap-1.5 active:scale-95"
-                      title="Stop sharing your screen"
-                    >
-                      <ScreenShareOff size={14} />
-                      <span>Stop Sharing</span>
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden p-3 sm:p-4 gap-3">
+              {/* Zoom Layout Mode: Side-by-Side vs Gallery Strip */}
+              {zoomLayoutMode === "side-by-side" ? (
+                <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 overflow-hidden">
+                  {/* Left / Main: Zoom Screen Share Stage */}
+                  <div
+                    className="relative flex-1 min-h-[300px] lg:min-h-0 bg-[#07080a] rounded-2xl border border-neutral-800/90 overflow-hidden shadow-2xl flex items-center justify-center group"
+                    onDoubleClick={() => {
                       setFullscreenUid(activeScreenShare.uid);
                       setFullscreenType("screen");
                     }}
-                    className="p-2 rounded-xl bg-black/80 hover:bg-black text-white/90 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-xl transition-all cursor-pointer hover:scale-105"
-                    title="Full screen this presentation"
                   >
-                    <Maximize2 size={16} />
-                  </button>
-                </div>
-              </div>
+                    <div
+                      className="w-full h-full flex items-center justify-center overflow-hidden transition-transform duration-200"
+                      style={{ transform: `scale(${screenZoom})` }}
+                    >
+                      {activeScreenShare.isLocal ? (
+                        <video
+                          ref={(el) => {
+                            localScreenVideoRef.current = el;
+                            if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                              el.srcObject = screenStreamRef.current;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      ) : (
+                        <video
+                          ref={(el) => {
+                            remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
+                            const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
+                            if (el && stream && el.srcObject !== stream) {
+                              el.srcObject = stream;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      )}
+                    </div>
 
-              {/* Bottom Zoom-style Participant Strip (Displays Everyone's Camera Feeds) */}
-              <div className="h-28 sm:h-36 flex-shrink-0 flex items-center gap-3 overflow-x-auto pb-1 px-1">
-                {renderLocalTile(true)}
-                {activeParticipants.map((p) => renderRemoteTile(p, true))}
-              </div>
+                    {/* Stage Header Badge */}
+                    <div className="absolute top-3 left-3 flex items-center gap-2 z-20">
+                      <div className="bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2 shadow-lg">
+                        <MonitorUp size={15} className="text-emerald-400 animate-pulse flex-shrink-0" />
+                        <span className="text-xs font-bold text-white tracking-wide truncate max-w-[140px] sm:max-w-[220px]">
+                          {activeScreenShare.username}'s Screen
+                        </span>
+                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
+                          LIVE
+                        </span>
+                        {activeScreenShare.hasAudio && (
+                          <div className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider flex items-center gap-1.5">
+                            <Volume2 size={11} className="text-sky-400 animate-pulse" />
+                            <span className="hidden sm:inline">Screen Audio</span>
+                            <div className="flex items-center gap-0.5 h-2">
+                              <span className="w-0.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                              <span className="w-0.5 h-2.5 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                              <span className="w-0.5 h-1 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Stage Controls: Zoom, Fit, Layout Switcher & Fullscreen */}
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5 z-20">
+                      {/* Zoom & Fit Toolbar */}
+                      <div className="flex items-center gap-1 bg-black/80 backdrop-blur-md p-1 rounded-xl border border-neutral-800 shadow-xl opacity-90 hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => setScreenZoom((z) => Math.min(2.5, Number((z + 0.25).toFixed(2))))}
+                          className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                          title="Zoom In Screen"
+                        >
+                          <ZoomIn size={14} />
+                        </button>
+                        <span className="text-[10px] font-bold text-neutral-300 px-1 select-none min-w-[32px] text-center">
+                          {Math.round(screenZoom * 100)}%
+                        </span>
+                        <button
+                          onClick={() => setScreenZoom((z) => Math.max(0.75, Number((z - 0.25).toFixed(2))))}
+                          className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                          title="Zoom Out Screen"
+                        >
+                          <ZoomOut size={14} />
+                        </button>
+                        {screenZoom !== 1 && (
+                          <button
+                            onClick={() => setScreenZoom(1.0)}
+                            className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                            title="Reset Zoom"
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setScreenFitMode((f) => (f === "contain" ? "cover" : "contain"))}
+                          className="px-2 py-1 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                          title={screenFitMode === "contain" ? "Fill Area (Crop)" : "Fit Entire Frame"}
+                        >
+                          {screenFitMode === "contain" ? "Fit" : "Fill"}
+                        </button>
+                      </div>
+
+                      {/* Layout Switcher: Side-by-side vs Gallery strip */}
+                      <button
+                        onClick={() => setZoomLayoutMode((m) => (m === "side-by-side" ? "gallery-strip" : "side-by-side"))}
+                        className="p-2 rounded-xl bg-black/80 hover:bg-neutral-900 text-neutral-300 hover:text-white backdrop-blur-md border border-neutral-800 shadow-xl transition-all cursor-pointer"
+                        title="Switch to Gallery Strip Layout"
+                      >
+                        <Layout size={15} />
+                      </button>
+
+                      {activeScreenShare.isLocal && (
+                        <button
+                          onClick={stopScreenShare}
+                          className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all cursor-pointer shadow-xl flex items-center gap-1.5 active:scale-95"
+                          title="Stop sharing your screen"
+                        >
+                          <ScreenShareOff size={14} />
+                          <span className="hidden sm:inline">Stop Sharing</span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => {
+                          setFullscreenUid(activeScreenShare.uid);
+                          setFullscreenType("screen");
+                        }}
+                        className="p-2 rounded-xl bg-black/80 hover:bg-black text-white/90 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-xl transition-all cursor-pointer hover:scale-105"
+                        title="Full screen this presentation"
+                      >
+                        <Maximize2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right: Zoom Side-by-Side Gallery (Camera Feeds of Everyone) */}
+                  <div className="w-full lg:w-72 xl:w-80 flex-shrink-0 flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto max-h-40 lg:max-h-full p-1">
+                    <div className="w-48 lg:w-full flex-shrink-0 aspect-video">
+                      {renderLocalTile(true)}
+                    </div>
+                    {activeParticipants.map((p) => (
+                      <div key={p.uid} className="w-48 lg:w-full flex-shrink-0 aspect-video">
+                        {renderRemoteTile(p, true)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                /* Gallery Strip Layout (Screen in center, cameras at bottom) */
+                <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
+                  <div
+                    className="relative flex-1 min-h-0 bg-[#07080a] rounded-2xl border border-neutral-800/90 overflow-hidden shadow-2xl flex items-center justify-center group"
+                    onDoubleClick={() => {
+                      setFullscreenUid(activeScreenShare.uid);
+                      setFullscreenType("screen");
+                    }}
+                  >
+                    <div
+                      className="w-full h-full flex items-center justify-center overflow-hidden transition-transform duration-200"
+                      style={{ transform: `scale(${screenZoom})` }}
+                    >
+                      {activeScreenShare.isLocal ? (
+                        <video
+                          ref={(el) => {
+                            localScreenVideoRef.current = el;
+                            if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                              el.srcObject = screenStreamRef.current;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      ) : (
+                        <video
+                          ref={(el) => {
+                            remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
+                            const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
+                            if (el && stream && el.srcObject !== stream) {
+                              el.srcObject = stream;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      )}
+                    </div>
+
+                    {/* Stage Header Badge */}
+                    <div className="absolute top-3 left-3 flex items-center gap-2 z-20">
+                      <div className="bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2 shadow-lg">
+                        <MonitorUp size={15} className="text-emerald-400 animate-pulse flex-shrink-0" />
+                        <span className="text-xs font-bold text-white tracking-wide truncate max-w-[140px] sm:max-w-[220px]">
+                          {activeScreenShare.username}'s Screen
+                        </span>
+                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
+                          LIVE
+                        </span>
+                        {activeScreenShare.hasAudio && (
+                          <div className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider flex items-center gap-1.5">
+                            <Volume2 size={11} className="text-sky-400 animate-pulse" />
+                            <span className="hidden sm:inline">Screen Audio</span>
+                            <div className="flex items-center gap-0.5 h-2">
+                              <span className="w-0.5 h-1.5 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                              <span className="w-0.5 h-2.5 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                              <span className="w-0.5 h-1 bg-sky-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Stage Controls */}
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5 z-20">
+                      {/* Zoom Toolbar */}
+                      <div className="flex items-center gap-1 bg-black/80 backdrop-blur-md p-1 rounded-xl border border-neutral-800 shadow-xl opacity-90 hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => setScreenZoom((z) => Math.min(2.5, Number((z + 0.25).toFixed(2))))}
+                          className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                          title="Zoom In Screen"
+                        >
+                          <ZoomIn size={14} />
+                        </button>
+                        <span className="text-[10px] font-bold text-neutral-300 px-1 select-none min-w-[32px] text-center">
+                          {Math.round(screenZoom * 100)}%
+                        </span>
+                        <button
+                          onClick={() => setScreenZoom((z) => Math.max(0.75, Number((z - 0.25).toFixed(2))))}
+                          className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                          title="Zoom Out Screen"
+                        >
+                          <ZoomOut size={14} />
+                        </button>
+                        {screenZoom !== 1 && (
+                          <button
+                            onClick={() => setScreenZoom(1.0)}
+                            className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                            title="Reset Zoom"
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setScreenFitMode((f) => (f === "contain" ? "cover" : "contain"))}
+                          className="px-2 py-1 rounded-lg hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                          title={screenFitMode === "contain" ? "Fill Area (Crop)" : "Fit Entire Frame"}
+                        >
+                          {screenFitMode === "contain" ? "Fit" : "Fill"}
+                        </button>
+                      </div>
+
+                      {/* Layout Switcher */}
+                      <button
+                        onClick={() => setZoomLayoutMode((m) => (m === "side-by-side" ? "gallery-strip" : "side-by-side"))}
+                        className="p-2 rounded-xl bg-black/80 hover:bg-neutral-900 text-neutral-300 hover:text-white backdrop-blur-md border border-neutral-800 shadow-xl transition-all cursor-pointer"
+                        title="Switch to Side-by-Side Layout"
+                      >
+                        <Columns size={15} />
+                      </button>
+
+                      {activeScreenShare.isLocal && (
+                        <button
+                          onClick={stopScreenShare}
+                          className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all cursor-pointer shadow-xl flex items-center gap-1.5 active:scale-95"
+                          title="Stop sharing your screen"
+                        >
+                          <ScreenShareOff size={14} />
+                          <span className="hidden sm:inline">Stop Sharing</span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => {
+                          setFullscreenUid(activeScreenShare.uid);
+                          setFullscreenType("screen");
+                        }}
+                        className="p-2 rounded-xl bg-black/80 hover:bg-black text-white/90 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-xl transition-all cursor-pointer hover:scale-105"
+                        title="Full screen this presentation"
+                      >
+                        <Maximize2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Bottom Zoom-style Participant Strip (Displays Everyone's Camera Feeds) */}
+                  <div className="h-28 sm:h-36 flex-shrink-0 flex items-center gap-3 overflow-x-auto pb-1 px-1">
+                    {renderLocalTile(true)}
+                    {activeParticipants.map((p) => renderRemoteTile(p, true))}
+                  </div>
+                </div>
+              )}
             </div>
           );
         }
