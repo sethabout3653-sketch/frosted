@@ -300,7 +300,7 @@ export default function App() {
         <footer id="app-footer" className="border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
           <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="font-medium">
-              &copy; 2026 frosted. Fast, unblocked browser games library.
+              &copy; 2026 FrostedStudying. Fast, unblocked browser games library.
             </p>
             <div className="flex flex-wrap gap-4 font-semibold">
               <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">

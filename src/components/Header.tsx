@@ -60,8 +60,8 @@ const Header = memo(function Header({
           <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-sm transition-all group-hover:bg-white/20 group-hover:border-white/40">
             <Snowflake size={18} className="text-white transition-transform group-hover:rotate-45" />
           </span>
-          <h1 className="text-xl font-bold tracking-tight text-white lowercase transition-colors group-hover:text-neutral-200">
-            frosted
+          <h1 className="text-xl font-bold tracking-tight text-white transition-colors group-hover:text-neutral-200">
+            FrostedStudying
           </h1>
         </button>
 

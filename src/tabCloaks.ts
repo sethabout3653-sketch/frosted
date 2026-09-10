@@ -9,8 +9,8 @@ export interface TabCloak {
 export const TAB_CLOAKS: TabCloak[] = [
   {
     id: "default",
-    name: "Default (Frosted)",
-    title: "frosted",
+    name: "Default (FrostedStudying)",
+    title: "FrostedStudying",
     category: "default",
     iconUrl: "/favicon.svg",
   },
@@ -194,7 +194,7 @@ export function applyTabCloak(cloak: { id: string; title: string; icon: string }
     setupThemeListener();
 
     // 1. Update Document Title
-    document.title = cloak.title || "frosted";
+    document.title = cloak.title || "FrostedStudying";
 
     // 2. Resolve icon URL based on browser color / theme
     let iconHref = cloak.icon || "/favicon.svg";
@@ -281,7 +281,7 @@ export function getSavedTabCloak(): ActiveCloakState {
   }
   return {
     id: "default",
-    title: "frosted",
+    title: "FrostedStudying",
     icon: "/favicon.svg",
   };
 }
@@ -289,7 +289,7 @@ export function getSavedTabCloak(): ActiveCloakState {
 export function resetTabCloak(): void {
   applyTabCloak({
     id: "default",
-    title: "frosted",
+    title: "FrostedStudying",
     icon: "/favicon.svg",
   });
 }
