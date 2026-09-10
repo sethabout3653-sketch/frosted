@@ -64,13 +64,65 @@ async function startServer() {
     const fn = path.basename(req.params.filename);
     const p1 = path.join(uploadsDir, fn);
     const p2 = path.join("/tmp/uploads", fn);
-    if (fs.existsSync(p1)) {
-      return res.sendFile(p1);
+    const targetPath = fs.existsSync(p1) ? p1 : (fs.existsSync(p2) ? p2 : null);
+    if (!targetPath) {
+      return res.status(404).json({ error: "File not found in storage" });
     }
-    if (fs.existsSync(p2)) {
-      return res.sendFile(p2);
+
+    const downloadName = (req.query.filename as string) || (req.query.name as string) || fn;
+    if (req.query.download !== undefined) {
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadName)}"`);
     }
-    res.status(404).json({ error: "File not found in storage" });
+    return res.sendFile(targetPath);
+  });
+
+  // Dedicated file download proxy route to ensure browser downloads files without navigating/redirecting
+  app.get("/api/download", async (req, res) => {
+    const fileUrl = req.query.url as string;
+    const customName = (req.query.name as string) || (req.query.filename as string) || "download";
+    if (!fileUrl) {
+      return res.status(400).send("No file URL specified");
+    }
+
+    try {
+      // Local storage upload
+      if (fileUrl.startsWith("/uploads/")) {
+        const fn = path.basename(fileUrl.split("?")[0]);
+        const p1 = path.join(uploadsDir, fn);
+        const p2 = path.join("/tmp/uploads", fn);
+        const targetPath = fs.existsSync(p1) ? p1 : (fs.existsSync(p2) ? p2 : null);
+        if (targetPath) {
+          return res.download(targetPath, customName);
+        }
+      }
+
+      // Base64 data URL
+      if (fileUrl.startsWith("data:")) {
+        const matches = fileUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const contentType = matches[1];
+          const buffer = Buffer.from(matches[2], "base64");
+          res.setHeader("Content-Type", contentType);
+          res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(customName)}"`);
+          return res.send(buffer);
+        }
+      }
+
+      // Remote URL
+      if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+        const remoteRes = await fetch(fileUrl);
+        if (!remoteRes.ok) throw new Error(`Remote fetch failed with status ${remoteRes.status}`);
+        const contentType = remoteRes.headers.get("content-type") || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(customName)}"`);
+        const arrayBuffer = await remoteRes.arrayBuffer();
+        return res.send(Buffer.from(arrayBuffer));
+      }
+
+      res.status(404).send("File not found");
+    } catch (err: any) {
+      res.status(500).send(err.message || "Failed to download file");
+    }
   });
 
   // JSON and URL parsing middleware with generous limit for large attachments

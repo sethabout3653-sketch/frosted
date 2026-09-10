@@ -32,6 +32,8 @@ import {
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
+import MediaAttachment from "./MediaAttachment";
+import { detectMediaType, formatFileSize } from "../utils/mediaUtils";
 
 interface ChatPanelProps {
   profile: ChatProfile;
@@ -539,116 +541,13 @@ export default function ChatPanel({
   const renderAttachment = (msg: ChatMessage) => {
     if (!msg.attachment) return null;
 
-    const mimeType = msg.attachmentType?.toLowerCase() || "";
-    const url = msg.attachment.toLowerCase();
-    
-    const isImage = mimeType.startsWith("image/") || 
-                    url.endsWith(".png") || 
-                    url.endsWith(".jpg") || 
-                    url.endsWith(".jpeg") || 
-                    url.endsWith(".gif") || 
-                    url.endsWith(".webp") ||
-                    msg.attachment.startsWith("data:image/");
-
-    const isVideo = mimeType.startsWith("video/") || 
-                    url.endsWith(".mp4") || 
-                    url.endsWith(".mov") || 
-                    url.endsWith(".webm") || 
-                    url.endsWith(".m4v") ||
-                    url.endsWith(".ogg");
-
-    const isAudio = mimeType.startsWith("audio/") || 
-                    url.endsWith(".mp3") || 
-                    url.endsWith(".wav") || 
-                    url.endsWith(".m4a") ||
-                    url.endsWith(".flac");
-
-    if (isImage) {
-      return (
-        <a href={msg.attachment} target="_blank" rel="noopener noreferrer" className="block max-w-xs mt-2 group relative overflow-hidden rounded-xl border border-neutral-800 shadow-sm cursor-zoom-in">
-          <img
-            src={msg.attachment}
-            alt={msg.attachmentName || "Attached Image"}
-            className="w-full h-auto max-h-72 object-contain group-hover:scale-[1.02] transition-transform duration-200"
-          />
-        </a>
-      );
-    }
-
-    if (isVideo) {
-      return (
-        <div className="max-w-md w-full mt-2">
-          <video
-            src={msg.attachment}
-            controls
-            preload="metadata"
-            className="rounded-xl w-full border border-neutral-800 shadow-md bg-black"
-          />
-          {msg.attachmentName && (
-            <span className="text-[10px] text-neutral-500 mt-1 block truncate">
-              {msg.attachmentName}
-            </span>
-          )}
-        </div>
-      );
-    }
-
-    if (isAudio) {
-      return (
-        <div className="max-w-sm w-full mt-2 bg-neutral-900/60 p-3 rounded-xl border border-neutral-800 flex flex-col gap-1.5">
-          <span className="text-xs font-semibold text-neutral-300 truncate">
-            {msg.attachmentName || "Audio file"}
-          </span>
-          <audio
-            src={msg.attachment}
-            controls
-            className="w-full h-8"
-          />
-        </div>
-      );
-    }
-
-    const formatFileSize = (bytes?: number) => {
-      if (!bytes) return "";
-      if (bytes < 1024) return `${bytes} B`;
-      const kb = bytes / 1024;
-      if (kb < 1024) return `${kb.toFixed(1)} KB`;
-      const mb = kb / 1024;
-      if (mb < 1024) return `${mb.toFixed(1)} MB`;
-      const gb = mb / 1024;
-      return `${gb.toFixed(1)} GB`;
-    };
-
-    const displayName = msg.attachmentName || msg.attachment.split("/").pop() || "Attached File";
-
     return (
-      <div className="max-w-sm mt-2 p-3 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 rounded-xl flex items-center justify-between gap-3 shadow-md group">
-        <div className="flex items-center gap-3 truncate">
-          <div className="w-10 h-10 rounded-lg bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-400 group-hover:text-white transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
-          </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-xs font-bold text-white truncate hover:underline cursor-pointer">
-              <a href={msg.attachment} target="_blank" rel="noopener noreferrer">
-                {displayName}
-              </a>
-            </span>
-            <span className="text-[10px] text-neutral-500 font-medium">
-              {formatFileSize(msg.attachmentSize)}
-            </span>
-          </div>
-        </div>
-        <a
-          href={msg.attachment}
-          download={displayName}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="p-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-lg transition-colors border border-neutral-700 shadow-sm"
-          title="Download File"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-        </a>
-      </div>
+      <MediaAttachment
+        url={msg.attachment}
+        type={msg.attachmentType}
+        name={msg.attachmentName}
+        size={msg.attachmentSize}
+      />
     );
   };
 
@@ -835,26 +734,38 @@ export default function ChatPanel({
               </div>
             ) : (
               <div className="relative flex items-center gap-3 w-full max-w-md">
-                <div className="relative">
-                  {attachmentType?.startsWith("image/") ? (
-                    <img
-                      src={attachment!}
-                      alt="Preview"
-                      className="h-12 w-12 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
-                    />
-                  ) : attachmentType?.startsWith("video/") ? (
-                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-indigo-400">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
-                    </div>
-                  ) : attachmentType?.startsWith("audio/") ? (
-                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-emerald-400">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-                    </div>
-                  ) : (
-                    <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
-                    </div>
-                  )}
+                <div className="relative flex-shrink-0">
+                  {(() => {
+                    const stagedType = detectMediaType(attachment || "", attachmentType || "", attachmentName || "");
+                    if (stagedType === "image") {
+                      return (
+                        <img
+                          src={attachment!}
+                          alt="Preview"
+                          className="h-12 w-12 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
+                        />
+                      );
+                    }
+                    if (stagedType === "video") {
+                      return (
+                        <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-indigo-400">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                        </div>
+                      );
+                    }
+                    if (stagedType === "audio") {
+                      return (
+                        <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-emerald-400">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                      </div>
+                    );
+                  })()}
                   <button
                     type="button"
                     onClick={() => {
@@ -873,7 +784,7 @@ export default function ChatPanel({
                     {attachmentName || "Attached file"}
                   </span>
                   <span className="text-[10px] text-neutral-500 font-medium">
-                    Ready to send
+                    {attachmentSize ? `${formatFileSize(attachmentSize)} • ` : ""}Ready to send
                   </span>
                 </div>
               </div>
