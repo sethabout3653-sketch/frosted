@@ -1101,7 +1101,10 @@ export default function VoiceChannel({
           delete screenSendersRef.current[partnerUid];
           delete audioSendersRef.current[partnerUid];
           if (remoteScreenStreamsRef.current[partnerUid]) {
-            remoteScreenStreamsRef.current[partnerUid].getTracks().forEach((t) => t.stop());
+            const s = remoteScreenStreamsRef.current[partnerUid];
+            s.getTracks().forEach((t) => {
+              try { s.removeTrack(t); } catch {}
+            });
             delete remoteScreenStreamsRef.current[partnerUid];
           }
           if (remoteAnalysersRef.current[partnerUid]) {
@@ -1238,17 +1241,30 @@ export default function VoiceChannel({
                 s.getVideoTracks().forEach((t) => s.removeTrack(t));
                 s.addTrack(scrTrack);
               }
-              const screenEl = remoteScreenVideoRefs.current[partnerUid];
-              if (screenEl) {
-                screenEl.srcObject = s;
-                screenEl.play().catch(() => {});
-              }
+              scrTrack.enabled = true;
+              const playScreenVideo = () => {
+                const screenEl = remoteScreenVideoRefs.current[partnerUid];
+                if (screenEl) {
+                  if (screenEl.srcObject !== s) {
+                    screenEl.srcObject = s;
+                  }
+                  screenEl.play().catch(() => {});
+                }
+              };
+              playScreenVideo();
+              scrTrack.onunmute = () => {
+                playScreenVideo();
+                setTrackTrigger((v) => v + 1);
+              };
             }
           }
           setTrackTrigger((v) => v + 1);
         } else if (signal.type === "screenshare_stopped") {
           if (remoteScreenStreamsRef.current[partnerUid]) {
-            remoteScreenStreamsRef.current[partnerUid].getTracks().forEach((t) => t.stop());
+            const s = remoteScreenStreamsRef.current[partnerUid];
+            s.getTracks().forEach((t) => {
+              try { s.removeTrack(t); } catch {}
+            });
             delete remoteScreenStreamsRef.current[partnerUid];
           }
           if (remoteScreenVideoRefs.current[partnerUid]) {
@@ -1364,13 +1380,42 @@ export default function VoiceChannel({
               }
             });
 
-            // Clean up screen stream for participants not sharing screen
+            // Synchronize screen streams for all active users
             users.forEach((u) => {
-              if (!u.isScreenSharing && remoteScreenStreamsRef.current[u.uid]) {
-                remoteScreenStreamsRef.current[u.uid].getTracks().forEach((t) => t.stop());
-                delete remoteScreenStreamsRef.current[u.uid];
+              if (!u.isScreenSharing) {
+                if (remoteScreenStreamsRef.current[u.uid]) {
+                  const s = remoteScreenStreamsRef.current[u.uid];
+                  s.getTracks().forEach((t) => {
+                    try { s.removeTrack(t); } catch {}
+                  });
+                  delete remoteScreenStreamsRef.current[u.uid];
+                }
                 if (remoteScreenVideoRefs.current[u.uid]) {
                   remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
+                }
+              } else {
+                const pc = peersRef.current[u.uid];
+                if (pc) {
+                  const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
+                  const scrTrack = videoTransceivers.length >= 2 ? videoTransceivers[1].receiver.track : videoTransceivers[0]?.receiver?.track;
+                  if (scrTrack && scrTrack.readyState === "live") {
+                    if (!remoteScreenStreamsRef.current[u.uid]) {
+                      remoteScreenStreamsRef.current[u.uid] = new MediaStream();
+                    }
+                    const s = remoteScreenStreamsRef.current[u.uid];
+                    if (!s.getTracks().some((t) => t.id === scrTrack.id)) {
+                      s.getVideoTracks().forEach((t) => s.removeTrack(t));
+                      s.addTrack(scrTrack);
+                    }
+                    scrTrack.enabled = true;
+                    const screenEl = remoteScreenVideoRefs.current[u.uid];
+                    if (screenEl) {
+                      if (screenEl.srcObject !== s) {
+                        screenEl.srcObject = s;
+                      }
+                      screenEl.play().catch(() => {});
+                    }
+                  }
                 }
               }
             });
@@ -1387,11 +1432,9 @@ export default function VoiceChannel({
                 delete screenSendersRef.current[peerUid];
                 delete audioSendersRef.current[peerUid];
                 if (remoteStreamsRef.current[peerUid]) {
-                  remoteStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
                   delete remoteStreamsRef.current[peerUid];
                 }
                 if (remoteScreenStreamsRef.current[peerUid]) {
-                  remoteScreenStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
                   delete remoteScreenStreamsRef.current[peerUid];
                 }
               }
@@ -1919,8 +1962,6 @@ export default function VoiceChannel({
               if (videoSenders.length >= 2) {
                 screenSender = videoSenders[1];
                 screenSendersRef.current[pUid] = screenSender;
-              } else if (videoSenders.length === 1) {
-                screenSender = videoSenders[0];
               }
             }
 
@@ -2141,8 +2182,10 @@ export default function VoiceChannel({
                     ref={(el) => {
                       remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
                       const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
-                      if (el && stream && el.srcObject !== stream) {
-                        el.srcObject = stream;
+                      if (el && stream) {
+                        if (el.srcObject !== stream) {
+                          el.srcObject = stream;
+                        }
                         el.play().catch(() => {});
                       }
                     }}
@@ -2859,8 +2902,10 @@ export default function VoiceChannel({
                           ref={(el) => {
                             remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
                             const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
-                            if (el && stream && el.srcObject !== stream) {
-                              el.srcObject = stream;
+                            if (el && stream) {
+                              if (el.srcObject !== stream) {
+                                el.srcObject = stream;
+                              }
                               el.play().catch(() => {});
                             }
                           }}
@@ -3017,8 +3062,10 @@ export default function VoiceChannel({
                           ref={(el) => {
                             remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
                             const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
-                            if (el && stream && el.srcObject !== stream) {
-                              el.srcObject = stream;
+                            if (el && stream) {
+                              if (el.srcObject !== stream) {
+                                el.srcObject = stream;
+                              }
                               el.play().catch(() => {});
                             }
                           }}
@@ -3415,8 +3462,10 @@ export default function VoiceChannel({
                 <video
                   ref={(el) => {
                     fullscreenVideoRef.current = el;
-                    if (el && screenStream && el.srcObject !== screenStream) {
-                      el.srcObject = screenStream;
+                    if (el && screenStream) {
+                      if (el.srcObject !== screenStream) {
+                        el.srcObject = screenStream;
+                      }
                       el.play().catch(() => {});
                     }
                   }}
