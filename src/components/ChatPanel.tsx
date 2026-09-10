@@ -690,23 +690,25 @@ export default function ChatPanel({
       return isRecent && u.status !== "left";
     })
     .sort((a, b) => {
+      if (!a || !b) return 0;
       if (a.uid === profile.uid) return -1;
       if (b.uid === profile.uid) return 1;
       const nameCompare = (a.username || "").localeCompare(b.username || "");
       if (nameCompare !== 0) return nameCompare;
-      return a.uid.localeCompare(b.uid);
+      return (a.uid || "").localeCompare(b.uid || "");
     });
 
   const leftUsers = memberUsers
     .filter((u) => {
-      if (u.uid === profile.uid) return false;
+      if (!u || u.uid === profile.uid) return false;
       const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
       return u.status === "left" || !isRecent;
     })
     .sort((a, b) => {
+      if (!a || !b) return 0;
       const nameCompare = (a.username || "").localeCompare(b.username || "");
       if (nameCompare !== 0) return nameCompare;
-      return a.uid.localeCompare(b.uid);
+      return (a.uid || "").localeCompare(b.uid || "");
     });
 
   const renderAttachment = (msg: ChatMessage) => {

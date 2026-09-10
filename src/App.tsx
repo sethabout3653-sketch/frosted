@@ -74,7 +74,7 @@ export default function App() {
     const luminPrepared = getLocalLuminGames()
       .filter((g) => g.name !== "-3" && g.id !== 816)
       .map((g) => prepareGame(g, "luminsdk"));
-    const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
+    const catalog = deduplicateGames(catalogPrepared, luminPrepared).sort((a, b) => (a?.name || "").localeCompare(b?.name || ""));
     return [SOUNDBOARD_GAME, ...catalog];
   });
   const [loadingLive, setLoadingLive] = useState(true);
@@ -149,7 +149,7 @@ export default function App() {
         const luminPrepared = luminList.map((g) => prepareGame(g, "luminsdk"));
 
         // Deduplicate between gn-math catalog and Lumin, strictly preserving gn-math for Friday Night Funkin
-        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) => a.name.localeCompare(b.name));
+        const combined = deduplicateGames(baseList, luminPrepared).sort((a, b) => (a?.name || "").localeCompare(b?.name || ""));
         setGames([SOUNDBOARD_GAME, ...combined.filter((g) => g.id !== SOUNDBOARD_GAME.id)]);
         setLoadingLive(false);
       } catch {

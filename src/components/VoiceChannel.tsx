@@ -261,9 +261,10 @@ export default function VoiceChannel({
         return typeof ts === "number" ? currentTime - ts < 45000 : true;
       })
       .sort((a, b) => {
+        if (!a || !b) return 0;
         const nameCompare = (a.username || "").localeCompare(b.username || "");
         if (nameCompare !== 0) return nameCompare;
-        return a.uid.localeCompare(b.uid);
+        return (a.uid || "").localeCompare(b.uid || "");
       });
   }, [participants, currentTime]);
 
@@ -828,23 +829,39 @@ export default function VoiceChannel({
     });
   }, [participants]);
 
-  // Global user-gesture audio resume listener to handle strict browser autoplay policies
+  // Global user-gesture media resume listener to handle strict browser autoplay policies for audio and video
   useEffect(() => {
-    const resumeAudio = () => {
+    const resumeMedia = () => {
       (Object.values(remoteAudioRefs.current) as (HTMLAudioElement | null)[]).forEach((el) => {
         if (el && el.paused && el.srcObject) {
           el.play().catch(() => {});
         }
       });
+      (Object.values(remoteVideoRefs.current) as (HTMLVideoElement | null)[]).forEach((el) => {
+        if (el && el.srcObject) {
+          el.play().catch(() => {});
+        }
+      });
+      (Object.values(remoteScreenVideoRefs.current) as (HTMLVideoElement | null)[]).forEach((el) => {
+        if (el && el.srcObject) {
+          el.play().catch(() => {});
+        }
+      });
+      if (localVideoRef.current && localVideoRef.current.srcObject) {
+        localVideoRef.current.play().catch(() => {});
+      }
+      if (localScreenVideoRef.current && localScreenVideoRef.current.srcObject) {
+        localScreenVideoRef.current.play().catch(() => {});
+      }
     };
 
-    window.addEventListener("click", resumeAudio);
-    window.addEventListener("keydown", resumeAudio);
-    window.addEventListener("touchstart", resumeAudio);
+    window.addEventListener("click", resumeMedia);
+    window.addEventListener("keydown", resumeMedia);
+    window.addEventListener("touchstart", resumeMedia);
     return () => {
-      window.removeEventListener("click", resumeAudio);
-      window.removeEventListener("keydown", resumeAudio);
-      window.removeEventListener("touchstart", resumeAudio);
+      window.removeEventListener("click", resumeMedia);
+      window.removeEventListener("keydown", resumeMedia);
+      window.removeEventListener("touchstart", resumeMedia);
     };
   }, []);
 
@@ -1381,9 +1398,10 @@ export default function VoiceChannel({
             });
 
             users.sort((a, b) => {
+              if (!a || !b) return 0;
               const nameCompare = (a.username || "").localeCompare(b.username || "");
               if (nameCompare !== 0) return nameCompare;
-              return a.uid.localeCompare(b.uid);
+              return (a.uid || "").localeCompare(b.uid || "");
             });
 
             setParticipants(users);
@@ -2706,9 +2724,14 @@ export default function VoiceChannel({
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
                       const remoteStream = remoteStreamsRef.current[p.uid];
-                      if (el && remoteStream && el.srcObject !== remoteStream) {
-                        el.srcObject = remoteStream;
+                      if (el && remoteStream) {
+                        if (el.srcObject !== remoteStream) {
+                          el.srcObject = remoteStream;
+                        }
                         el.play().catch(() => {});
+                        if (el.readyState >= 1 || el.videoWidth > 0) {
+                          setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                        }
                       }
                     }}
                     autoPlay
@@ -2720,13 +2743,11 @@ export default function VoiceChannel({
                     onPlaying={() => {
                       setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
                     }}
-                    className={`w-full h-full object-cover transition-opacity duration-300 ${
-                      remoteVideoLoaded[p.uid] && !p.isVideoLoading ? "opacity-100" : "opacity-0"
-                    }`}
+                    className="w-full h-full object-cover"
                   />
 
                   {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
-                    <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
+                    <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200 pointer-events-none">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                         alt="Loading camera"

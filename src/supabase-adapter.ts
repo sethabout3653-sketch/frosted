@@ -169,12 +169,16 @@ function applyQuery(colName: string, constraints: any[] = []): { docs: any[]; em
       }
     } else if (c.type === "orderBy") {
       items.sort((a, b) => {
-        const valA = a[c.field] ?? 0;
-        const valB = b[c.field] ?? 0;
-        if (typeof valA === "string" && typeof valB === "string") {
-          return c.direction === "desc" ? valB.localeCompare(valA) : valA.localeCompare(valB);
+        const valA = a?.[c.field];
+        const valB = b?.[c.field];
+        if (typeof valA === "string" || typeof valB === "string") {
+          const strA = String(valA ?? "");
+          const strB = String(valB ?? "");
+          return c.direction === "desc" ? strB.localeCompare(strA) : strA.localeCompare(strB);
         }
-        return c.direction === "desc" ? Number(valB) - Number(valA) : Number(valA) - Number(valB);
+        const numA = Number(valA ?? 0);
+        const numB = Number(valB ?? 0);
+        return c.direction === "desc" ? numB - numA : numA - numB;
       });
     } else if (c.type === "limit") {
       items = items.slice(0, c.limitCount);
