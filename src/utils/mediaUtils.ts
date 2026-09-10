@@ -26,6 +26,16 @@ const IMAGE_EXTENSIONS = new Set([
  */
 export function getFileExtension(filenameOrUrl: string = ""): string {
   if (!filenameOrUrl) return "";
+  
+  if (filenameOrUrl.startsWith("data:")) {
+    const match = filenameOrUrl.match(/^data:([a-zA-Z0-9\/\-\+\.]+);/);
+    if (match && match[1]) {
+      const parts = match[1].split("/");
+      return parts.length > 1 ? parts[1].toLowerCase() : "";
+    }
+    return "";
+  }
+  
   try {
     const clean = filenameOrUrl.split("?")[0].split("#")[0];
     const lastSlash = clean.lastIndexOf("/");
@@ -43,6 +53,12 @@ export function getFileExtension(filenameOrUrl: string = ""): string {
  */
 export function getFileName(urlOrPath: string = "", fallback: string = "file"): string {
   if (!urlOrPath) return fallback;
+  
+  if (urlOrPath.startsWith("data:")) {
+    const ext = getFileExtension(urlOrPath);
+    return ext ? `${fallback}.${ext}` : fallback;
+  }
+  
   try {
     const clean = urlOrPath.split("?")[0].split("#")[0];
     const lastSlash = clean.lastIndexOf("/");
@@ -284,6 +300,11 @@ export async function downloadFile(
 
     const response = await fetch(targetApiUrl);
     if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+    
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/html") && !filename.toLowerCase().endsWith(".html") && !filename.toLowerCase().endsWith(".htm")) {
+      throw new Error("Server returned HTML instead of the requested file (likely a static hosting SPA fallback). The file may no longer exist on this server.");
+    }
 
     const blob = await response.blob();
     const blobUrl = URL.createObjectURL(blob);
@@ -302,8 +323,15 @@ export async function downloadFile(
       } catch (e) {}
     }, 30000);
     return;
-  } catch (err) {
+  } catch (err: any) {
     console.warn("Direct blob download failed, attempting fallback:", err);
+    
+    // Prevent downloading HTML if we specifically caught a missing file on static hosting
+    if (err.message && err.message.includes("SPA fallback")) {
+      alert("This file is no longer available on the server (it may have been uploaded to a temporary local environment).");
+      return;
+    }
+
     // Fallback: direct proxy link trigger
     try {
       const proxyUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;

@@ -56,6 +56,7 @@ export default function MediaAttachment({
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [videoError, setVideoError] = useState(false);
+  const [isUnavailable, setIsUnavailable] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -69,6 +70,20 @@ export default function MediaAttachment({
     if (size) setEffectiveSize(size);
 
     if (url) {
+      // If we are on static hosting and trying to load a local /uploads/ path, it's missing.
+      // Eagerly check if the server actually has it, or if it's a Vercel 404 falling back to index.html.
+      if (url.startsWith("/uploads/") || url.startsWith("/api/")) {
+        fetch(url, { method: "HEAD" }).then(res => {
+          if (!isMounted) return;
+          const contentType = res.headers.get("content-type") || "";
+          if (contentType.includes("text/html") && !url.toLowerCase().endsWith(".html")) {
+            setIsUnavailable(true);
+          }
+        }).catch(() => {
+          if (isMounted) setIsUnavailable(true);
+        });
+      }
+
       probeUrlMediaType(url).then((probed) => {
         if (!isMounted || !probed) return;
         if (probed.type) {
@@ -93,7 +108,7 @@ export default function MediaAttachment({
       e.preventDefault();
       e.stopPropagation();
     }
-    if (isDownloading) return;
+    if (isDownloading || isUnavailable) return;
 
     setIsDownloading(true);
     try {
@@ -106,6 +121,24 @@ export default function MediaAttachment({
       setIsDownloading(false);
     }
   };
+
+  if (isUnavailable) {
+    return (
+      <div className="mt-2.5 max-w-sm w-fit inline-flex items-center gap-3 p-3 rounded-xl border border-red-500/20 bg-red-500/10 shadow-sm relative overflow-hidden">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-red-500/20 flex-shrink-0">
+          <FileText size={20} className="text-red-400" />
+        </div>
+        <div className="min-w-0 pr-4">
+          <p className="text-sm font-semibold text-red-200 truncate" title={displayName}>
+            {displayName}
+          </p>
+          <p className="text-xs text-red-400 mt-0.5 font-medium truncate">
+            File no longer available
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // 1. Image Attachment
   if (effectiveType === "image") {
