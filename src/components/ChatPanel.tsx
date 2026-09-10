@@ -55,6 +55,48 @@ interface MemberUser {
 
 let globalMessagesCache: ChatMessage[] = [];
 let globalMessagesLoaded = false;
+const CACHE_KEY = "lumos_chat_messages_v3";
+
+try {
+  localStorage.removeItem("lumos_chat_messages_v2");
+  localStorage.removeItem("lumos_chat_messages_v1");
+} catch {}
+
+const getCachedMessages = (): ChatMessage[] => {
+  if (globalMessagesCache.length > 0) return globalMessagesCache;
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        globalMessagesCache = parsed;
+        globalMessagesLoaded = true;
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed reading cached messages:", e);
+  }
+  return [];
+};
+
+const saveCachedMessages = (msgs: ChatMessage[]) => {
+  globalMessagesCache = msgs;
+  globalMessagesLoaded = true;
+  try {
+    // Cache the most recent 60 messages for fast startup
+    const toSave = msgs.slice(-60).map((m) => {
+      // Avoid overflowing localStorage quota on huge base64 data
+      if (m.attachment && m.attachment.length > 100000) {
+        return { ...m, attachment: "" };
+      }
+      return m;
+    });
+    localStorage.setItem(CACHE_KEY, JSON.stringify(toSave));
+  } catch {
+    // Ignore storage quota errors
+  }
+};
 
 export default function ChatPanel({
   profile,
@@ -62,7 +104,11 @@ export default function ChatPanel({
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>(globalMessagesCache);
+  const initialCache = getCachedMessages();
+  const [messages, setMessages] = useState<ChatMessage[]>(initialCache);
+  const [messageLimit, setMessageLimit] = useState(50);
+  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
@@ -80,9 +126,14 @@ export default function ChatPanel({
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
   const [isLocalTyping, setIsLocalTyping] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(!globalMessagesLoaded);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(initialCache.length === 0);
   const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const isInitialLoadRef = useRef<boolean>(true);
+  const isLoadingOlderRef = useRef<boolean>(false);
+  const prevScrollHeightRef = useRef<number>(0);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -281,14 +332,15 @@ export default function ChatPanel({
     return () => unsub();
   }, [profile]);
 
-  // Real-time message subscription with instant local rendering
+  // Real-time message subscription with instant local rendering and fast pagination
   useEffect(() => {
-    if (!globalMessagesLoaded) {
+    if (!globalMessagesLoaded && initialCache.length === 0) {
       setIsLoadingMessages(true);
     }
     const q = query(
       collection(db, "messages"),
-      orderBy("timestamp", "desc")
+      orderBy("timestamp", "desc"),
+      limit(messageLimit)
     );
 
     const unsubscribe = onSnapshot(
@@ -298,38 +350,92 @@ export default function ChatPanel({
         snapshot.forEach((docSnap) => {
           newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
         });
+
+        // If returned messages equal or exceed limit, more older messages exist
+        setHasMoreOlderMessages(newMessages.length >= messageLimit);
+
         const reversed = newMessages.reverse();
         setMessages((prev) => {
           // Keep any local optimistic messages that haven't arrived in the snapshot yet
           const pending = prev.filter(
             (m) =>
-              m.id.startsWith("temp_") &&
-              !reversed.some(
-                (sm) =>
-                  sm.uid === m.uid &&
-                  Math.abs(sm.timestamp - m.timestamp) < 6000 &&
-                  (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
-              )
+              (m.id.startsWith("temp_") || m.id.startsWith("doc_")) &&
+              !reversed.some((sm) => sm.id === m.id)
           );
           const finalMessages = [...reversed, ...pending];
-          globalMessagesCache = finalMessages;
-          globalMessagesLoaded = true;
+          saveCachedMessages(finalMessages);
           return finalMessages;
         });
         setIsLoadingMessages(false);
-        window.setTimeout(() => scrollToBottom(), 50);
+        setIsLoadingOlder(false);
+
+        // 1. If we just loaded older messages from the top, PRESERVE exact scroll position
+        if (isLoadingOlderRef.current) {
+          requestAnimationFrame(() => {
+            if (chatContainerRef.current && prevScrollHeightRef.current > 0) {
+              const newScrollHeight = chatContainerRef.current.scrollHeight;
+              const heightDiff = newScrollHeight - prevScrollHeightRef.current;
+              chatContainerRef.current.scrollTop += heightDiff;
+            }
+            isLoadingOlderRef.current = false;
+            prevScrollHeightRef.current = 0;
+          });
+          return;
+        }
+
+        // 2. Initial load: scroll to bottom once
+        if (isInitialLoadRef.current) {
+          isInitialLoadRef.current = false;
+          window.setTimeout(() => scrollToBottom("auto"), 50);
+          return;
+        }
+
+        // 3. When someone chatted: check if user is near bottom or if it's our own message
+        const container = chatContainerRef.current;
+        const isNearBottom = container
+          ? container.scrollHeight - container.scrollTop - container.clientHeight < 160
+          : true;
+
+        const latestMessage = reversed[reversed.length - 1];
+        const isMyMessage =
+          latestMessage &&
+          (latestMessage.uid === profile.uid ||
+            latestMessage.id.startsWith("temp_") ||
+            latestMessage.id.startsWith("doc_"));
+
+        // Only auto-scroll to bottom if the user is already near bottom or sent the message!
+        if (isNearBottom || isMyMessage) {
+          window.setTimeout(() => scrollToBottom("smooth"), 50);
+        }
       },
       (error) => {
         setIsLoadingMessages(false);
+        setIsLoadingOlder(false);
         handleFirestoreError(error, OperationType.LIST, "messages");
       }
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [messageLimit]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const handleScroll = () => {
+    if (!chatContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    setShowScrollBottomBtn(distanceFromBottom > 240);
+  };
+
+  const handleLoadOlderMessages = () => {
+    if (chatContainerRef.current) {
+      prevScrollHeightRef.current = chatContainerRef.current.scrollHeight;
+      isLoadingOlderRef.current = true;
+    }
+    setIsLoadingOlder(true);
+    setMessageLimit((prev) => prev + 50);
+  };
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
   const handleDeleteMessage = async (msgId: string) => {
@@ -674,7 +780,11 @@ export default function ChatPanel({
         </div>
 
         {/* Scrollable Chat Area */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+        <div
+          ref={chatContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 relative"
+        >
           {/* Welcome Channel Banner matching Image 2 */}
           <div className="mb-8 pt-2">
             <div className="w-16 h-16 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-3xl font-extrabold text-white mb-3 shadow-md">
@@ -699,6 +809,26 @@ export default function ChatPanel({
             </div>
           ) : (
             <>
+              {/* Load Older Messages button if available */}
+              {hasMoreOlderMessages && (
+                <div className="flex justify-center -mt-2 mb-4">
+                  <button
+                    onClick={handleLoadOlderMessages}
+                    disabled={isLoadingOlder}
+                    className="px-4 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-medium text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center gap-2 shadow-sm disabled:opacity-50"
+                  >
+                    {isLoadingOlder ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                        <span>Loading older messages...</span>
+                      </>
+                    ) : (
+                      <span>↑ Load older messages</span>
+                    )}
+                  </button>
+                </div>
+              )}
+
               {/* Messages Stream */}
               {filteredMessages.map((msg) => {
             const isMe =
@@ -709,6 +839,7 @@ export default function ChatPanel({
             return (
               <div
                 key={msg.id}
+                style={{ contentVisibility: "auto", containIntrinsicSize: "0 60px" }}
                 className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
               >
                 {/* Avatar Circle */}
@@ -717,6 +848,8 @@ export default function ChatPanel({
                     <img
                       src={msg.photoURL}
                       alt={msg.username}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-cover"
                     />
                   ) : (
@@ -745,6 +878,8 @@ export default function ChatPanel({
                     <img
                       src={msg.gif}
                       alt="GIF"
+                      loading="lazy"
+                      decoding="async"
                       className="rounded-xl mt-2 max-w-xs h-auto border border-neutral-800"
                     />
                   )}
@@ -754,20 +889,23 @@ export default function ChatPanel({
                   {/* Reactions Display */}
                   {msg.reactions && Object.keys(msg.reactions).length > 0 && (
                     <div className="flex flex-wrap gap-1.5 mt-2">
-                      {Object.entries(msg.reactions).map(([emoji, users]) => (
-                        <button
-                          key={emoji}
-                          onClick={() => handleReactMessage(msg.id, emoji)}
-                          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium border ${
-                            users.includes(profile.uid)
-                              ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-300"
-                              : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
-                          } transition-colors cursor-pointer`}
-                        >
-                          <span>{emoji}</span>
-                          <span>{users.length}</span>
-                        </button>
-                      ))}
+                      {Object.entries(msg.reactions).map(([emoji, users]) => {
+                        const userList = Array.isArray(users) ? (users as string[]) : [];
+                        return (
+                          <button
+                            key={emoji}
+                            onClick={() => handleReactMessage(msg.id, emoji)}
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium border ${
+                              userList.includes(profile.uid)
+                                ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-300"
+                                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
+                            } transition-colors cursor-pointer`}
+                          >
+                            <span>{emoji}</span>
+                            <span>{userList.length}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -799,6 +937,19 @@ export default function ChatPanel({
           })}
           <div ref={messagesEndRef} />
             </>
+          )}
+
+          {/* Floating Jump to Latest button */}
+          {showScrollBottomBtn && (
+            <div className="sticky bottom-2 flex justify-center z-30 pointer-events-none pb-2">
+              <button
+                onClick={() => scrollToBottom("smooth")}
+                className="pointer-events-auto px-4 py-1.5 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700 text-xs font-semibold shadow-2xl transition-all flex items-center gap-1.5 cursor-pointer backdrop-blur-sm active:scale-95"
+              >
+                <span>Latest messages</span>
+                <span className="text-sm font-bold">↓</span>
+              </button>
+            </div>
           )}
         </div>
 

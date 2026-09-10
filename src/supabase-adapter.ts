@@ -370,16 +370,21 @@ export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?:
 
   // Realtime subscription - make channel name unique to avoid reusing the same channel object
   const uniqueChannelName = `public:${colName}:${Math.random().toString(36).substring(2, 10)}`;
+  let fetchTimeout: any = null;
   const channel = supabase.channel(uniqueChannelName)
     .on('postgres_changes', { event: '*', schema: 'public', table: colName }, () => {
-      // Re-fetch to satisfy constraints (order, limit, where)
-      getDocs(queryObj).then(onNext).catch((e) => {
-        if (onError) onError(e);
-      });
+      // Debounce re-fetch to prevent flooding when handling large payloads or multiple concurrent changes
+      if (fetchTimeout) clearTimeout(fetchTimeout);
+      fetchTimeout = setTimeout(() => {
+        getDocs(queryObj).then(onNext).catch((e) => {
+          if (onError) onError(e);
+        });
+      }, 50);
     })
     .subscribe();
 
   return () => {
+    if (fetchTimeout) clearTimeout(fetchTimeout);
     supabase.removeChannel(channel);
   };
 }
