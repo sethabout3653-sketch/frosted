@@ -898,21 +898,30 @@ export default function VoiceChannel({
         } catch (e) {}
       }
 
-      // 2. Add camera track (transceiver 1)
+      // 2. Add camera track (transceiver 1) with dedicated camera stream
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
       const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
         ? realVideoTrack
         : getOrCreateDummyVideoTrack();
-      const cameraSender = pc.addTrack(cameraTrack, micStream);
+      const cameraStream = videoStreamRef.current || new MediaStream([cameraTrack]);
+      const cameraSender = pc.addTrack(cameraTrack, cameraStream);
       cameraSendersRef.current[partnerUid] = cameraSender;
 
-      // 3. Add screen share track (transceiver 2)
+      // 3. Add screen share track (transceiver 2) with dedicated screen stream
       const realScreenTrack = screenStreamRef.current?.getVideoTracks()[0];
       const screenTrack = realScreenTrack && realScreenTrack.readyState === "live"
         ? realScreenTrack
         : getOrCreateDummyScreenTrack();
-      const screenSender = pc.addTrack(screenTrack, micStream);
+      const screenStream = screenStreamRef.current || new MediaStream([screenTrack]);
+      const screenSender = pc.addTrack(screenTrack, screenStream);
       screenSendersRef.current[partnerUid] = screenSender;
+
+      // Ensure transceivers are configured to bidirectional sendrecv
+      pc.getTransceivers().forEach((t) => {
+        try {
+          t.direction = "sendrecv";
+        } catch (e) {}
+      });
 
       // Handle local ICE candidates
       pc.onicecandidate = (event) => {
@@ -942,6 +951,12 @@ export default function VoiceChannel({
             audioEl.play().catch(() => {});
           }
 
+          event.track.onunmute = () => {
+            if (audioEl) {
+              audioEl.play().catch(() => {});
+            }
+          };
+
           // Attach remote audio track to analyser for accurate speaking detection
           if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
             try {
@@ -961,7 +976,10 @@ export default function VoiceChannel({
         } else if (event.track.kind === "video") {
           const transceivers = pc.getTransceivers();
           const videoTransceivers = transceivers.filter((t) => t.receiver.track.kind === "video");
+          const streamId = event.streams?.[0]?.id || "";
           const isScreen =
+            streamId.includes("screen") ||
+            event.track.contentHint === "detail" ||
             event.transceiver === videoTransceivers[1] ||
             event.transceiver.mid === "2" ||
             transceivers.indexOf(event.transceiver) === 2 ||
@@ -977,13 +995,21 @@ export default function VoiceChannel({
               scrStream.addTrack(event.track);
             }
 
-            const screenEl = remoteScreenVideoRefs.current[partnerUid];
-            if (screenEl) {
-              if (screenEl.srcObject !== scrStream) {
-                screenEl.srcObject = scrStream;
+            const playScreenVideo = () => {
+              const screenEl = remoteScreenVideoRefs.current[partnerUid];
+              if (screenEl) {
+                if (screenEl.srcObject !== scrStream) {
+                  screenEl.srcObject = scrStream;
+                }
+                screenEl.play().catch(() => {});
               }
-              screenEl.play().catch(() => {});
-            }
+            };
+
+            playScreenVideo();
+            event.track.onunmute = () => {
+              playScreenVideo();
+              setTrackTrigger((v) => v + 1);
+            };
           } else {
             // Camera track
             if (!remoteStreamsRef.current[partnerUid]) {
@@ -995,13 +1021,21 @@ export default function VoiceChannel({
               rStream.addTrack(event.track);
             }
 
-            const videoEl = remoteVideoRefs.current[partnerUid];
-            if (videoEl) {
-              if (videoEl.srcObject !== rStream) {
-                videoEl.srcObject = rStream;
+            const playCameraVideo = () => {
+              const videoEl = remoteVideoRefs.current[partnerUid];
+              if (videoEl) {
+                if (videoEl.srcObject !== rStream) {
+                  videoEl.srcObject = rStream;
+                }
+                videoEl.play().catch(() => {});
               }
-              videoEl.play().catch(() => {});
-            }
+            };
+
+            playCameraVideo();
+            event.track.onunmute = () => {
+              playCameraVideo();
+              setTrackTrigger((v) => v + 1);
+            };
           }
         }
 
@@ -1591,11 +1625,20 @@ export default function VoiceChannel({
     const dummyTrack = getOrCreateDummyScreenTrack();
     await Promise.all(
       Object.keys(peersRef.current).map(async (pUid) => {
-        const sender = screenSendersRef.current[pUid];
-        if (sender) {
-          try {
-            await sender.replaceTrack(dummyTrack);
-          } catch (e) {}
+        const pc = peersRef.current[pUid];
+        if (pc && pc.connectionState !== "closed") {
+          let sender = screenSendersRef.current[pUid];
+          if (!sender) {
+            const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+            if (videoSenders.length >= 2) {
+              sender = videoSenders[1];
+            }
+          }
+          if (sender) {
+            try {
+              await sender.replaceTrack(dummyTrack);
+            } catch (e) {}
+          }
         }
       })
     );
@@ -1724,7 +1767,17 @@ export default function VoiceChannel({
         Object.keys(peersRef.current).map(async (pUid) => {
           const pc = peersRef.current[pUid];
           if (pc && pc.connectionState !== "closed") {
-            const screenSender = screenSendersRef.current[pUid];
+            let screenSender = screenSendersRef.current[pUid];
+            if (!screenSender) {
+              const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+              if (videoSenders.length >= 2) {
+                screenSender = videoSenders[1];
+                screenSendersRef.current[pUid] = screenSender;
+              } else if (videoSenders.length === 1) {
+                screenSender = videoSenders[0];
+              }
+            }
+
             if (screenSender) {
               await screenSender.replaceTrack(screenVideoTrack);
               try {
