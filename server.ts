@@ -219,14 +219,12 @@ async function startServer() {
     next();
   });
 
-  // Serve uploads directory publicly with fallback to /tmp/uploads
-  app.use("/uploads", express.static(uploadsDir));
-  app.use("/uploads", express.static("/tmp/uploads"));
-
-  app.get("/uploads/:filename", (req, res) => {
-    const fn = req.params.filename;
+  // Primary file serving route with HTTP Range streaming (for video/audio) and magic byte detection
+  app.get(["/uploads/:filename", "/uploads/*"], (req, res) => {
+    const rawFn = req.params.filename || req.params[0] || "";
+    const fn = path.basename(rawFn);
     const targetPath = resolveStoredFilePath(fn);
-    if (!targetPath) {
+    if (!targetPath || !fs.existsSync(targetPath)) {
       return res.status(404).json({ error: "File not found in storage" });
     }
 
@@ -239,7 +237,7 @@ async function startServer() {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadName)}"`);
     }
 
-    // Support HTTP Range requests for video/audio seeking and buffer streaming
+    // Support HTTP Range requests (206 Partial Content) for video/audio seeking and buffering
     const range = req.headers.range;
     if (range) {
       try {
@@ -265,10 +263,10 @@ async function startServer() {
     return res.sendFile(targetPath);
   });
 
-  // Dedicated file download proxy route to ensure browser downloads files without navigating/redirecting
+  // Dedicated file download proxy route to guarantee direct downloads with clean filenames
   app.get("/api/download", async (req, res) => {
     const fileUrl = req.query.url as string;
-    const customName = (req.query.name as string) || (req.query.filename as string) || "download";
+    let customName = (req.query.name as string) || (req.query.filename as string) || "download";
     if (!fileUrl) {
       return res.status(400).send("No file URL specified");
     }
@@ -278,7 +276,13 @@ async function startServer() {
       if (fileUrl.startsWith("/uploads/")) {
         const fn = path.basename(fileUrl.split("?")[0]);
         const targetPath = resolveStoredFilePath(fn);
-        if (targetPath) {
+        if (targetPath && fs.existsSync(targetPath)) {
+          const mime = detectFileMimeType(targetPath);
+          const ext = getExtensionFromMime(mime, targetPath);
+          if (!path.extname(customName) && ext) {
+            customName = `${customName}${ext}`;
+          }
+          res.setHeader("Content-Type", mime);
           return res.download(targetPath, customName);
         }
       }

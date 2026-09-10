@@ -238,8 +238,9 @@ export function formatFileSize(bytes?: number): string {
 }
 
 /**
- * Robustly downloads any file, video, audio, or image directly to the user's
- * computer without redirecting or navigating the browser away.
+ * Robustly downloads any file, video, audio, image, document, archive, or script directly
+ * to the user's computer using blob streams to guarantee seamless browser downloads
+ * without redirects, iframe blocks, or tab navigation.
  */
 export async function downloadFile(
   url: string,
@@ -250,58 +251,57 @@ export async function downloadFile(
 
   const filename = preferredFileName || getFileName(url, "download");
 
-  // 1. Data URLs & Blob URLs can be downloaded instantly via programmatic anchor
+  // 1. Data URLs & Blob URLs can be downloaded directly
   if (url.startsWith("data:") || url.startsWith("blob:")) {
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
+    a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     return;
   }
 
-  // 2. If it's a local /uploads/ URL, we can use the server download route with Content-Disposition
-  if (url.startsWith("/uploads/")) {
-    const proxyUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
-    const iframe = document.createElement("iframe");
-    iframe.style.display = "none";
-    iframe.src = proxyUrl;
-    document.body.appendChild(iframe);
-    setTimeout(() => {
-      try {
-        document.body.removeChild(iframe);
-      } catch (e) {}
-    }, 15000);
-    return;
-  }
-
-  // 3. For remote or other URLs, fetch as Blob to bypass browser cross-origin redirect behavior
+  // 2. Local uploads & proxy downloads via fetch -> Blob stream
   try {
-    const response = await fetch(url, { mode: "cors" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const targetApiUrl = url.startsWith("/uploads/") || url.startsWith("/api/")
+      ? `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`
+      : url;
+
+    const response = await fetch(targetApiUrl);
+    if (!response.ok) throw new Error(`HTTP error ${response.status}`);
 
     const blob = await response.blob();
     const blobUrl = URL.createObjectURL(blob);
+
     const a = document.createElement("a");
     a.href = blobUrl;
     a.download = filename;
+    a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(blobUrl);
+      } catch (e) {}
+    }, 30000);
+    return;
   } catch (err) {
-    // 4. If direct fetch fails (e.g. CORS restrictions on external server), use backend proxy
+    console.warn("Direct blob download failed, attempting fallback:", err);
+    // Fallback: direct proxy link trigger
     try {
       const proxyUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
       const a = document.createElement("a");
       a.href = proxyUrl;
       a.download = filename;
+      a.style.display = "none";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     } catch (fallbackErr) {
-      // 5. Final fallback in new window
       window.open(url, "_blank");
     }
   }
