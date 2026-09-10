@@ -376,30 +376,95 @@ export async function getDocs(queryObj: any) {
 
 export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {
   const colName = typeof queryObj === 'string' ? queryObj : queryObj.colName;
+  let isMounted = true;
   
   // Initial fetch
-  getDocs(queryObj).then(onNext).catch((e) => {
-    if (onError) onError(e);
+  getDocs(queryObj).then((snap) => {
+    if (isMounted) onNext(snap);
+  }).catch((e) => {
+    if (isMounted && onError) onError(e);
   });
 
-  // Realtime subscription - make channel name unique to avoid reusing the same channel object
+  // Realtime subscription
   const uniqueChannelName = `public:${colName}:${Math.random().toString(36).substring(2, 10)}`;
   let fetchTimeout: any = null;
   const channel = supabase.channel(uniqueChannelName)
     .on('postgres_changes', { event: '*', schema: 'public', table: colName }, () => {
-      // Debounce re-fetch to prevent flooding when handling large payloads or multiple concurrent changes
+      if (!isMounted) return;
       if (fetchTimeout) clearTimeout(fetchTimeout);
       fetchTimeout = setTimeout(() => {
-        getDocs(queryObj).then(onNext).catch((e) => {
-          if (onError) onError(e);
+        if (!isMounted) return;
+        getDocs(queryObj).then((snap) => {
+          if (isMounted) onNext(snap);
+        }).catch((e) => {
+          if (isMounted && onError) onError(e);
         });
       }, 50);
     })
     .subscribe();
 
+  // Robust polling fallback to ensure 100% reliable state even if Realtime websocket is blocked or drops
+  const pollIntervalMs = colName === "signals" ? 300 : (colName === "voice_users" || colName === "presence") ? 1000 : 2500;
+  const pollTimer = setInterval(() => {
+    if (!isMounted) return;
+    getDocs(queryObj).then((snap) => {
+      if (isMounted) onNext(snap);
+    }).catch(() => {});
+  }, pollIntervalMs);
+
   return () => {
+    isMounted = false;
+    clearInterval(pollTimer);
     if (fetchTimeout) clearTimeout(fetchTimeout);
     supabase.removeChannel(channel);
+  };
+}
+
+// Global Supabase Realtime Broadcast Channel for zero-latency peer-to-peer WebRTC signals
+let globalSignalChannel: any = null;
+const broadcastListeners = new Set<(signal: any) => void>();
+
+export function getOrCreateSignalChannel() {
+  if (!globalSignalChannel) {
+    globalSignalChannel = supabase.channel("webrtc-voice-broadcast-room", {
+      config: { broadcast: { self: false } },
+    });
+    globalSignalChannel
+      .on("broadcast", { event: "webrtc_signal" }, ({ payload }: { payload: any }) => {
+        broadcastListeners.forEach((listener) => {
+          try {
+            listener(payload);
+          } catch (e) {
+            console.warn("Broadcast listener note:", e);
+          }
+        });
+      })
+      .subscribe();
+  }
+  return globalSignalChannel;
+}
+
+export function sendBroadcastSignal(payload: { uid: string; targetUid: string; type: string; sdp?: string; timestamp: number }) {
+  try {
+    const ch = getOrCreateSignalChannel();
+    ch.send({
+      type: "broadcast",
+      event: "webrtc_signal",
+      payload,
+    }).catch(() => {});
+  } catch (err) {}
+}
+
+export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
+  getOrCreateSignalChannel();
+  const handler = (payload: any) => {
+    if (payload && (payload.targetUid === myUid || payload.targetUid === "all")) {
+      onSignal(payload);
+    }
+  };
+  broadcastListeners.add(handler);
+  return () => {
+    broadcastListeners.delete(handler);
   };
 }
 

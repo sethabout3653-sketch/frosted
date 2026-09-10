@@ -38,6 +38,8 @@ import {
   addDoc,
   updateDoc,
   db,
+  sendBroadcastSignal,
+  subscribeBroadcastSignals,
 } from "../supabase-adapter";
 import { ChatProfile, VoiceSignal } from "../types";
 import { SmartVoiceDetector } from "../utils/audioVAD";
@@ -270,7 +272,12 @@ export default function VoiceChannel({
         hasAudio: isScreenAudioOn,
       };
     }
-    const remoteSharer = activeParticipants.find((p) => p.isScreenSharing);
+    const remoteSharer = activeParticipants.find(
+      (p) =>
+        p.isScreenSharing ||
+        (remoteScreenStreamsRef.current[p.uid] &&
+          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live"))
+    );
     if (remoteSharer) {
       return {
         uid: remoteSharer.uid,
@@ -280,7 +287,7 @@ export default function VoiceChannel({
       };
     }
     return null;
-  }, [isScreenSharing, profile.uid, profile.username, isScreenAudioOn, activeParticipants]);
+  }, [isScreenSharing, profile.uid, profile.username, isScreenAudioOn, activeParticipants, trackTrigger]);
 
   // Fullscreen user video state and controls
   const [fullscreenUid, setFullscreenUid] = useState<string | null>(null);
@@ -829,19 +836,24 @@ export default function VoiceChannel({
   const sendSignal = useCallback(
     async (
       targetUid: string,
-      type: "offer" | "answer" | "candidate",
+      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped",
       data: string
     ) => {
+      const payload = {
+        uid: profile.uid,
+        targetUid,
+        type,
+        sdp: data,
+        timestamp: Date.now(),
+      };
+      // 1. Instant delivery via Supabase Realtime Broadcast
+      sendBroadcastSignal(payload);
+
+      // 2. Persistent fallback via database table
       try {
-        await addDoc(collection(db, "signals"), {
-          uid: profile.uid,
-          targetUid,
-          type,
-          sdp: data,
-          timestamp: Date.now(),
-        });
+        await addDoc(collection(db, "signals"), payload);
       } catch (err) {
-        console.warn("Error sending WebRTC signal:", err);
+        // Silently handled by broadcast
       }
     },
     [profile.uid]
@@ -1102,18 +1114,17 @@ export default function VoiceChannel({
 
   const handleSignal = useCallback(
     async (signal: VoiceSignal, micStream: MediaStream) => {
-      if (signal.id && processedSignalsRef.current.has(signal.id)) {
+      const sigKey = signal.id || `${signal.uid}_${signal.type}_${signal.timestamp || ""}_${(signal.sdp || "").slice(0, 30)}`;
+      if (processedSignalsRef.current.has(sigKey)) {
         return;
       }
-      if (signal.id) {
-        processedSignalsRef.current.add(signal.id);
-        if (processedSignalsRef.current.size > 200) {
-          const first = processedSignalsRef.current.values().next().value;
-          if (first) processedSignalsRef.current.delete(first);
-        }
+      processedSignalsRef.current.add(sigKey);
+      if (processedSignalsRef.current.size > 300) {
+        const first = processedSignalsRef.current.values().next().value;
+        if (first) processedSignalsRef.current.delete(first);
       }
 
-      if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 10000) {
+      if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 15000) {
         return;
       }
       const partnerUid = signal.uid;
@@ -1182,25 +1193,35 @@ export default function VoiceChannel({
             iceCandidateQueuesRef.current[partnerUid].push(candidateData);
           }
         } else if (signal.type === "screenshare_started") {
-          setTrackTrigger((v) => v + 1);
           const pc = peersRef.current[partnerUid];
           if (pc) {
             const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
-            if (videoTransceivers.length >= 2) {
-              const scrTrack = videoTransceivers[1].receiver.track;
-              if (scrTrack) {
-                if (!remoteScreenStreamsRef.current[partnerUid]) {
-                  remoteScreenStreamsRef.current[partnerUid] = new MediaStream();
-                }
-                const s = remoteScreenStreamsRef.current[partnerUid];
-                if (!s.getTracks().some((t) => t.id === scrTrack.id)) {
-                  s.getVideoTracks().forEach((t) => s.removeTrack(t));
-                  s.addTrack(scrTrack);
-                }
+            const scrTrack = videoTransceivers.length >= 2 ? videoTransceivers[1].receiver.track : videoTransceivers[0]?.receiver?.track;
+            if (scrTrack) {
+              if (!remoteScreenStreamsRef.current[partnerUid]) {
+                remoteScreenStreamsRef.current[partnerUid] = new MediaStream();
+              }
+              const s = remoteScreenStreamsRef.current[partnerUid];
+              if (!s.getTracks().some((t) => t.id === scrTrack.id)) {
+                s.getVideoTracks().forEach((t) => s.removeTrack(t));
+                s.addTrack(scrTrack);
+              }
+              const screenEl = remoteScreenVideoRefs.current[partnerUid];
+              if (screenEl) {
+                screenEl.srcObject = s;
+                screenEl.play().catch(() => {});
               }
             }
           }
+          setTrackTrigger((v) => v + 1);
         } else if (signal.type === "screenshare_stopped") {
+          if (remoteScreenStreamsRef.current[partnerUid]) {
+            remoteScreenStreamsRef.current[partnerUid].getTracks().forEach((t) => t.stop());
+            delete remoteScreenStreamsRef.current[partnerUid];
+          }
+          if (remoteScreenVideoRefs.current[partnerUid]) {
+            remoteScreenVideoRefs.current[partnerUid]!.srcObject = null;
+          }
           setTrackTrigger((v) => v + 1);
         }
       } catch (err: any) {
@@ -1217,6 +1238,7 @@ export default function VoiceChannel({
   useEffect(() => {
     isMountedRef.current = true;
     let unsubscribeSignals: () => void;
+    let unsubscribeBroadcast: () => void;
     let unsubscribeUsers: () => void;
     sessionStartTimeRef.current = Date.now();
 
@@ -1346,7 +1368,21 @@ export default function VoiceChannel({
         );
         unsubscribeUsers = unsubUsers;
 
-        // Real-time listener for WebRTC signals directed to current user
+        // 1. Instant Real-time listener via Supabase Realtime Broadcast
+        unsubscribeBroadcast = subscribeBroadcastSignals(profile.uid, async (signalData: any) => {
+          if (!isMountedRef.current || !localStreamRef.current) return;
+          const signal: VoiceSignal = {
+            id: `broadcast_${signalData.uid}_${signalData.type}_${signalData.timestamp || Date.now()}`,
+            uid: signalData.uid,
+            targetUid: signalData.targetUid,
+            type: signalData.type,
+            sdp: signalData.sdp || "",
+            timestamp: signalData.timestamp || Date.now(),
+          };
+          await handleSignal(signal, localStreamRef.current);
+        });
+
+        // 2. Real-time listener for WebRTC signals directed to current user via database
         const qSignals = query(
           collection(db, "signals"),
           where("targetUid", "==", profile.uid)
@@ -1418,6 +1454,7 @@ export default function VoiceChannel({
         isMuted: false,
       }).catch(() => {});
 
+      if (unsubscribeBroadcast) unsubscribeBroadcast();
       if (unsubscribeSignals) unsubscribeSignals();
       if (unsubscribeUsers) unsubscribeUsers();
     };
@@ -1660,6 +1697,20 @@ export default function VoiceChannel({
               await sender.replaceTrack(dummyTrack);
             } catch (e) {}
           }
+          if (pc.signalingState === "stable") {
+            try {
+              const offer = await pc.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true,
+              });
+              const highQualityOffer = new RTCSessionDescription({
+                type: offer.type,
+                sdp: optimizeAudioSdp(offer.sdp || ""),
+              });
+              await pc.setLocalDescription(highQualityOffer);
+              sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
+            } catch (renegErr) {}
+          }
           sendSignal(pUid, "screenshare_stopped", "");
         }
       })
@@ -1846,6 +1897,21 @@ export default function VoiceChannel({
                 const newSender = pc.addTrack(screenVideoTrack, displayStream);
                 screenSendersRef.current[pUid] = newSender;
               } catch (e) {}
+            }
+
+            if (pc.signalingState === "stable") {
+              try {
+                const offer = await pc.createOffer({
+                  offerToReceiveAudio: true,
+                  offerToReceiveVideo: true,
+                });
+                const highQualityOffer = new RTCSessionDescription({
+                  type: offer.type,
+                  sdp: optimizeAudioSdp(offer.sdp || ""),
+                });
+                await pc.setLocalDescription(highQualityOffer);
+                sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
+              } catch (renegErr) {}
             }
 
             // Send custom signaling message to notify peer that screen share started
