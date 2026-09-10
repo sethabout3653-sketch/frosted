@@ -264,7 +264,7 @@ export default function VoiceChannel({
 
   // Active Screen Share descriptor (local or remote)
   const activeScreenShare = useMemo(() => {
-    if (isScreenSharing) {
+    if (isScreenSharing && screenStreamRef.current && screenStreamRef.current.getVideoTracks().some((t) => t.readyState === "live")) {
       return {
         uid: profile.uid,
         username: profile.username,
@@ -273,10 +273,7 @@ export default function VoiceChannel({
       };
     }
     const remoteSharer = activeParticipants.find(
-      (p) =>
-        p.isScreenSharing ||
-        (remoteScreenStreamsRef.current[p.uid] &&
-          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live"))
+      (p) => p.isScreenSharing === true
     );
     if (remoteSharer) {
       return {
@@ -361,6 +358,19 @@ export default function VoiceChannel({
       setShowFullscreenControls(false);
     }, 3500);
   }, []);
+
+  // Auto exit fullscreen screen share if presenter stops sharing
+  useEffect(() => {
+    if (fullscreenUid && fullscreenType === "screen") {
+      const isLocal = fullscreenUid === profile.uid;
+      const isStillSharing = isLocal
+        ? isScreenSharing
+        : activeParticipants.some((p) => p.uid === fullscreenUid && p.isScreenSharing);
+      if (!isStillSharing) {
+        exitFullscreen();
+      }
+    }
+  }, [fullscreenUid, fullscreenType, isScreenSharing, activeParticipants, profile.uid, exitFullscreen]);
 
   // Re-bind video stream in fullscreen when track or fullscreen target updates
   useEffect(() => {
@@ -1328,6 +1338,17 @@ export default function VoiceChannel({
                   localStreamRef.current
                 ) {
                   initiateCall(u.uid, localStreamRef.current);
+                }
+              }
+            });
+
+            // Clean up screen stream for participants not sharing screen
+            users.forEach((u) => {
+              if (!u.isScreenSharing && remoteScreenStreamsRef.current[u.uid]) {
+                remoteScreenStreamsRef.current[u.uid].getTracks().forEach((t) => t.stop());
+                delete remoteScreenStreamsRef.current[u.uid];
+                if (remoteScreenVideoRefs.current[u.uid]) {
+                  remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
                 }
               }
             });
