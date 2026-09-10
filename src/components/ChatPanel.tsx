@@ -53,13 +53,16 @@ interface MemberUser {
   inVoice?: boolean;
 }
 
+let globalMessagesCache: ChatMessage[] = [];
+let globalMessagesLoaded = false;
+
 export default function ChatPanel({
   profile,
   activeChannel = "general",
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(globalMessagesCache);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
@@ -77,7 +80,7 @@ export default function ChatPanel({
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
   const [isLocalTyping, setIsLocalTyping] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(!globalMessagesLoaded);
   const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -280,7 +283,9 @@ export default function ChatPanel({
 
   // Real-time message subscription with instant local rendering
   useEffect(() => {
-    setIsLoadingMessages(true);
+    if (!globalMessagesLoaded) {
+      setIsLoadingMessages(true);
+    }
     const q = query(
       collection(db, "messages"),
       orderBy("timestamp", "desc")
@@ -294,7 +299,6 @@ export default function ChatPanel({
           newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
         });
         const reversed = newMessages.reverse();
-
         setMessages((prev) => {
           // Keep any local optimistic messages that haven't arrived in the snapshot yet
           const pending = prev.filter(
@@ -307,7 +311,10 @@ export default function ChatPanel({
                   (sm.text === m.text || sm.gif === m.gif || sm.attachment === m.attachment)
               )
           );
-          return [...reversed, ...pending];
+          const finalMessages = [...reversed, ...pending];
+          globalMessagesCache = finalMessages;
+          globalMessagesLoaded = true;
+          return finalMessages;
         });
         setIsLoadingMessages(false);
         window.setTimeout(() => scrollToBottom(), 50);
@@ -382,12 +389,13 @@ export default function ChatPanel({
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
-    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     const now = Date.now();
 
     // Optimistically show message immediately on sender's screen (0ms latency)
     const optimisticMsg: ChatMessage = {
-      id: tempId,
+      id: msgId,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
@@ -435,22 +443,23 @@ export default function ChatPanel({
         if (currentSize) msgData.attachmentSize = currentSize;
       }
 
-      await addDoc(collection(db, "messages"), msgData);
+      await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
       // Revert optimistic message if writing failed
-      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setMessages((prev) => prev.filter((m) => m.id !== msgId));
       handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };
 
   const handleSendGif = async (gifUrl: string) => {
     if (!gifUrl) return;
-    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     const now = Date.now();
 
     // Optimistically show GIF immediately (0ms latency)
     const optimisticMsg: ChatMessage = {
-      id: tempId,
+      id: msgId,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
@@ -471,9 +480,9 @@ export default function ChatPanel({
         timestamp: now,
       };
 
-      await addDoc(collection(db, "messages"), msgData);
+      await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
-      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setMessages((prev) => prev.filter((m) => m.id !== msgId));
       handleFirestoreError(error, OperationType.CREATE, "messages");
     }
   };

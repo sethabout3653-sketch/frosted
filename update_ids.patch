@@ -1,0 +1,55 @@
+--- src/components/ChatPanel.tsx
++++ src/components/ChatPanel.tsx
+@@ -385,8 +385,8 @@
+     const currentSize = attachmentSize;
+     if (!currentText && !currentAttachment) return;
+ 
+-    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
++    const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+     const now = Date.now();
+ 
+     // Optimistically show message immediately on sender's screen (0ms latency)
+     const optimisticMsg: ChatMessage = {
+-      id: tempId,
++      id: msgId,
+       uid: profile.uid,
+       username: profile.username,
+@@ -431,8 +431,8 @@
+         if (currentSize) msgData.attachmentSize = currentSize;
+       }
+ 
+-      await addDoc(collection(db, "messages"), msgData);
++      await setDoc(doc(db, "messages", msgId), msgData);
+     } catch (error) {
+       // Revert optimistic message if writing failed
+-      setMessages((prev) => prev.filter((m) => m.id !== tempId));
++      setMessages((prev) => prev.filter((m) => m.id !== msgId));
+       handleFirestoreError(error, OperationType.CREATE, "messages");
+     }
+   };
+ 
+   const handleSendGif = async (gifUrl: string) => {
+     if (!gifUrl) return;
+ 
+-    const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
++    const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+     const now = Date.now();
+ 
+     // Optimistically show GIF immediately (0ms latency)
+     const optimisticMsg: ChatMessage = {
+-      id: tempId,
++      id: msgId,
+       uid: profile.uid,
+       username: profile.username,
+@@ -453,8 +453,8 @@
+         timestamp: now,
+       };
+ 
+-      await addDoc(collection(db, "messages"), msgData);
++      await setDoc(doc(db, "messages", msgId), msgData);
+     } catch (error) {
+-      setMessages((prev) => prev.filter((m) => m.id !== tempId));
++      setMessages((prev) => prev.filter((m) => m.id !== msgId));
+       handleFirestoreError(error, OperationType.CREATE, "messages");
+     }
+   };

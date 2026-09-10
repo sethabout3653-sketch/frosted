@@ -343,11 +343,12 @@ export async function getDocs(queryObj: any) {
       }
     }
     const docs = data || [];
+    const pk = getPk(colName);
     return {
-      docs: docs.map((d: any) => ({ id: d.uid || d.id, data: () => d })),
+      docs: docs.map((d: any) => ({ id: d[pk], data: () => d })),
       empty: docs.length === 0,
       size: docs.length,
-      forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d.uid || d.id, data: () => d }))
+      forEach: (cb: any) => docs.forEach((d: any) => cb({ id: d[pk], data: () => d }))
     };
   } catch (err) {
     return {
