@@ -135,7 +135,13 @@ export class SmartVoiceDetector {
       (snr > 1.8 && maxVoicePeak >= 16 && spectralFlatness < 0.75)
     );
 
-    const isVoiceInstant = isSpeech || isWhisper;
+    // C. Music, instruments, singing, soundboards, laughter & intentional audio
+    const isIntentionalSound = !isFlatStatic && !isRumbleOrHiss && (
+      (avgVoiceEnergy > this.noiseFloor * 1.25 && maxVoicePeak >= 20) ||
+      maxVoicePeak >= 28
+    );
+
+    const isVoiceInstant = isSpeech || isWhisper || isIntentionalSound;
 
     if (isVoiceInstant) {
       this.speechCounter = Math.min(6, this.speechCounter + 1);

@@ -16,6 +16,7 @@ import {
   Sparkles,
   Loader2,
   Maximize2,
+  Minimize2,
 } from "lucide-react";
 import {
   collection,
@@ -67,13 +68,27 @@ const ICE_SERVERS: RTCConfiguration = {
 // - useinbandfec=1 for forward error correction
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith("a=fmtp:") && lines[i].includes("opus")) {
-      const base = lines[i].split(";")[0];
-      lines[i] = `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1;usedtx=0`;
+  let opusPayloadType: string | null = null;
+  for (const line of lines) {
+    const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000\/2/i);
+    if (match) {
+      opusPayloadType = match[1];
+      break;
     }
   }
-  return lines.join("\r\n");
+
+  return lines
+    .map((line) => {
+      if (
+        (opusPayloadType && line.startsWith(`a=fmtp:${opusPayloadType}`)) ||
+        (line.startsWith("a=fmtp:") && line.toLowerCase().includes("opus"))
+      ) {
+        const base = line.split(";")[0];
+        return `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1;usedtx=0`;
+      }
+      return line;
+    })
+    .join("\r\n");
 }
 
 export default function VoiceChannel({
@@ -192,22 +207,124 @@ export default function VoiceChannel({
       });
   }, [participants, currentTime]);
 
-  // Automatically acquire studio microphone stream with zero AGC limiters, zero noise suppression filters, and zero compression
+  // Fullscreen user video state and controls
+  const [fullscreenUid, setFullscreenUid] = useState<string | null>(null);
+  const [fullscreenFit, setFullscreenFit] = useState<"contain" | "cover">("contain");
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
+  const [showFullscreenControls, setShowFullscreenControls] = useState<boolean>(true);
+  const fullscreenControlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const exitFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    setFullscreenUid(null);
+    setIsNativeFullscreen(false);
+  }, []);
+
+  const toggleNativeFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement) {
+        if (fullscreenContainerRef.current?.requestFullscreen) {
+          await fullscreenContainerRef.current.requestFullscreen();
+          setIsNativeFullscreen(true);
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+          setIsNativeFullscreen(false);
+        }
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle error:", err);
+    }
+  }, []);
+
+  // Keyboard shortcut (Escape to exit) and native fullscreenchange listener
+  useEffect(() => {
+    if (!fullscreenUid) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        exitFullscreen();
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setIsNativeFullscreen(false);
+      } else {
+        setIsNativeFullscreen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, [fullscreenUid, exitFullscreen]);
+
+  // Handle controls auto-hiding when idle in fullscreen
+  const handleFullscreenMouseMove = useCallback(() => {
+    setShowFullscreenControls(true);
+    if (fullscreenControlsTimeoutRef.current) {
+      clearTimeout(fullscreenControlsTimeoutRef.current);
+    }
+    fullscreenControlsTimeoutRef.current = setTimeout(() => {
+      setShowFullscreenControls(false);
+    }, 3500);
+  }, []);
+
+  // Re-bind video stream in fullscreen when track or fullscreen target updates
+  useEffect(() => {
+    if (!fullscreenUid) return;
+    const isLocal = fullscreenUid === profile.uid;
+    const stream = isLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
+    if (fullscreenVideoRef.current && stream) {
+      if (fullscreenVideoRef.current.srcObject !== stream) {
+        fullscreenVideoRef.current.srcObject = stream;
+      }
+      fullscreenVideoRef.current.play().catch(() => {});
+    }
+  }, [fullscreenUid, trackTrigger, isVideoOn, profile.uid]);
+
+  // List of active participants with video on (for quick switching in fullscreen)
+  const participantsWithVideo = useMemo(() => {
+    const list: { uid: string; username: string; isLocal: boolean }[] = [];
+    if (isVideoOn) {
+      list.push({ uid: profile.uid, username: `${profile.username} (You)`, isLocal: true });
+    }
+    activeParticipants.forEach((p) => {
+      if (p.isVideoOn) {
+        list.push({ uid: p.uid, username: p.username, isLocal: false });
+      }
+    });
+    return list;
+  }, [isVideoOn, profile.uid, profile.username, activeParticipants]);
+
+  // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
+  // while keeping noise suppression & AGC disabled so ANY sound (music, instruments, soundboards, whispers) is fully allowed
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false, // Disables browser noise gate and suppression
-          autoGainControl: false,  // Disables browser hardware/software volume limiter and AGC compression
+          echoCancellation: true,  // Hardware & OS Acoustic Echo Cancellation: eliminates speaker feedback echo
+          noiseSuppression: false, // Disables browser noise gate so ANY sound (music, instruments, soundboards) passes through
+          autoGainControl: false,  // Disables volume pumping/ducking so dynamics are preserved
           channelCount: { ideal: 2 },
           sampleRate: { ideal: 48000 },
-          // Chromium non-standard flags to ensure raw uncompressed audio
-          googAutoGainControl: false,
-          googAutoGainControl2: false,
+          // High-fidelity Chromium audio flags
+          googEchoCancellation: true,
+          googEchoCancellation2: true,
+          googDAEchoCancellation: true,
           googNoiseSuppression: false,
           googHighpassFilter: false,
           googTypingNoiseDetection: false,
+          googAutoGainControl: false,
           googAudioMirroring: false,
         } as MediaTrackConstraints,
         video: false,
@@ -217,22 +334,24 @@ export default function VoiceChannel({
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: {
-            echoCancellation: false,
+            echoCancellation: true,
             noiseSuppression: false,
             autoGainControl: false,
           },
           video: false,
-         });
+        });
       } catch (err2) {
         return await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: true,
+          },
           video: false,
         });
       }
     }
   }, []);
 
-  // Connect microphone to live Web Audio pipeline with 170% gain boost, zero limiter, zero compressor, and VAD
+  // Connect microphone to live Web Audio pipeline for speech/sound analysis & visual VAD
   const setupAudioPipeline = useCallback(
     async (sourceStream: MediaStream): Promise<MediaStream> => {
       if (animFrameRef.current) {
@@ -240,7 +359,9 @@ export default function VoiceChannel({
         animFrameRef.current = null;
       }
 
+      // Preserve native getUserMedia stream directly for WebRTC so AEC stays linked to speaker output
       rawStreamRef.current = sourceStream;
+      localStreamRef.current = sourceStream;
 
       try {
         const AudioContextClass =
@@ -248,7 +369,6 @@ export default function VoiceChannel({
           (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
 
         if (!AudioContextClass) {
-          localStreamRef.current = sourceStream;
           return sourceStream;
         }
 
@@ -262,32 +382,20 @@ export default function VoiceChannel({
 
         const source = ctx.createMediaStreamSource(sourceStream);
 
-        // 1. Direct Gain Node (170% / 1.7x boost) - Pure uncompressed, unthrottled audio with zero limiters
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.7;
-        gainNodeRef.current = gainNode;
-
-        // 2. MediaStreamDestination for WebRTC peer transmission
-        const dest = ctx.createMediaStreamDestination();
-
-        // 3. Analyser for intelligent Voice Activity Detection (VAD)
+        // Analyser for real-time Voice & Sound Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
-        // Route: Source -> 1.7x Gain -> Destination (WebRTC) & Analyser (UI)
-        source.connect(gainNode);
-        gainNode.connect(dest);
-        gainNode.connect(analyser);
-
+        source.connect(analyser);
         analyserRef.current = analyser;
 
-        // Monitor real-time volume levels & speech activity for local user and remote participants using AI VAD
+        // Monitor real-time volume levels & speech/sound activity for local user and remote participants
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const updateLevel = () => {
           if (!isMountedRef.current) return;
 
-          // Local microphone: AI voice vs noise detection
+          // Local microphone: sound & voice detection
           analyser.getByteFrequencyData(dataArray);
           const vadRes = localVadRef.current.analyze(dataArray, ctx.sampleRate);
           setAudioLevel(vadRes.energy);
@@ -321,11 +429,9 @@ export default function VoiceChannel({
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
 
-        localStreamRef.current = dest.stream;
-        return dest.stream;
+        return sourceStream;
       } catch (err) {
         console.warn("AudioContext setup fallback to raw stream:", err);
-        localStreamRef.current = sourceStream;
         return sourceStream;
       }
     },
@@ -1311,7 +1417,16 @@ export default function VoiceChannel({
 
         {/* Video or Avatar Display */}
         {anyVideoOn ? (
-          <div className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center">
+          <div
+            className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center group"
+            onDoubleClick={() => {
+              if (activeRemoteWithVideo) {
+                setFullscreenUid(activeRemoteWithVideo.uid);
+              } else if (isVideoOn) {
+                setFullscreenUid(profile.uid);
+              }
+            }}
+          >
             {activeRemoteWithVideo ? (
               <>
                 <video
@@ -1331,8 +1446,28 @@ export default function VoiceChannel({
                 <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white truncate max-w-[140px]">
                   {activeRemoteWithVideo.username}
                 </div>
+
+                {/* PiP Fullscreen Button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFullscreenUid(activeRemoteWithVideo.uid);
+                  }}
+                  className="absolute top-2 left-2 p-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white/80 hover:text-white backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shadow z-10"
+                  title={`Full screen ${activeRemoteWithVideo.username}'s video`}
+                >
+                  <Maximize2 size={12} />
+                </button>
+
                 {isVideoOn && (
-                  <div className="absolute top-2 right-2 w-20 aspect-video rounded-md overflow-hidden border border-neutral-700 shadow-md bg-black">
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFullscreenUid(profile.uid);
+                    }}
+                    className="absolute top-2 right-2 w-20 aspect-video rounded-md overflow-hidden border border-neutral-700 shadow-md bg-black cursor-pointer group/local"
+                    title="Click to full screen your video"
+                  >
                     <video
                       ref={(el) => {
                         localVideoRef.current = el;
@@ -1346,6 +1481,9 @@ export default function VoiceChannel({
                       muted
                       className="w-full h-full object-cover transform -scale-x-100"
                     />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/local:opacity-100 flex items-center justify-center transition-opacity">
+                      <Maximize2 size={10} className="text-white" />
+                    </div>
                   </div>
                 )}
               </>
@@ -1367,6 +1505,18 @@ export default function VoiceChannel({
                 <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white">
                   You
                 </div>
+
+                {/* PiP Fullscreen Button for Local User */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFullscreenUid(profile.uid);
+                  }}
+                  className="absolute top-2 left-2 p-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white/80 hover:text-white backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shadow z-10"
+                  title="Full screen your video"
+                >
+                  <Maximize2 size={12} />
+                </button>
               </>
             )}
           </div>
@@ -1559,7 +1709,22 @@ export default function VoiceChannel({
                   ? `0 0 24px ${localColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
+              onDoubleClick={() => isVideoOn && setFullscreenUid(profile.uid)}
             >
+              {/* Fullscreen Video Button */}
+              {isVideoOn && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFullscreenUid(profile.uid);
+                  }}
+                  className="absolute top-3 right-3 p-2 rounded-xl bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  title="Full screen your video"
+                >
+                  <Maximize2 size={15} />
+                </button>
+              )}
+
               {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
               {(isMuted || isLocalSpeaking) && (
                 <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
@@ -1687,7 +1852,22 @@ export default function VoiceChannel({
                   ? `0 0 24px ${pColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
+              onDoubleClick={() => p.isVideoOn && setFullscreenUid(p.uid)}
             >
+              {/* Fullscreen Video Button */}
+              {p.isVideoOn && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFullscreenUid(p.uid);
+                  }}
+                  className="absolute top-3 right-3 p-2 rounded-xl bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  title={`Full screen ${p.username}'s video`}
+                >
+                  <Maximize2 size={15} />
+                </button>
+              )}
+
               {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
               {(p.isMuted || isSpeaking) && (
                 <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
@@ -1852,6 +2032,300 @@ export default function VoiceChannel({
       </div>
     </div>
     )}
+
+    {/* Fullscreen User Video Overlay */}
+    {fullscreenUid && (() => {
+      const isFullscreenLocal = fullscreenUid === profile.uid;
+      const fullscreenParticipant = isFullscreenLocal
+        ? null
+        : activeParticipants.find((p) => p.uid === fullscreenUid);
+
+      const targetUsername = isFullscreenLocal
+        ? `${profile.username} (You)`
+        : fullscreenParticipant?.username || "Participant";
+      const targetPhoto = isFullscreenLocal
+        ? profile.photoURL
+        : fullscreenParticipant?.photoURL;
+      const targetIsMuted = isFullscreenLocal
+        ? isMuted
+        : !!fullscreenParticipant?.isMuted;
+      const targetIsSpeaking = isFullscreenLocal
+        ? isLocalSpeaking
+        : !!remoteSpeaking[fullscreenUid] && !fullscreenParticipant?.isMuted;
+      const targetIsVideo = isFullscreenLocal
+        ? isVideoOn
+        : !!fullscreenParticipant?.isVideoOn;
+      const targetColor = userColors[fullscreenUid] || {
+        hex: "#5865F2",
+        rgb: [88, 101, 242] as [number, number, number],
+        glow: "rgba(88, 101, 242, 0.45)",
+        border: "rgba(88, 101, 242, 0.85)",
+        ring: "rgba(88, 101, 242, 0.35)",
+      };
+
+      return (
+        <div
+          id="user-video-fullscreen-overlay"
+          ref={fullscreenContainerRef}
+          onMouseMove={handleFullscreenMouseMove}
+          className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center select-none overflow-hidden animate-in fade-in duration-200"
+        >
+          {/* Top Bar Floating Controls */}
+          <div
+            className={`absolute top-0 inset-x-0 p-4 z-40 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 pointer-events-auto ${
+              showFullscreenControls ? "opacity-100" : "opacity-0 pointer-events-none"
+            }`}
+          >
+            {/* Participant Profile info */}
+            <div className="flex items-center gap-3 bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 shadow-lg">
+              <div className="relative">
+                {targetPhoto ? (
+                  <img
+                    src={targetPhoto}
+                    alt={targetUsername}
+                    className="w-7 h-7 rounded-full object-cover"
+                  />
+                ) : (
+                  <div
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white"
+                    style={{ backgroundColor: targetColor.hex }}
+                  >
+                    {targetUsername.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                {targetIsSpeaking && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border border-black animate-pulse" />
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-white truncate max-w-[200px]">
+                  {targetUsername}
+                </span>
+                {targetIsMuted ? (
+                  <span className="text-[10px] bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded font-bold">
+                    MUTED
+                  </span>
+                ) : targetIsSpeaking ? (
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                    <Radio size={10} className="animate-pulse" /> SPEAKING
+                  </span>
+                ) : null}
+                {targetIsVideo && (
+                  <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded font-bold">
+                    LIVE
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Right Side Buttons */}
+            <div className="flex items-center gap-2">
+              {/* Switcher pills for other active cameras */}
+              {participantsWithVideo.length > 1 && (
+                <div className="hidden md:flex items-center gap-1.5 bg-black/60 backdrop-blur-md px-2 py-1 rounded-full border border-white/10">
+                  <span className="text-[11px] text-neutral-400 font-medium px-1.5">Switch:</span>
+                  {participantsWithVideo.map((item) => (
+                    <button
+                      key={item.uid}
+                      onClick={() => setFullscreenUid(item.uid)}
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-all cursor-pointer ${
+                        fullscreenUid === item.uid
+                          ? "bg-white text-black font-semibold shadow"
+                          : "text-neutral-300 hover:text-white hover:bg-white/10"
+                      }`}
+                    >
+                      {item.username}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Video Fit button */}
+              {targetIsVideo && (
+                <button
+                  onClick={() => setFullscreenFit((f) => (f === "contain" ? "cover" : "contain"))}
+                  className="px-3 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/10 text-neutral-200 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer shadow-lg"
+                  title={fullscreenFit === "contain" ? "Fill screen (crop edges)" : "Fit to screen (show full frame)"}
+                >
+                  {fullscreenFit === "contain" ? "Fill Screen" : "Fit to Screen"}
+                </button>
+              )}
+
+              {/* Browser Fullscreen button */}
+              <button
+                onClick={toggleNativeFullscreen}
+                className="p-2 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/10 text-neutral-200 hover:text-white transition-colors cursor-pointer shadow-lg"
+                title={isNativeFullscreen ? "Exit window fullscreen" : "Toggle window fullscreen"}
+              >
+                {isNativeFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              </button>
+
+              {/* Exit button */}
+              <button
+                onClick={exitFullscreen}
+                className="p-2 rounded-full bg-black/60 hover:bg-red-500/80 backdrop-blur-md border border-white/10 text-neutral-200 hover:text-white transition-colors cursor-pointer shadow-lg"
+                title="Exit full screen (Esc)"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Video or Avatar Display Area */}
+          <div
+            className="relative w-full h-full flex-1 flex items-center justify-center overflow-hidden bg-black"
+            onDoubleClick={() => setFullscreenFit((f) => (f === "contain" ? "cover" : "contain"))}
+          >
+            {targetIsVideo ? (
+              <video
+                ref={(el) => {
+                  fullscreenVideoRef.current = el;
+                  const stream = isFullscreenLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
+                  if (el && stream && el.srcObject !== stream) {
+                    el.srcObject = stream;
+                    el.play().catch(() => {});
+                  }
+                }}
+                autoPlay
+                playsInline
+                muted={isFullscreenLocal}
+                className={`w-full h-full max-w-full max-h-full transition-all duration-150 cursor-pointer ${
+                  fullscreenFit === "cover" ? "object-cover" : "object-contain"
+                } ${isFullscreenLocal ? "transform -scale-x-100" : ""}`}
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-4 text-center px-4">
+                <div className="relative">
+                  {targetPhoto ? (
+                    <img
+                      src={targetPhoto}
+                      alt={targetUsername}
+                      className="w-28 h-28 rounded-full object-cover shadow-2xl border-4"
+                      style={{
+                        borderColor: targetIsSpeaking ? targetColor.border : "rgba(64,64,64,0.8)",
+                        boxShadow: targetIsSpeaking
+                          ? `0 0 0 6px ${targetColor.ring}, 0 0 24px ${targetColor.glow}`
+                          : undefined,
+                      }}
+                    />
+                  ) : (
+                    <div
+                      className="w-28 h-28 rounded-full border-4 flex items-center justify-center text-4xl font-bold text-white shadow-2xl"
+                      style={{
+                        backgroundColor: targetColor.hex + "22",
+                        borderColor: targetIsSpeaking ? targetColor.border : "rgba(64,64,64,0.8)",
+                        color: targetColor.hex,
+                        boxShadow: targetIsSpeaking
+                          ? `0 0 0 6px ${targetColor.ring}, 0 0 24px ${targetColor.glow}`
+                          : undefined,
+                      }}
+                    >
+                      {targetUsername.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  {targetIsMuted && (
+                    <div className="absolute -bottom-1 -right-1 bg-red-600 p-2 rounded-full text-white shadow-xl border-2 border-black">
+                      <MicOff size={18} />
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white">{targetUsername}</h3>
+                  <p className="text-sm text-neutral-400 mt-1">Camera is currently off</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Floating Control Dock */}
+          <div
+            className={`absolute bottom-0 inset-x-0 p-6 z-40 flex flex-col items-center gap-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent transition-opacity duration-300 pointer-events-auto ${
+              showFullscreenControls ? "opacity-100" : "opacity-0 pointer-events-none"
+            }`}
+          >
+            {/* Mobile quick switcher if more than 1 video feed */}
+            {participantsWithVideo.length > 1 && (
+              <div className="flex md:hidden items-center gap-1.5 bg-black/70 backdrop-blur-md p-1 rounded-full border border-white/10 max-w-full overflow-x-auto">
+                {participantsWithVideo.map((item) => (
+                  <button
+                    key={item.uid}
+                    onClick={() => setFullscreenUid(item.uid)}
+                    className={`text-xs px-2.5 py-1 rounded-full whitespace-nowrap transition-all cursor-pointer ${
+                      fullscreenUid === item.uid
+                        ? "bg-white text-black font-semibold shadow"
+                        : "text-neutral-300 hover:text-white hover:bg-white/10"
+                    }`}
+                  >
+                    {item.username}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 bg-[#111214]/90 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-neutral-800 shadow-2xl">
+              {/* Mic toggle */}
+              <button
+                onClick={toggleMute}
+                className={`p-3 rounded-xl transition-all cursor-pointer ${
+                  isMuted
+                    ? "bg-red-600/20 text-red-500 border border-red-800/80 hover:bg-red-600/30"
+                    : "bg-neutral-800 text-white hover:bg-neutral-700"
+                }`}
+                title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
+              >
+                {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
+
+              {/* Camera toggle */}
+              <button
+                onClick={toggleVideo}
+                disabled={isCameraLoading}
+                className={`p-3 rounded-xl transition-all cursor-pointer ${
+                  isCameraLoading
+                    ? "bg-neutral-800 text-neutral-400 cursor-wait"
+                    : isVideoOn
+                    ? "bg-white text-black font-bold shadow-lg"
+                    : "bg-neutral-800 text-white hover:bg-neutral-700"
+                }`}
+                title={isVideoOn ? "Turn Off Camera" : "Turn On Camera"}
+              >
+                {isCameraLoading ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : isVideoOn ? (
+                  <Video size={18} />
+                ) : (
+                  <VideoOff size={18} />
+                )}
+              </button>
+
+              <div className="h-6 w-px bg-neutral-700 mx-1" />
+
+              {/* Disconnect voice */}
+              <button
+                onClick={() => {
+                  exitFullscreen();
+                  handleLeave();
+                }}
+                className="p-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-lg transition-all cursor-pointer active:scale-95"
+                title="Disconnect from Voice"
+              >
+                <PhoneOff size={18} />
+              </button>
+
+              {/* Exit Fullscreen button */}
+              <button
+                onClick={exitFullscreen}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white transition-all text-xs font-semibold cursor-pointer"
+                title="Exit full screen (Esc)"
+              >
+                <Minimize2 size={16} />
+                <span className="hidden sm:inline">Exit Full Screen</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
   </>
   );
 }
