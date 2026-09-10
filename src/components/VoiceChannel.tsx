@@ -2058,9 +2058,9 @@ export default function VoiceChannel({
     <>
       {/* Hidden persistent audio playback elements for all remote peers (never unmounted on view mode toggle) */}
       <div className="hidden" aria-hidden="true">
-        {activeParticipants.map((p) => (
+        {activeParticipants.map((p, pIdx) => (
           <audio
-            key={`audio-playback-${p.uid}`}
+            key={`audio-playback-${p.uid || "peer"}-${pIdx}`}
             ref={(el) => {
               remoteAudioRefs.current[p.uid] = el;
               const remoteStream = remoteStreamsRef.current[p.uid];
@@ -2347,7 +2347,7 @@ export default function VoiceChannel({
                       transform: isLocalSpeaking && !isMuted ? "scale(1.06)" : "scale(1)",
                     }}
                   >
-                    {profile.username.charAt(0).toUpperCase()}
+                    {(profile?.username || "?").charAt(0).toUpperCase()}
                   </div>
                 )}
                 {isMuted && (
@@ -2361,11 +2361,11 @@ export default function VoiceChannel({
               </span>
             </div>
 
-            {activeParticipants.slice(0, 3).map((p) => {
+            {activeParticipants.slice(0, 3).map((p, pIdx) => {
               const isRemoteSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
               const pColor = userColors[p.uid] || { hex: "#5865F2", glow: "rgba(88,101,242,0.4)", border: "rgba(88,101,242,0.85)", ring: "rgba(88,101,242,0.3)" };
               return (
-                <div key={p.uid} className="flex flex-col items-center gap-1">
+                <div key={`${p.uid || "peer"}-${pIdx}`} className="flex flex-col items-center gap-1">
                   <div className="relative">
                     {p.photoURL ? (
                       <img
@@ -2389,7 +2389,7 @@ export default function VoiceChannel({
                           transform: isRemoteSpeaking ? "scale(1.06)" : "scale(1)",
                         }}
                       >
-                        {p.username.charAt(0).toUpperCase()}
+                        {(p.username || "?").charAt(0).toUpperCase()}
                       </div>
                     )}
                     {p.isMuted && (
@@ -2625,7 +2625,7 @@ export default function VoiceChannel({
                           transform: isLocalSpeaking && !isMuted ? "scale(1.05)" : "scale(1)",
                         }}
                       >
-                        {profile.username.charAt(0).toUpperCase()}
+                        {(profile?.username || "?").charAt(0).toUpperCase()}
                       </div>
                     )}
                     {isMuted && (
@@ -2657,7 +2657,7 @@ export default function VoiceChannel({
           );
         };
 
-        const renderRemoteTile = (p: Participant, compact = false) => {
+        const renderRemoteTile = (p: Participant, compact = false, idx = 0) => {
           const isSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
           const pColor = userColors[p.uid] || {
             hex: "#5865F2",
@@ -2669,7 +2669,7 @@ export default function VoiceChannel({
 
           return (
             <div
-              key={p.uid}
+              key={`${p.uid || "remote"}-${compact ? "compact" : "grid"}-${idx}`}
               className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
                 compact ? "h-full flex-shrink-0" : "w-full"
               }`}
@@ -2790,7 +2790,7 @@ export default function VoiceChannel({
                           transform: isSpeaking ? "scale(1.05)" : "scale(1)",
                         }}
                       >
-                        {p.username.charAt(0).toUpperCase()}
+                        {(p.username || "?").charAt(0).toUpperCase()}
                       </div>
                     )}
                     {p.isMuted && (
@@ -2975,9 +2975,9 @@ export default function VoiceChannel({
                     <div className="w-48 lg:w-full flex-shrink-0 aspect-video">
                       {renderLocalTile(true)}
                     </div>
-                    {activeParticipants.map((p) => (
-                      <div key={p.uid} className="w-48 lg:w-full flex-shrink-0 aspect-video">
-                        {renderRemoteTile(p, true)}
+                    {activeParticipants.map((p, pIdx) => (
+                      <div key={`${p.uid || "peer"}-${pIdx}`} className="w-48 lg:w-full flex-shrink-0 aspect-video">
+                        {renderRemoteTile(p, true, pIdx)}
                       </div>
                     ))}
                   </div>
@@ -3131,7 +3131,7 @@ export default function VoiceChannel({
                   {/* Bottom Zoom-style Participant Strip (Displays Everyone's Camera Feeds) */}
                   <div className="h-28 sm:h-36 flex-shrink-0 flex items-center gap-3 overflow-x-auto pb-1 px-1">
                     {renderLocalTile(true)}
-                    {activeParticipants.map((p) => renderRemoteTile(p, true))}
+                    {activeParticipants.map((p, pIdx) => renderRemoteTile(p, true, pIdx))}
                   </div>
                 </div>
               )}
@@ -3143,7 +3143,7 @@ export default function VoiceChannel({
         return (
           <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
             {renderLocalTile(false)}
-            {activeParticipants.map((p) => renderRemoteTile(p, false))}
+            {activeParticipants.map((p, pIdx) => renderRemoteTile(p, false, pIdx))}
           </div>
         );
       })()}
@@ -3311,7 +3311,7 @@ export default function VoiceChannel({
                     className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white"
                     style={{ backgroundColor: targetColor.hex }}
                   >
-                    {targetUsername.charAt(0).toUpperCase()}
+                    {(targetUsername || "?").charAt(0).toUpperCase()}
                   </div>
                 )}
                 {targetIsSpeaking && (
@@ -3499,7 +3499,7 @@ export default function VoiceChannel({
                           : undefined,
                       }}
                     >
-                      {targetUsername.charAt(0).toUpperCase()}
+                      {(targetUsername || "?").charAt(0).toUpperCase()}
                     </div>
                   )}
                   {targetIsMuted && (

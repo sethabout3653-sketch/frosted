@@ -302,9 +302,14 @@ export default function ChatPanel({
         const users: MemberUser[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as MemberUser;
+          const uname = (data.username || "").trim();
+          if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
+            deleteDoc(doc(db, "presence", docSnap.id)).catch(() => {});
+            return;
+          }
           users.push({
             uid: docSnap.id,
-            username: data.username || "Anonymous",
+            username: uname,
             photoURL: data.photoURL || "",
             status: data.status || "online",
             lastSeen: data.lastSeen,
@@ -313,8 +318,8 @@ export default function ChatPanel({
           });
         });
 
-        // Ensure current profile is present
-        if (!users.some((u) => u.uid === profile.uid)) {
+        // Ensure current profile is present if valid
+        if (profile?.username && profile.username.toLowerCase() !== "anonymous" && !users.some((u) => u.uid === profile.uid)) {
           users.unshift({
             uid: profile.uid,
             username: profile.username,
@@ -349,7 +354,13 @@ export default function ChatPanel({
       (snapshot) => {
         const newMessages: ChatMessage[] = [];
         snapshot.forEach((docSnap) => {
-          newMessages.push({ id: docSnap.id, ...docSnap.data() } as ChatMessage);
+          const data = docSnap.data() as any;
+          const uname = (data.username || "").trim();
+          if (!uname || uname.toLowerCase() === "anonymous") {
+            deleteDoc(doc(db, "messages", docSnap.id)).catch(() => {});
+            return;
+          }
+          newMessages.push({ id: docSnap.id, ...data } as ChatMessage);
         });
 
         // If returned messages equal or exceed limit, more older messages exist
@@ -839,7 +850,7 @@ export default function ChatPanel({
               )}
 
               {/* Messages Stream */}
-              {filteredMessages.map((msg) => {
+              {filteredMessages.map((msg, mIdx) => {
             const isMe =
               msg.uid === profile.uid ||
               (msg.username === profile.username &&
@@ -847,7 +858,7 @@ export default function ChatPanel({
 
             return (
               <div
-                key={msg.id}
+                key={`${msg.id || "msg"}-${mIdx}`}
                 style={{ contentVisibility: "auto", containIntrinsicSize: "0 60px" }}
                 className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
               >
@@ -856,13 +867,13 @@ export default function ChatPanel({
                   {msg.photoURL ? (
                     <img
                       src={msg.photoURL}
-                      alt={msg.username}
+                      alt={msg.username || "User"}
                       loading="lazy"
                       decoding="async"
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <span>{msg.username.charAt(0).toUpperCase()}</span>
+                    <span>{(msg.username || "?").charAt(0).toUpperCase()}</span>
                   )}
                 </div>
 
@@ -1160,14 +1171,14 @@ export default function ChatPanel({
                 ONLINE — {activeOnlineUsers.length}
               </h3>
               <div className="space-y-1">
-                {activeOnlineUsers.map((user) => {
+                {activeOnlineUsers.map((user, uIdx) => {
                   const isCurrentUser = user.uid === profile.uid;
                   const voiceInfo = activeVoiceUsers[user.uid];
                   const isInVoice = !!voiceInfo;
 
                   return (
                     <div
-                      key={user.uid}
+                      key={`${user.uid || "online"}-${uIdx}`}
                       className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-neutral-900/60 transition-colors"
                     >
                       {/* Avatar with Green Online Dot Badge */}
@@ -1176,11 +1187,11 @@ export default function ChatPanel({
                           {user.photoURL ? (
                             <img
                               src={user.photoURL}
-                              alt={user.username}
+                              alt={user.username || "User"}
                               className="w-full h-full object-cover"
                             />
                           ) : (
-                            <span>{user.username.charAt(0).toUpperCase()}</span>
+                            <span>{(user.username || "?").charAt(0).toUpperCase()}</span>
                           )}
                         </div>
                         <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080808]" />

@@ -49,7 +49,13 @@ export default function Chat({
   const [profile, setProfile] = useState<ChatProfile | null>(() => {
     try {
       const saved = localStorage.getItem("frosted_chat_profile");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.username && parsed.username.trim().toLowerCase() !== "anonymous") {
+          return parsed;
+        }
+        localStorage.removeItem("frosted_chat_profile");
+      }
     } catch (e) {}
     return null;
   });
@@ -111,18 +117,23 @@ export default function Chat({
     const unsubscribe = onSnapshot(
       collection(db, "voice_users"),
       (snapshot) => {
-        const users = snapshot.docs.map((d) => d.data() as any);
-        setRawVoiceUsers(users);
-
-        // Lazily clean up any zombie records that have been dead for over 15 seconds
+        const validUsers: any[] = [];
         const now = Date.now();
         snapshot.docs.forEach((d) => {
           const data = d.data();
+          const uname = (data.username || "").trim();
+          if (!uname || uname.toLowerCase() === "anonymous") {
+            deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+            return;
+          }
           const ts = data.timestamp || data.lastSeen;
           if (typeof ts === "number" && now - ts > 15000) {
             deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+          } else {
+            validUsers.push(data);
           }
         });
+        setRawVoiceUsers(validUsers);
       },
       (error) => {
         console.warn("Chat voice_users listener error:", error);
@@ -389,25 +400,25 @@ export default function Chat({
                   {/* Users currently in General Voice */}
                   {voiceUsers.length > 0 && (
                     <div className="ml-4 pl-2 border-l border-neutral-800/80 my-1 space-y-1">
-                      {voiceUsers.map((vUser) => (
+                      {voiceUsers.map((vUser, vIdx) => (
                         <div
-                          key={vUser.uid}
+                          key={`${vUser.uid || "vuser"}-${vIdx}`}
                           className="flex items-center justify-between py-1 px-1.5 rounded text-xs text-neutral-300 hover:bg-neutral-900/60 transition-colors"
                         >
                           <div className="flex items-center gap-2 truncate">
                             {vUser.photoURL ? (
                               <img
                                 src={vUser.photoURL}
-                                alt={vUser.username}
+                                alt={vUser.username || "User"}
                                 className="w-4 h-4 rounded-full object-cover border border-neutral-700 flex-shrink-0"
                               />
                             ) : (
                               <div className="w-4 h-4 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
-                                {vUser.username.charAt(0).toUpperCase()}
+                                {(vUser.username || "?").charAt(0).toUpperCase()}
                               </div>
                             )}
                             <span className="truncate text-[11px] font-medium text-neutral-300">
-                              {vUser.username}
+                              {vUser.username || "User"}
                             </span>
                           </div>
                           <div className="flex items-center gap-1 flex-shrink-0">

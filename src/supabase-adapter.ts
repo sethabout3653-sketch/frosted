@@ -215,7 +215,23 @@ function notifyListeners(colName: string) {
 
 // Global multiplexed Supabase Realtime Channel
 let globalRealtimeChannel: any = null;
+let isGlobalChannelSubscribed = false;
+const pendingBroadcastQueue: any[] = [];
 const broadcastListeners = new Set<(signal: any) => void>();
+
+function safeSendBroadcast(payload: any) {
+  try {
+    const ch = getOrCreateGlobalChannel();
+    if (isGlobalChannelSubscribed && ch) {
+      ch.send(payload).catch(() => {});
+    } else {
+      if (pendingBroadcastQueue.length > 50) {
+        pendingBroadcastQueue.shift();
+      }
+      pendingBroadcastQueue.push(payload);
+    }
+  } catch (err) {}
+}
 
 export function getOrCreateGlobalChannel() {
   if (!globalRealtimeChannel) {
@@ -285,7 +301,13 @@ export function getOrCreateGlobalChannel() {
       })
       .subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
-          // Connected cleanly
+          isGlobalChannelSubscribed = true;
+          while (pendingBroadcastQueue.length > 0) {
+            const msg = pendingBroadcastQueue.shift();
+            if (msg && globalRealtimeChannel) {
+              globalRealtimeChannel.send(msg).catch(() => {});
+            }
+          }
         }
       });
   }
@@ -294,32 +316,26 @@ export function getOrCreateGlobalChannel() {
 
 // Broadcast mutation over zero-latency WebSocket
 function broadcastMutation(colName: string, action: "insert" | "upsert" | "update" | "delete", data: any, id?: string) {
-  try {
-    const ch = getOrCreateGlobalChannel();
-    ch.send({
-      type: "broadcast",
-      event: "db_mutation",
-      payload: {
-        colName,
-        action,
-        data,
-        id,
-        pk: getPk(colName),
-        timestamp: Date.now(),
-      },
-    }).catch(() => {});
-  } catch (err) {}
+  safeSendBroadcast({
+    type: "broadcast",
+    event: "db_mutation",
+    payload: {
+      colName,
+      action,
+      data,
+      id,
+      pk: getPk(colName),
+      timestamp: Date.now(),
+    },
+  });
 }
 
 export function sendBroadcastSignal(payload: { uid: string; targetUid: string; type: string; sdp?: string; timestamp: number }) {
-  try {
-    const ch = getOrCreateGlobalChannel();
-    ch.send({
-      type: "broadcast",
-      event: "webrtc_signal",
-      payload,
-    }).catch(() => {});
-  } catch (err) {}
+  safeSendBroadcast({
+    type: "broadcast",
+    event: "webrtc_signal",
+    payload,
+  });
 }
 
 export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {

@@ -99,8 +99,9 @@ export default function ProfileSetup({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim()) return;
-    onComplete({ username: username.trim(), photoURL });
+    const trimmed = username.trim();
+    if (!trimmed || trimmed.toLowerCase() === "anonymous") return;
+    onComplete({ username: trimmed, photoURL });
   };
 
   if (imageToCrop) {
