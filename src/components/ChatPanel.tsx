@@ -446,11 +446,15 @@ export default function ChatPanel({
     } catch (error: any) {
       console.warn("Storage upload fallback invoked:", error);
       try {
-        const objectUrl = URL.createObjectURL(file);
-        setAttachment(objectUrl);
-        setAttachmentType(file.type || "application/octet-stream");
-        setAttachmentName(file.name);
-        setAttachmentSize(file.size);
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          setAttachment(dataUrl);
+          setAttachmentType(file.type || "application/octet-stream");
+          setAttachmentName(file.name);
+          setAttachmentSize(file.size);
+        };
+        reader.readAsDataURL(file);
       } catch (err) {
         console.error("Local file attachment fallback error:", err);
       }

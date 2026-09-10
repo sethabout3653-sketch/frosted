@@ -8,32 +8,74 @@ export const db = supabase;
 
 export const cassandra = {
   storage: {
-    upload: async (file: File, onProgress?: (p: number) => void): Promise<{ url: string; filename: string; mimetype: string; size: number } | string> => {
-      // Use local Express /api/upload as the storage backend
-      return new Promise((resolve, reject) => {
+    upload: async (
+      file: File,
+      onProgress?: (p: number) => void
+    ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
+      // 1. First attempt uploading to server Express endpoint (/api/upload)
+      try {
         const formData = new FormData();
         formData.append("file", file);
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload", true);
-        xhr.upload.onprogress = (e) => {
+
+        const serverRes = await new Promise<any>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/upload", true);
+
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && onProgress) {
+              onProgress((e.loaded / e.total) * 100);
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              const text = xhr.responseText.trim();
+              if (text.startsWith("{") && !text.includes("<!DOCTYPE") && !text.includes("<html")) {
+                try {
+                  const data = JSON.parse(text);
+                  if (data && data.url) {
+                    resolve(data);
+                    return;
+                  }
+                } catch (e) {}
+              }
+            }
+            reject(new Error("Server upload endpoint returned non-JSON or HTML fallback"));
+          };
+
+          xhr.onerror = () => reject(new Error("Network error uploading to server"));
+          xhr.send(formData);
+        });
+
+        if (serverRes && serverRes.url) {
+          return serverRes;
+        }
+      } catch (err) {
+        console.warn("Server upload endpoint unavailable (e.g. Vercel static deployment). Using embedded Data URL storage:", err);
+      }
+
+      // 2. Standalone / Vercel fallback: Encode file as Base64 Data URL so binary content and MIME type are 100% preserved
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onprogress = (e) => {
           if (e.lengthComputable && onProgress) {
             onProgress((e.loaded / e.total) * 100);
           }
         };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const res = JSON.parse(xhr.responseText);
-              resolve(res);
-            } catch {
-              resolve(`/uploads/${file.name}`);
-            }
-          } else {
-            reject(new Error("Upload failed"));
-          }
+
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          resolve({
+            url: dataUrl,
+            filename: file.name,
+            mimetype: file.type || "application/octet-stream",
+            size: file.size,
+          });
         };
-        xhr.onerror = () => reject(new Error("Upload failed"));
-        xhr.send(formData);
+
+        reader.onerror = () => reject(new Error("Failed to read file as Data URL"));
+        reader.readAsDataURL(file);
       });
     }
   }

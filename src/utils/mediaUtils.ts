@@ -125,6 +125,19 @@ export interface MediaProbeResult {
 export async function probeUrlMediaType(url: string): Promise<MediaProbeResult | null> {
   if (!url || url.startsWith("blob:")) return null;
 
+  // 0. Data URL instant detection without network requests
+  if (url.startsWith("data:")) {
+    const match = url.match(/^data:([a-zA-Z0-9\/\-\+\.]+);/);
+    if (match && match[1]) {
+      const mime = match[1].toLowerCase();
+      if (mime.startsWith("video/")) return { type: "video", mimeType: mime };
+      if (mime.startsWith("audio/")) return { type: "audio", mimeType: mime };
+      if (mime.startsWith("image/")) return { type: "image", mimeType: mime };
+      return { type: "file", mimeType: mime };
+    }
+    return null;
+  }
+
   // 1. Check with server-side media-info API
   try {
     const res = await fetch(`/api/media-info?url=${encodeURIComponent(url)}`);
