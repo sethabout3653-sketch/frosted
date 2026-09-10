@@ -1181,6 +1181,27 @@ export default function VoiceChannel({
             }
             iceCandidateQueuesRef.current[partnerUid].push(candidateData);
           }
+        } else if (signal.type === "screenshare_started") {
+          setTrackTrigger((v) => v + 1);
+          const pc = peersRef.current[partnerUid];
+          if (pc) {
+            const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
+            if (videoTransceivers.length >= 2) {
+              const scrTrack = videoTransceivers[1].receiver.track;
+              if (scrTrack) {
+                if (!remoteScreenStreamsRef.current[partnerUid]) {
+                  remoteScreenStreamsRef.current[partnerUid] = new MediaStream();
+                }
+                const s = remoteScreenStreamsRef.current[partnerUid];
+                if (!s.getTracks().some((t) => t.id === scrTrack.id)) {
+                  s.getVideoTracks().forEach((t) => s.removeTrack(t));
+                  s.addTrack(scrTrack);
+                }
+              }
+            }
+          }
+        } else if (signal.type === "screenshare_stopped") {
+          setTrackTrigger((v) => v + 1);
         }
       } catch (err: any) {
         const msg = String(err?.message || err || "");
@@ -1639,6 +1660,7 @@ export default function VoiceChannel({
               await sender.replaceTrack(dummyTrack);
             } catch (e) {}
           }
+          sendSignal(pUid, "screenshare_stopped", "");
         }
       })
     );
@@ -1682,8 +1704,13 @@ export default function VoiceChannel({
     await updateDoc(doc(db, "voice_users", profile.uid), {
       isScreenSharing: false,
       isScreenAudioOn: false,
+      timestamp: Date.now(),
     }).catch(() => {});
-  }, [fullscreenType, fullscreenUid, getOrCreateDummyScreenTrack, profile.uid]);
+    await updateDoc(doc(db, "presence", profile.uid), {
+      isScreenSharing: false,
+      lastSeen: Date.now(),
+    }).catch(() => {});
+  }, [fullscreenType, fullscreenUid, getOrCreateDummyScreenTrack, profile.uid, sendSignal]);
 
   // Start Screen Share with Audio Support
   const startScreenShare = async () => {
@@ -1691,21 +1718,42 @@ export default function VoiceChannel({
     setIsScreenShareLoading(true);
 
     try {
-      // Prompt user to select screen / window / tab with audio support
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: "monitor",
-          frameRate: { ideal: 30, max: 60 },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2,
-        },
-      });
+      // Prompt user to select screen / window / tab with audio support and robust multi-stage fallbacks
+      let displayStream: MediaStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            displaySurface: "monitor",
+            frameRate: { ideal: 30, max: 60 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 2,
+          },
+        });
+      } catch (errAudio: any) {
+        if (errAudio?.name === "NotAllowedError" || errAudio?.name === "AbortError" || errAudio?.name === "PermissionDeniedError") {
+          throw errAudio;
+        }
+        try {
+          displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          });
+        } catch (errAudio2: any) {
+          if (errAudio2?.name === "NotAllowedError" || errAudio2?.name === "AbortError" || errAudio2?.name === "PermissionDeniedError") {
+            throw errAudio2;
+          }
+          displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false,
+          });
+        }
+      }
 
       if (!isMountedRef.current) {
         displayStream.getTracks().forEach((t) => t.stop());
@@ -1754,6 +1802,9 @@ export default function VoiceChannel({
         } catch (audioErr) {
           console.warn("Screen audio mixing note:", audioErr);
         }
+      } else {
+        setIsScreenAudioOn(false);
+        isScreenAudioOnRef.current = false;
       }
 
       // Attach to local preview element if present
@@ -1779,7 +1830,7 @@ export default function VoiceChannel({
             }
 
             if (screenSender) {
-              await screenSender.replaceTrack(screenVideoTrack);
+              await screenSender.replaceTrack(screenVideoTrack).catch(() => {});
               try {
                 const params = screenSender.getParameters();
                 if (!params.encodings || params.encodings.length === 0) {
@@ -1788,9 +1839,17 @@ export default function VoiceChannel({
                 params.encodings[0].maxBitrate = 3000000;
                 params.encodings[0].priority = "high";
                 params.encodings[0].networkPriority = "high";
-                await screenSender.setParameters(params);
+                await screenSender.setParameters(params).catch(() => {});
+              } catch (e) {}
+            } else {
+              try {
+                const newSender = pc.addTrack(screenVideoTrack, displayStream);
+                screenSendersRef.current[pUid] = newSender;
               } catch (e) {}
             }
+
+            // Send custom signaling message to notify peer that screen share started
+            sendSignal(pUid, "screenshare_started", JSON.stringify({ hasAudio }));
           }
         })
       );
@@ -1802,7 +1861,12 @@ export default function VoiceChannel({
       await updateDoc(doc(db, "voice_users", profile.uid), {
         isScreenSharing: true,
         isScreenAudioOn: hasAudio,
-      });
+        timestamp: Date.now(),
+      }).catch(() => {});
+      await updateDoc(doc(db, "presence", profile.uid), {
+        isScreenSharing: true,
+        lastSeen: Date.now(),
+      }).catch(() => {});
     } catch (err: any) {
       setIsScreenShareLoading(false);
       // If user cancelled browser dialog, avoid annoying error alert
@@ -2467,6 +2531,12 @@ export default function VoiceChannel({
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>
                   {profile.username} (You)
                 </span>
+                {isScreenSharing && (
+                  <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
+                    <MonitorUp size={9} />
+                    <span>LIVE</span>
+                  </span>
+                )}
                 {isMuted && (
                   <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
                     Muted
@@ -2621,6 +2691,12 @@ export default function VoiceChannel({
 
               <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
+                {p.isScreenSharing && (
+                  <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
+                    <MonitorUp size={9} />
+                    <span>LIVE</span>
+                  </span>
+                )}
                 {p.isMuted && (
                   <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
                     Muted

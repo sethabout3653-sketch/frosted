@@ -6,6 +6,7 @@ import {
   Mic,
   MicOff,
   Video,
+  MonitorUp,
   ChevronDown,
   Search,
   LogOut,
@@ -69,6 +70,8 @@ export default function Chat({
       photoURL: string;
       isMuted?: boolean;
       isVideoOn?: boolean;
+      isScreenSharing?: boolean;
+      isScreenAudioOn?: boolean;
       timestamp?: number;
       lastSeen?: number;
     }>
@@ -406,6 +409,12 @@ export default function Chat({
                             </span>
                           </div>
                           <div className="flex items-center gap-1 flex-shrink-0">
+                            {vUser.isScreenSharing && (
+                              <span className="flex items-center gap-0.5 text-[9px] font-extrabold text-emerald-400 bg-emerald-950/90 border border-emerald-700/80 px-1 py-0.2 rounded shadow-sm animate-pulse">
+                                <MonitorUp size={10} />
+                                <span>LIVE</span>
+                              </span>
+                            )}
                             {vUser.isVideoOn && (
                               <Video size={11} className="text-emerald-400" />
                             )}

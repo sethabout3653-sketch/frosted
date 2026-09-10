@@ -29,6 +29,7 @@ import {
   MicOff,
   Volume2,
   Video,
+  MonitorUp,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
@@ -1202,6 +1203,11 @@ export default function ChatPanel({
                           {isInVoice && (
                             <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-1 py-0.2 rounded">
                               <Volume2 size={9} /> In Voice
+                            </span>
+                          )}
+                          {isInVoice && voiceInfo?.isScreenSharing && (
+                            <span className="flex items-center gap-0.5 text-[9px] font-extrabold text-emerald-300 bg-emerald-950/90 border border-emerald-700/80 px-1 py-0.2 rounded animate-pulse">
+                              <MonitorUp size={9} /> LIVE
                             </span>
                           )}
                           {isInVoice && voiceInfo?.isMuted && (
