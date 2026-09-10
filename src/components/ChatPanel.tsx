@@ -77,6 +77,7 @@ export default function ChatPanel({
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
   const [isLocalTyping, setIsLocalTyping] = useState(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -279,6 +280,7 @@ export default function ChatPanel({
 
   // Real-time message subscription with instant local rendering
   useEffect(() => {
+    setIsLoadingMessages(true);
     const q = query(
       collection(db, "messages"),
       orderBy("timestamp", "desc")
@@ -307,9 +309,11 @@ export default function ChatPanel({
           );
           return [...reversed, ...pending];
         });
+        setIsLoadingMessages(false);
         window.setTimeout(() => scrollToBottom(), 50);
       },
       (error) => {
+        setIsLoadingMessages(false);
         handleFirestoreError(error, OperationType.LIST, "messages");
       }
     );
@@ -319,6 +323,54 @@ export default function ChatPanel({
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const handleDeleteMessage = async (msgId: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
+    try {
+      await deleteDoc(doc(db, "messages", msgId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+    }
+  };
+
+  const handleReactMessage = async (msgId: string, emoji: string) => {
+    const msg = messages.find((m) => m.id === msgId);
+    if (!msg) return;
+
+    const currentReactions = msg.reactions || {};
+    const users = currentReactions[emoji] || [];
+    const hasReacted = users.includes(profile.uid);
+
+    let newUsers;
+    if (hasReacted) {
+      newUsers = users.filter((u) => u !== profile.uid);
+    } else {
+      newUsers = [...users, profile.uid];
+    }
+
+    const newReactions = { ...currentReactions };
+    if (newUsers.length > 0) {
+      newReactions[emoji] = newUsers;
+    } else {
+      delete newReactions[emoji];
+    }
+
+    // Optimistic update
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === msgId) {
+          return { ...m, reactions: newReactions };
+        }
+        return m;
+      })
+    );
+
+    try {
+      await updateDoc(doc(db, "messages", msgId), { reactions: newReactions });
+    } catch (error) {
+      console.warn("Failed to update reaction", error);
+    }
   };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -628,8 +680,18 @@ export default function ChatPanel({
             <div className="border-b border-neutral-900 mt-6" />
           </div>
 
-          {/* Messages Stream */}
-          {filteredMessages.map((msg) => {
+          {/* Loading Indicator */}
+          {isLoadingMessages ? (
+            <div className="flex flex-col items-center justify-center py-10 opacity-75">
+              <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-400 mb-4"></div>
+              <p className="text-neutral-400 text-sm animate-pulse text-center px-4">
+                Wait a second until its done loading... please do not chat or type yet.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Messages Stream */}
+              {filteredMessages.map((msg) => {
             const isMe =
               msg.uid === profile.uid ||
               (msg.username === profile.username &&
@@ -679,11 +741,56 @@ export default function ChatPanel({
                   )}
 
                   {msg.attachment && renderAttachment(msg)}
+
+                  {/* Reactions Display */}
+                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {Object.entries(msg.reactions).map(([emoji, users]) => (
+                        <button
+                          key={emoji}
+                          onClick={() => handleReactMessage(msg.id, emoji)}
+                          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium border ${
+                            users.includes(profile.uid)
+                              ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-300"
+                              : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
+                          } transition-colors cursor-pointer`}
+                        >
+                          <span>{emoji}</span>
+                          <span>{users.length}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Actions (Delete, React) */}
+                <div className="absolute right-2 -top-3 sm:top-2 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 transition-opacity flex items-center gap-1 bg-neutral-900 border border-neutral-700 rounded-lg p-1 shadow-md z-10">
+                  {["👍", "❤️", "😂"].map((emoji) => (
+                    <button
+                      key={emoji}
+                      onClick={() => handleReactMessage(msg.id, emoji)}
+                      className="p-1.5 hover:bg-neutral-700 rounded text-sm transition-colors cursor-pointer"
+                      title={`React with ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                  {isMe && (
+                    <button
+                      onClick={() => handleDeleteMessage(msg.id)}
+                      className="p-1.5 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded transition-colors cursor-pointer ml-1 border-l border-neutral-800"
+                      title="Delete Message"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })}
           <div ref={messagesEndRef} />
+            </>
+          )}
         </div>
 
         {/* Giphy Picker Drawer */}
@@ -803,6 +910,7 @@ export default function ChatPanel({
             <input
               ref={inputRef}
               type="text"
+              disabled={isLoadingMessages}
               value={text}
               onChange={(e) => {
                 const val = e.target.value;
@@ -827,16 +935,17 @@ export default function ChatPanel({
                   }
                 }
               }}
-              placeholder={`Message #${activeChannel}...`}
-              className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none"
+              placeholder={isLoadingMessages ? "Loading..." : `Message #${activeChannel}...`}
+              className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none disabled:opacity-50"
             />
 
             {/* Action Tools: File, GIF, Send */}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
+                disabled={isLoadingMessages}
                 onClick={() => fileInputRef.current?.click()}
-                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors"
+                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer"
                 title="Attach Any File"
               >
                 <Plus size={18} />
@@ -845,13 +954,15 @@ export default function ChatPanel({
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
+                disabled={isLoadingMessages}
                 onChange={handleFileChange}
               />
 
               <button
                 type="button"
+                disabled={isLoadingMessages}
                 onClick={() => setShowGiphy(!showGiphy)}
-                className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-[11px] font-bold tracking-wider transition-colors"
+                className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-[11px] font-bold tracking-wider transition-colors disabled:opacity-40 cursor-pointer"
                 title="Choose GIF"
               >
                 GIF
@@ -859,7 +970,7 @@ export default function ChatPanel({
 
               <button
                 type="submit"
-                disabled={(!text.trim() && !attachment) || isUploading}
+                disabled={isLoadingMessages || (!text.trim() && !attachment) || isUploading}
                 className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white disabled:opacity-40 disabled:hover:bg-neutral-800 transition-all ml-1 cursor-pointer"
                 title="Send Message"
               >

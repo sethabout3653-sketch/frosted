@@ -39,6 +39,7 @@ export interface ChatMessage {
   attachmentName?: string;
   attachmentSize?: number;
   timestamp: number;
+  reactions?: Record<string, string[]>;
 }
 
 export interface VoiceSignal {
