@@ -15,54 +15,35 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({
       status: "online",
       provider: "SethBase Unlimited Storage Engine",
-      quota: "Unlimited (0 / \u221E)",
+      quota: "Unlimited (0 / ∞)",
       message: "SethBase Upload Endpoint is fully active. No quota limits.",
     });
   }
 
+  // On Vercel, we cannot save files to local disk (/uploads).
+  // Return an explicit error for multipart/form-data so the client 
+  // falls back to Data URL encoding which works flawlessly on Vercel.
   if (req.method === "POST") {
-    try {
-      const contentType = req.headers["content-type"] || "";
-
-      // 1. JSON payload with base64 data
-      if (contentType.includes("application/json") && req.body) {
-        const { fileData, filename, mimetype, size } = req.body;
-        if (fileData) {
-          return res.status(200).json({
-            url: fileData, // Direct high-speed data URL
-            filename: filename || "uploaded_file",
-            mimetype: mimetype || "application/octet-stream",
-            size: size || fileData.length,
-          });
-        }
-      }
-
-      // 2. Buffer/Raw or standard payload
-      if (req.body) {
-        // If Vercel parsed body or raw data
-        const filename = (req.query?.filename as string) || `file_${Date.now()}`;
-        const mimetype = (req.query?.mimetype as string) || "application/octet-stream";
-
+    const contentType = req.headers["content-type"] || "";
+    
+    // 1. JSON payload with base64 data (already client encoded)
+    if (contentType.includes("application/json") && req.body) {
+      const { fileData, filename, mimetype, size } = req.body;
+      if (fileData) {
         return res.status(200).json({
-          url: typeof req.body === "string" ? req.body : `/api/upload?file=${encodeURIComponent(filename)}`,
-          filename,
-          mimetype,
-          size: typeof req.body === "string" ? req.body.length : 1024,
+          url: fileData, // Direct high-speed data URL
+          filename: filename || "uploaded_file",
+          mimetype: mimetype || "application/octet-stream",
+          size: size || fileData.length,
         });
       }
-
-      return res.status(200).json({
-        status: "ok",
-        message: "File received by SethBase Storage",
-        url: `/uploads/file_${Date.now()}`,
-      });
-    } catch (err: any) {
-      return res.status(200).json({
-        status: "fallback",
-        url: `/uploads/fallback_${Date.now()}`,
-        error: err.message,
-      });
     }
+    
+    // For raw files/multipart, return an error to trigger client fallback
+    return res.status(400).json({ 
+      error: "Vercel serverless environment does not support disk uploads. Client must fallback to Data URL.",
+      forceClientFallback: true 
+    });
   }
 
   return res.status(405).json({ error: "Method not allowed" });

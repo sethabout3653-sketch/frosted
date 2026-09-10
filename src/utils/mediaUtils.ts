@@ -280,8 +280,8 @@ export async function downloadFile(
 
   const filename = preferredFileName || getFileName(url, "download");
 
-  // 1. Data URLs & Blob URLs can be downloaded directly
-  if (url.startsWith("data:") || url.startsWith("blob:")) {
+  // 1. Data URLs & Blob URLs
+  if (url.startsWith("blob:")) {
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
@@ -290,6 +290,35 @@ export async function downloadFile(
     a.click();
     document.body.removeChild(a);
     return;
+  }
+  
+  if (url.startsWith("data:")) {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      return;
+    } catch (err) {
+      console.warn("Failed to convert Data URL to Blob, falling back to direct link", err);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
   }
 
   // 2. Local uploads & proxy downloads via fetch -> Blob stream

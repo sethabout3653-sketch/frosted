@@ -61,6 +61,8 @@ export default function MediaAttachment({
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
+  const [displayUrl, setDisplayUrl] = useState<string>(url);
+
   // Probe media metadata in background to accurately recognize ANY file type
   useEffect(() => {
     let isMounted = true;
@@ -68,8 +70,21 @@ export default function MediaAttachment({
     setEffectiveType(initial);
     if (name) setEffectiveName(name);
     if (size) setEffectiveSize(size);
+    setDisplayUrl(url);
 
     if (url) {
+      // 0. Convert Data URLs to Blob URLs for better media playback stability
+      if (url.startsWith("data:")) {
+        fetch(url)
+          .then(res => res.blob())
+          .then(blob => {
+            if (!isMounted) return;
+            const blobUrl = URL.createObjectURL(blob);
+            setDisplayUrl(blobUrl);
+          })
+          .catch(e => console.warn("Failed to convert data URL to blob", e));
+      }
+
       // If we are on static hosting and trying to load a local /uploads/ path, it's missing.
       // Eagerly check if the server actually has it, or if it's a Vercel 404 falling back to index.html.
       if (url.startsWith("/uploads/") || url.startsWith("/api/")) {
@@ -102,6 +117,14 @@ export default function MediaAttachment({
       isMounted = false;
     };
   }, [url, type, name, size]);
+
+  useEffect(() => {
+    return () => {
+      if (displayUrl && displayUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(displayUrl);
+      }
+    };
+  }, [displayUrl]);
 
   const handleDownloadClick = async (e?: React.MouseEvent) => {
     if (e) {
@@ -150,7 +173,7 @@ export default function MediaAttachment({
             className="cursor-zoom-in relative overflow-hidden flex items-center justify-center bg-black/40 min-h-[140px]"
           >
             <img
-              src={url}
+              src={displayUrl}
               alt={displayName}
               loading="lazy"
               className="w-full h-auto max-h-80 object-contain rounded-t-xl group-hover:scale-[1.01] transition-transform duration-200"
@@ -214,7 +237,7 @@ export default function MediaAttachment({
                 </button>
               </div>
               <img
-                src={url}
+                src={displayUrl}
                 alt={displayName}
                 className="max-w-full max-h-[80vh] object-contain rounded-xl border border-neutral-800 shadow-2xl"
               />
@@ -284,7 +307,7 @@ export default function MediaAttachment({
           <div className="relative bg-black flex items-center justify-center min-h-[160px]">
             <video
               ref={videoRef}
-              src={url}
+              src={displayUrl}
               controls
               playsInline
               preload="metadata"
@@ -356,7 +379,7 @@ export default function MediaAttachment({
               </div>
               <div className="bg-black flex items-center justify-center max-h-[75vh]">
                 <video
-                  src={url}
+                  src={displayUrl}
                   controls
                   autoPlay
                   playsInline
@@ -407,7 +430,7 @@ export default function MediaAttachment({
 
         <audio
           ref={audioRef}
-          src={url}
+          src={displayUrl}
           controls
           className="w-full h-8 rounded-lg"
         />
