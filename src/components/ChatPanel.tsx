@@ -281,8 +281,7 @@ export default function ChatPanel({
   useEffect(() => {
     const q = query(
       collection(db, "messages"),
-      orderBy("timestamp", "desc"),
-      limit(50)
+      orderBy("timestamp", "desc")
     );
 
     const unsubscribe = onSnapshot(
@@ -494,16 +493,6 @@ export default function ChatPanel({
     }
   };
 
-  const handleDeleteMessage = async (msgId: string) => {
-    // Optimistically remove from view immediately
-    setMessages((prev) => prev.filter((m) => m.id !== msgId));
-    try {
-      await deleteDoc(doc(db, "messages", msgId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
-    }
-  };
-
   const formatTimestamp = (ts: number) => {
     if (!ts) return "";
     const d = new Date(ts);
@@ -691,17 +680,6 @@ export default function ChatPanel({
 
                   {msg.attachment && renderAttachment(msg)}
                 </div>
-
-                {/* Delete button on hover for user's own message */}
-                {isMe && (
-                  <button
-                    onClick={() => handleDeleteMessage(msg.id)}
-                    className="absolute right-2 top-2 p-1.5 text-neutral-500 hover:text-red-400 bg-neutral-900 border border-neutral-800 rounded-lg opacity-0 group-hover:opacity-100 transition-all shadow-sm"
-                    title="Delete Message"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                )}
               </div>
             );
           })}

@@ -135,7 +135,12 @@ export default function MediaAttachment({
 
     setIsDownloading(true);
     try {
-      await downloadFile(url, displayName);
+      let finalName = displayName;
+      if (!finalName.includes(".")) {
+        const ext = getFileExtension(url);
+        if (ext) finalName = `${finalName}.${ext}`;
+      }
+      await downloadFile(displayUrl || url, finalName);
       setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 2500);
     } catch (err) {

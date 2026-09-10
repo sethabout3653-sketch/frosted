@@ -278,7 +278,15 @@ export async function downloadFile(
 ): Promise<void> {
   if (!url) return;
 
-  const filename = preferredFileName || getFileName(url, "download");
+  let filename = preferredFileName || getFileName(url, "download");
+  
+  // Ensure the filename has an extension if we can determine it from the URL
+  if (!filename.includes(".")) {
+    const ext = getFileExtension(url);
+    if (ext) {
+      filename = `${filename}.${ext}`;
+    }
+  }
 
   // 1. Data URLs & Blob URLs
   if (url.startsWith("blob:")) {
