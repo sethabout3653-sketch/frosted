@@ -8,9 +8,8 @@ export const db = supabase;
 
 export const cassandra = {
   storage: {
-    upload: async (file: File, onProgress?: (p: number) => void): Promise<string> => {
-      // Use local Express /api/upload as the storage backend for now
-      // so we don't need a Supabase Storage bucket configured
+    upload: async (file: File, onProgress?: (p: number) => void): Promise<{ url: string; filename: string; mimetype: string; size: number } | string> => {
+      // Use local Express /api/upload as the storage backend
       return new Promise((resolve, reject) => {
         const formData = new FormData();
         formData.append("file", file);
@@ -24,7 +23,8 @@ export const cassandra = {
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
-              resolve(JSON.parse(xhr.responseText).url);
+              const res = JSON.parse(xhr.responseText);
+              resolve(res);
             } catch {
               resolve(`/uploads/${file.name}`);
             }

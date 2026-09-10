@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Play,
   Pause,
@@ -7,6 +7,10 @@ import {
   Maximize2,
   Download,
   FileText,
+  FileCode,
+  FileArchive,
+  FileSpreadsheet,
+  File,
   Music,
   Film,
   Image as ImageIcon,
@@ -17,10 +21,13 @@ import {
 } from "lucide-react";
 import {
   detectMediaType,
+  probeUrlMediaType,
   downloadFile,
   formatFileSize,
   getFileName,
   getFileExtension,
+  getFileTypeBadge,
+  MediaType,
 } from "../utils/mediaUtils";
 
 interface MediaAttachmentProps {
@@ -36,22 +43,56 @@ export default function MediaAttachment({
   name,
   size,
 }: MediaAttachmentProps) {
-  const mediaType = detectMediaType(url, type, name);
-  const displayName = name || getFileName(url, "attachment");
+  const initialType = detectMediaType(url, type, name);
+  const [effectiveType, setEffectiveType] = useState<MediaType>(initialType);
+  const [effectiveName, setEffectiveName] = useState<string>(name || getFileName(url, "attachment"));
+  const [effectiveSize, setEffectiveSize] = useState<number | undefined>(size);
+
+  const displayName = effectiveName;
   const ext = getFileExtension(displayName || url).toUpperCase();
+  const fileBadge = getFileTypeBadge(displayName || url);
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [videoError, setVideoError] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const handleDownloadClick = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  // Probe media metadata in background to accurately recognize ANY file type
+  useEffect(() => {
+    let isMounted = true;
+    const initial = detectMediaType(url, type, name);
+    setEffectiveType(initial);
+    if (name) setEffectiveName(name);
+    if (size) setEffectiveSize(size);
+
+    if (url) {
+      probeUrlMediaType(url).then((probed) => {
+        if (!isMounted || !probed) return;
+        if (probed.type) {
+          setEffectiveType(probed.type);
+        }
+        if (probed.filename && (!name || name.startsWith("file_") || !name.includes("."))) {
+          setEffectiveName(probed.filename);
+        }
+        if (probed.size && !size) {
+          setEffectiveSize(probed.size);
+        }
+      });
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [url, type, name, size]);
+
+  const handleDownloadClick = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (isDownloading) return;
 
     setIsDownloading(true);
@@ -67,7 +108,7 @@ export default function MediaAttachment({
   };
 
   // 1. Image Attachment
-  if (mediaType === "image") {
+  if (effectiveType === "image") {
     return (
       <>
         <div className="mt-2.5 max-w-sm sm:max-w-md group relative rounded-xl overflow-hidden border border-neutral-800/80 bg-neutral-950/60 shadow-lg transition-all duration-200 hover:border-neutral-700">
@@ -155,7 +196,7 @@ export default function MediaAttachment({
   }
 
   // 2. Video Attachment
-  if (mediaType === "video") {
+  if (effectiveType === "video") {
     return (
       <>
         <div className="mt-2.5 max-w-md w-full rounded-2xl overflow-hidden border border-neutral-800/90 bg-neutral-950/80 shadow-xl group">
@@ -297,7 +338,7 @@ export default function MediaAttachment({
   }
 
   // 3. Audio Attachment
-  if (mediaType === "audio") {
+  if (effectiveType === "audio") {
     return (
       <div className="mt-2.5 max-w-sm sm:max-w-md w-full bg-neutral-900/80 p-3.5 rounded-2xl border border-neutral-800 shadow-md flex flex-col gap-2.5">
         <div className="flex items-center justify-between gap-3">
@@ -341,47 +382,85 @@ export default function MediaAttachment({
     );
   }
 
-  // 4. Generic File (Document, Archive, Executable, Code, etc.)
+  // Helper to render appropriate file icon based on category
+  const renderFileCategoryIcon = () => {
+    switch (fileBadge.category) {
+      case "pdf":
+        return <FileText size={20} className="text-rose-400" />;
+      case "archive":
+        return <FileArchive size={20} className="text-amber-400" />;
+      case "code":
+        return <FileCode size={20} className="text-cyan-400" />;
+      case "sheet":
+        return <FileSpreadsheet size={20} className="text-emerald-400" />;
+      case "presentation":
+        return <FileText size={20} className="text-orange-400" />;
+      default:
+        return <FileText size={20} className="text-neutral-400 group-hover:text-indigo-400" />;
+    }
+  };
+
+  // 4. Generic & Structured Files (Document, Archive, Executable, Code, PDF, etc.)
   return (
-    <div
-      onClick={handleDownloadClick}
-      className="mt-2.5 max-w-sm sm:max-w-md p-3.5 bg-neutral-900/90 hover:bg-neutral-800/80 border border-neutral-800 hover:border-neutral-700 rounded-2xl flex items-center justify-between gap-3.5 shadow-md group cursor-pointer transition-all duration-200"
-    >
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="w-10 h-10 rounded-xl bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-400 group-hover:text-indigo-400 group-hover:border-indigo-500/30 transition-colors flex-shrink-0">
-          <FileText size={18} />
+    <div className="mt-2.5 max-w-sm sm:max-w-md p-3 bg-neutral-900/90 hover:bg-neutral-850 border border-neutral-800/90 hover:border-neutral-700/80 rounded-2xl flex items-center justify-between gap-3 shadow-md group transition-all duration-200">
+      <div 
+        onClick={handleDownloadClick}
+        className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
+      >
+        <div className="w-10 h-10 rounded-xl bg-neutral-800 border border-neutral-700 flex items-center justify-center flex-shrink-0 group-hover:border-neutral-600 transition-colors">
+          {renderFileCategoryIcon()}
         </div>
         <div className="flex flex-col min-w-0">
-          <span className="text-xs font-bold text-white truncate group-hover:text-indigo-200 transition-colors" title={displayName}>
+          <span className="text-xs font-bold text-neutral-100 truncate group-hover:text-indigo-200 transition-colors" title={displayName}>
             {displayName}
           </span>
-          <div className="flex items-center gap-2 mt-0.5">
-            {ext && (
-              <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-[9px] font-mono font-bold text-neutral-400">
-                {ext}
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border ${fileBadge.color}`}>
+              {fileBadge.label}
+            </span>
+            {effectiveSize ? (
+              <span className="text-[10px] text-neutral-400 font-mono">
+                {formatFileSize(effectiveSize)}
+              </span>
+            ) : (
+              <span className="text-[10px] text-neutral-500 font-mono">
+                Click to download
               </span>
             )}
-            <span className="text-[10px] text-neutral-500 font-mono">
-              {formatFileSize(size) || "Click to download"}
-            </span>
           </div>
         </div>
       </div>
 
-      <button
-        onClick={handleDownloadClick}
-        disabled={isDownloading}
-        className="p-2.5 bg-neutral-800 hover:bg-indigo-600 text-neutral-300 hover:text-white rounded-xl transition-all border border-neutral-700 shadow-sm flex-shrink-0 group-hover:scale-105"
-        title="Download file directly"
-      >
-        {isDownloading ? (
-          <Loader2 size={15} className="animate-spin text-white" />
-        ) : downloadSuccess ? (
-          <Check size={15} className="text-emerald-400" />
-        ) : (
-          <Download size={15} />
-        )}
-      </button>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* Quick Play button if user wants to force try media preview */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setEffectiveType("video");
+          }}
+          className="p-1.5 bg-neutral-800 hover:bg-indigo-600/80 text-neutral-300 hover:text-white rounded-lg transition-all border border-neutral-700 shadow-sm flex items-center gap-1 text-[11px] font-medium"
+          title="Play as video/media"
+        >
+          <Play size={12} fill="currentColor" />
+          <span className="hidden sm:inline text-[10px]">Play</span>
+        </button>
+
+        {/* Direct Download Button */}
+        <button
+          onClick={handleDownloadClick}
+          disabled={isDownloading}
+          className="p-1.5 bg-neutral-800 hover:bg-indigo-600 text-neutral-300 hover:text-white rounded-lg transition-all border border-neutral-700 shadow-sm flex items-center justify-center"
+          title="Download file directly"
+        >
+          {isDownloading ? (
+            <Loader2 size={13} className="animate-spin text-white" />
+          ) : downloadSuccess ? (
+            <Check size={13} className="text-emerald-400" />
+          ) : (
+            <Download size={13} />
+          )}
+        </button>
+      </div>
     </div>
   );
 }

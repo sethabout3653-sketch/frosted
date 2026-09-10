@@ -25,6 +25,168 @@ async function startServer() {
     }
   }
 
+  function getExtensionFromMime(mime: string, originalname: string): string {
+    const origExt = path.extname(originalname);
+    if (origExt && origExt.length > 1) return origExt.toLowerCase();
+
+    const m = (mime || "").toLowerCase();
+    if (m.includes("mp4")) return ".mp4";
+    if (m.includes("webm")) return ".webm";
+    if (m.includes("quicktime") || m.includes("mov")) return ".mov";
+    if (m.includes("matroska") || m.includes("mkv")) return ".mkv";
+    if (m.includes("avi") || m.includes("msvideo")) return ".avi";
+    if (m.includes("wmv")) return ".wmv";
+    if (m.includes("flv")) return ".flv";
+    if (m.includes("3gpp") || m.includes("3gp")) return ".3gp";
+    if (m.startsWith("video/")) return ".mp4";
+
+    if (m.includes("mpeg") || m.includes("mp3")) return ".mp3";
+    if (m.includes("wav") || m.includes("wave")) return ".wav";
+    if (m.includes("ogg") || m.includes("oga")) return ".ogg";
+    if (m.includes("m4a")) return ".m4a";
+    if (m.includes("aac")) return ".aac";
+    if (m.includes("flac")) return ".flac";
+    if (m.includes("opus")) return ".opus";
+    if (m.startsWith("audio/")) return ".mp3";
+
+    if (m.includes("png")) return ".png";
+    if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
+    if (m.includes("webp")) return ".webp";
+    if (m.includes("gif")) return ".gif";
+    if (m.includes("svg")) return ".svg";
+    if (m.includes("bmp")) return ".bmp";
+    if (m.includes("avif")) return ".avif";
+    if (m.startsWith("image/")) return ".png";
+
+    return "";
+  }
+
+  function detectFileMimeType(filePath: string): string {
+    try {
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === ".mp4" || ext === ".m4v") return "video/mp4";
+      if (ext === ".webm") return "video/webm";
+      if (ext === ".mov") return "video/quicktime";
+      if (ext === ".mkv") return "video/x-matroska";
+      if (ext === ".avi") return "video/x-msvideo";
+      if (ext === ".wmv") return "video/x-ms-wmv";
+      if (ext === ".flv") return "video/x-flv";
+      if (ext === ".ogv") return "video/ogg";
+      if (ext === ".3gp" || ext === ".3gpp") return "video/3gpp";
+      if (ext === ".ts") return "video/mp2t";
+      if (ext === ".mp3") return "audio/mpeg";
+      if (ext === ".wav") return "audio/wav";
+      if (ext === ".ogg" || ext === ".oga" || ext === ".opus") return "audio/ogg";
+      if (ext === ".m4a") return "audio/mp4";
+      if (ext === ".flac") return "audio/flac";
+      if (ext === ".aac") return "audio/aac";
+      if (ext === ".png") return "image/png";
+      if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+      if (ext === ".gif") return "image/gif";
+      if (ext === ".webp") return "image/webp";
+      if (ext === ".svg") return "image/svg+xml";
+      if (ext === ".pdf") return "application/pdf";
+      if (ext === ".zip") return "application/zip";
+      if (ext === ".json") return "application/json";
+      if (ext === ".txt" || ext === ".md" || ext === ".log" || ext === ".csv") return "text/plain";
+
+      // Inspect file header magic bytes if file exists
+      if (fs.existsSync(filePath)) {
+        const fd = fs.openSync(filePath, "r");
+        const buffer = Buffer.alloc(128);
+        const bytesRead = fs.readSync(fd, buffer, 0, 128, 0);
+        fs.closeSync(fd);
+
+        if (bytesRead >= 4) {
+          // MP4 / MOV: 'ftyp' at offset 4
+          if (bytesRead >= 8 && buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70) {
+            return "video/mp4";
+          }
+          // WebM / MKV
+          if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
+            return "video/webm";
+          }
+          // RIFF (AVI or WAV or WEBP)
+          if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
+            if (bytesRead >= 12 && buffer[8] === 0x41 && buffer[9] === 0x56 && buffer[10] === 0x49 && buffer[11] === 0x20) {
+              return "video/x-msvideo";
+            }
+            if (bytesRead >= 12 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+              return "image/webp";
+            }
+            if (bytesRead >= 12 && buffer[8] === 0x57 && buffer[9] === 0x41 && buffer[10] === 0x56 && buffer[11] === 0x45) {
+              return "audio/wav";
+            }
+          }
+          // FLAC
+          if (buffer[0] === 0x66 && buffer[1] === 0x4C && buffer[2] === 0x61 && buffer[3] === 0x43) {
+            return "audio/flac";
+          }
+          // PNG
+          if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+            return "image/png";
+          }
+          // JPEG
+          if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+            return "image/jpeg";
+          }
+          // GIF
+          if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+            return "image/gif";
+          }
+          // Ogg
+          if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
+            return "audio/ogg";
+          }
+          // MP3 ID3
+          if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
+            return "audio/mpeg";
+          }
+          // PDF
+          if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+            return "application/pdf";
+          }
+          // ZIP / DOCX / APK
+          if (buffer[0] === 0x50 && buffer[1] === 0x4B && (buffer[2] === 0x03 || buffer[2] === 0x05 || buffer[2] === 0x07)) {
+            return "application/zip";
+          }
+        }
+      }
+    } catch (e) {}
+    return "application/octet-stream";
+  }
+
+  function resolveStoredFilePath(requestedName: string): string | null {
+    const fn = path.basename(requestedName);
+    const p1 = path.join(uploadsDir, fn);
+    const p2 = path.join("/tmp/uploads", fn);
+    if (fs.existsSync(p1)) return p1;
+    if (fs.existsSync(p2)) return p2;
+
+    // Fuzzy search in uploads directories
+    const searchDirs = [uploadsDir, "/tmp/uploads"];
+    for (const dir of searchDirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const files = fs.readdirSync(dir);
+        // 1. Prefix or Substring Match
+        const match = files.find(
+          (f) =>
+            f === fn ||
+            f.startsWith(fn) ||
+            fn.startsWith(f) ||
+            f.replace(/\.[^.]+$/, "") === fn.replace(/\.[^.]+$/, "") ||
+            f.includes(fn) ||
+            fn.includes(f)
+        );
+        if (match) {
+          return path.join(dir, match);
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
   // Configure multer storage
   const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -32,8 +194,9 @@ async function startServer() {
     },
     filename: (req, file, cb) => {
       const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      const ext = path.extname(file.originalname);
-      const safeName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
+      const ext = getExtensionFromMime(file.mimetype, file.originalname);
+      const rawBase = path.basename(file.originalname, path.extname(file.originalname));
+      const safeName = (rawBase || "file").replace(/[^a-zA-Z0-9_-]/g, "_");
       cb(null, `${safeName}-${uniqueSuffix}${ext}`);
     },
   });
@@ -61,18 +224,44 @@ async function startServer() {
   app.use("/uploads", express.static("/tmp/uploads"));
 
   app.get("/uploads/:filename", (req, res) => {
-    const fn = path.basename(req.params.filename);
-    const p1 = path.join(uploadsDir, fn);
-    const p2 = path.join("/tmp/uploads", fn);
-    const targetPath = fs.existsSync(p1) ? p1 : (fs.existsSync(p2) ? p2 : null);
+    const fn = req.params.filename;
+    const targetPath = resolveStoredFilePath(fn);
     if (!targetPath) {
       return res.status(404).json({ error: "File not found in storage" });
     }
 
-    const downloadName = (req.query.filename as string) || (req.query.name as string) || fn;
+    const mimeType = detectFileMimeType(targetPath);
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Accept-Ranges", "bytes");
+
+    const downloadName = (req.query.filename as string) || (req.query.name as string) || path.basename(targetPath);
     if (req.query.download !== undefined) {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadName)}"`);
     }
+
+    // Support HTTP Range requests for video/audio seeking and buffer streaming
+    const range = req.headers.range;
+    if (range) {
+      try {
+        const stat = fs.statSync(targetPath);
+        const fileSize = stat.size;
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = end - start + 1;
+        const file = fs.createReadStream(targetPath, { start, end });
+        const head = {
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunksize,
+          "Content-Type": mimeType,
+        };
+        res.writeHead(206, head);
+        file.pipe(res);
+        return;
+      } catch (e) {}
+    }
+
     return res.sendFile(targetPath);
   });
 
@@ -88,9 +277,7 @@ async function startServer() {
       // Local storage upload
       if (fileUrl.startsWith("/uploads/")) {
         const fn = path.basename(fileUrl.split("?")[0]);
-        const p1 = path.join(uploadsDir, fn);
-        const p2 = path.join("/tmp/uploads", fn);
-        const targetPath = fs.existsSync(p1) ? p1 : (fs.existsSync(p2) ? p2 : null);
+        const targetPath = resolveStoredFilePath(fn);
         if (targetPath) {
           return res.download(targetPath, customName);
         }
@@ -122,6 +309,56 @@ async function startServer() {
       res.status(404).send("File not found");
     } catch (err: any) {
       res.status(500).send(err.message || "Failed to download file");
+    }
+  });
+
+  // Media inspection API to detect true MIME and category of any file
+  app.get("/api/media-info", async (req, res) => {
+    const fileUrl = (req.query.url as string) || (req.query.file as string) || "";
+    if (!fileUrl) {
+      return res.status(400).json({ error: "Missing url parameter" });
+    }
+
+    try {
+      if (fileUrl.startsWith("/uploads/")) {
+        const fn = path.basename(fileUrl.split("?")[0]);
+        const targetPath = resolveStoredFilePath(fn);
+        if (targetPath && fs.existsSync(targetPath)) {
+          const mime = detectFileMimeType(targetPath);
+          const stat = fs.statSync(targetPath);
+          let cat = "file";
+          if (mime.startsWith("video/")) cat = "video";
+          else if (mime.startsWith("audio/")) cat = "audio";
+          else if (mime.startsWith("image/")) cat = "image";
+          return res.json({
+            type: cat,
+            mimeType: mime,
+            size: stat.size,
+            filename: path.basename(targetPath),
+            extension: path.extname(targetPath).replace(/^\./, ""),
+          });
+        }
+      }
+
+      if (fileUrl.startsWith("data:")) {
+        const matches = fileUrl.match(/^data:([^;]+);base64,/);
+        const mime = matches ? matches[1] : "application/octet-stream";
+        let cat = "file";
+        if (mime.startsWith("video/")) cat = "video";
+        else if (mime.startsWith("audio/")) cat = "audio";
+        else if (mime.startsWith("image/")) cat = "image";
+        return res.json({ type: cat, mimeType: mime });
+      }
+
+      const headRes = await fetch(fileUrl, { method: "HEAD" });
+      const ct = headRes.headers.get("content-type") || "";
+      let cat = "file";
+      if (ct.startsWith("video/")) cat = "video";
+      else if (ct.startsWith("audio/")) cat = "audio";
+      else if (ct.startsWith("image/")) cat = "image";
+      return res.json({ type: cat, mimeType: ct });
+    } catch (e) {
+      return res.json({ type: "file", mimeType: "application/octet-stream" });
     }
   });
 
@@ -337,11 +574,37 @@ async function startServer() {
       // A. Multipart file from Multer
       const file = (req as any).file || (req as any).files?.[0];
       if (file) {
-        const fileUrl = `/uploads/${file.filename}`;
+        let detectedMime = file.mimetype;
+        if (file.path && fs.existsSync(file.path)) {
+          const magicMime = detectFileMimeType(file.path);
+          if (magicMime && magicMime !== "application/octet-stream") {
+            detectedMime = magicMime;
+          }
+        }
+
+        const ext = getExtensionFromMime(detectedMime, file.originalname);
+        let currentDiskName = file.filename;
+        let origName = file.originalname;
+
+        // If file on disk lacks extension but we know it, rename on disk
+        if (ext && !path.extname(currentDiskName) && file.path && fs.existsSync(file.path)) {
+          const newDiskName = `${currentDiskName}${ext}`;
+          const newPath = path.join(path.dirname(file.path), newDiskName);
+          try {
+            fs.renameSync(file.path, newPath);
+            currentDiskName = newDiskName;
+          } catch (e) {}
+        }
+
+        if (!path.extname(origName) && ext) {
+          origName = `${origName}${ext}`;
+        }
+
+        const fileUrl = `/uploads/${currentDiskName}`;
         return res.json({
           url: fileUrl,
-          filename: file.originalname,
-          mimetype: file.mimetype,
+          filename: origName,
+          mimetype: detectedMime,
           size: file.size,
         });
       }
