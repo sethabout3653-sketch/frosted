@@ -43,14 +43,46 @@ export default function MediaAttachment({
   name,
   size,
 }: MediaAttachmentProps) {
-  const initialType = detectMediaType(url, type, name);
+  // Extract metadata if encoded in JSON or URL query parameters
+  let initialUrl = url;
+  let initialName = name;
+  let initialTypeStr = type;
+  let initialSizeNum = size;
+
+  if (typeof url === "string" && url.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(url);
+      if (parsed && parsed.url) {
+        initialUrl = parsed.url;
+        if (parsed.name && !initialName) initialName = parsed.name;
+        if (parsed.type && !initialTypeStr) initialTypeStr = parsed.type;
+        if (parsed.size && !initialSizeNum) initialSizeNum = parsed.size;
+      }
+    } catch (e) {}
+  }
+
+  if (typeof initialUrl === "string" && (initialUrl.includes("?name=") || initialUrl.includes("&name=") || initialUrl.includes("?filename="))) {
+    try {
+      const u = new URL(initialUrl, "https://local.dummy");
+      const nameParam = u.searchParams.get("name") || u.searchParams.get("filename");
+      const typeParam = u.searchParams.get("type");
+      const sizeParam = u.searchParams.get("size");
+      if (nameParam && !initialName) initialName = decodeURIComponent(nameParam);
+      if (typeParam && !initialTypeStr) initialTypeStr = decodeURIComponent(typeParam);
+      if (sizeParam && !initialSizeNum) initialSizeNum = parseInt(sizeParam, 10);
+    } catch (e) {}
+  }
+
+  const initialType = detectMediaType(initialUrl, initialTypeStr, initialName);
   const [effectiveType, setEffectiveType] = useState<MediaType>(initialType);
-  const [effectiveName, setEffectiveName] = useState<string>(name || getFileName(url, "attachment"));
-  const [effectiveSize, setEffectiveSize] = useState<number | undefined>(size);
+  const [effectiveName, setEffectiveName] = useState<string>(
+    initialName || getFileName(initialUrl, "attachment")
+  );
+  const [effectiveSize, setEffectiveSize] = useState<number | undefined>(initialSizeNum);
 
   const displayName = effectiveName;
-  const ext = getFileExtension(displayName || url).toUpperCase();
-  const fileBadge = getFileTypeBadge(displayName || url);
+  const ext = getFileExtension(displayName || initialUrl).toUpperCase();
+  const fileBadge = getFileTypeBadge(displayName || initialUrl);
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -61,21 +93,51 @@ export default function MediaAttachment({
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const [displayUrl, setDisplayUrl] = useState<string>(url);
+  const [displayUrl, setDisplayUrl] = useState<string>(initialUrl);
 
   // Probe media metadata in background to accurately recognize ANY file type
   useEffect(() => {
     let isMounted = true;
-    const initial = detectMediaType(url, type, name);
-    setEffectiveType(initial);
-    if (name) setEffectiveName(name);
-    if (size) setEffectiveSize(size);
-    setDisplayUrl(url);
+    let activeUrl = url;
+    let activeName = name;
+    let activeType = type;
+    let activeSize = size;
 
-    if (url) {
+    if (typeof url === "string" && url.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(url);
+        if (parsed && parsed.url) {
+          activeUrl = parsed.url;
+          if (parsed.name && !activeName) activeName = parsed.name;
+          if (parsed.type && !activeType) activeType = parsed.type;
+          if (parsed.size && !activeSize) activeSize = parsed.size;
+        }
+      } catch (e) {}
+    }
+
+    if (typeof activeUrl === "string" && (activeUrl.includes("?name=") || activeUrl.includes("&name=") || activeUrl.includes("?filename="))) {
+      try {
+        const u = new URL(activeUrl, "https://local.dummy");
+        const nameParam = u.searchParams.get("name") || u.searchParams.get("filename");
+        const typeParam = u.searchParams.get("type");
+        const sizeParam = u.searchParams.get("size");
+        if (nameParam && !activeName) activeName = decodeURIComponent(nameParam);
+        if (typeParam && !activeType) activeType = decodeURIComponent(typeParam);
+        if (sizeParam && !activeSize) activeSize = parseInt(sizeParam, 10);
+      } catch (e) {}
+    }
+
+    const detected = detectMediaType(activeUrl, activeType, activeName);
+    setEffectiveType(detected);
+    const resolvedName = activeName || getFileName(activeUrl, "attachment");
+    setEffectiveName(resolvedName);
+    if (activeSize) setEffectiveSize(activeSize);
+    setDisplayUrl(activeUrl);
+
+    if (activeUrl) {
       // 0. Convert Data URLs to Blob URLs for better media playback stability
-      if (url.startsWith("data:")) {
-        fetch(url)
+      if (activeUrl.startsWith("data:")) {
+        fetch(activeUrl)
           .then(res => res.blob())
           .then(blob => {
             if (!isMounted) return;
@@ -86,12 +148,11 @@ export default function MediaAttachment({
       }
 
       // If we are on static hosting and trying to load a local /uploads/ path, it's missing.
-      // Eagerly check if the server actually has it, or if it's a Vercel 404 falling back to index.html.
-      if (url.startsWith("/uploads/") || url.startsWith("/api/")) {
-        fetch(url, { method: "HEAD" }).then(res => {
+      if (activeUrl.startsWith("/uploads/") || activeUrl.startsWith("/api/")) {
+        fetch(activeUrl, { method: "HEAD" }).then(res => {
           if (!isMounted) return;
           const contentType = res.headers.get("content-type") || "";
-          if (contentType.includes("text/html") && !url.toLowerCase().endsWith(".html")) {
+          if (contentType.includes("text/html") && !activeUrl.toLowerCase().endsWith(".html")) {
             setIsUnavailable(true);
           }
         }).catch(() => {
@@ -99,15 +160,16 @@ export default function MediaAttachment({
         });
       }
 
-      probeUrlMediaType(url).then((probed) => {
+      probeUrlMediaType(activeUrl).then((probed) => {
         if (!isMounted || !probed) return;
         if (probed.type) {
           setEffectiveType(probed.type);
         }
-        if (probed.filename && (!name || name.startsWith("file_") || !name.includes("."))) {
+        // Only update filename from probe if activeName is completely missing or generic
+        if (probed.filename && (!activeName || activeName === "attachment" || activeName.startsWith("file_") || !activeName.includes("."))) {
           setEffectiveName(probed.filename);
         }
-        if (probed.size && !size) {
+        if (probed.size && !activeSize) {
           setEffectiveSize(probed.size);
         }
       });
@@ -137,8 +199,8 @@ export default function MediaAttachment({
     try {
       let finalName = displayName;
       if (!finalName.includes(".")) {
-        const ext = getFileExtension(url);
-        if (ext) finalName = `${finalName}.${ext}`;
+        const detectedExt = (ext || "").toLowerCase() || getFileExtension(displayUrl || url);
+        if (detectedExt) finalName = `${finalName}.${detectedExt}`;
       }
       await downloadFile(displayUrl || url, finalName);
       setDownloadSuccess(true);

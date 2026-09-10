@@ -363,6 +363,8 @@ CREATE TABLE IF NOT EXISTS voice_users (
     "isMuted" BOOLEAN,
     "isVideoOn" BOOLEAN,
     "isVideoLoading" BOOLEAN,
+    "isScreenSharing" BOOLEAN,
+    "isScreenAudioOn" BOOLEAN,
     timestamp BIGINT
 );
 

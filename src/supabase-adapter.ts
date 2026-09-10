@@ -48,7 +48,21 @@ export const cassandra = {
         });
 
         if (serverRes && serverRes.url) {
-          return serverRes;
+          let finalUrl = serverRes.url;
+          const origName = serverRes.filename || file.name;
+          const origType = serverRes.mimetype || file.type || "application/octet-stream";
+          const origSize = serverRes.size || file.size;
+          if (finalUrl && !finalUrl.startsWith("data:") && !finalUrl.includes("?name=") && !finalUrl.includes("&name=")) {
+            const sep = finalUrl.includes("?") ? "&" : "?";
+            finalUrl = `${finalUrl}${sep}name=${encodeURIComponent(origName)}&type=${encodeURIComponent(origType)}&size=${origSize}`;
+          }
+          return {
+            ...serverRes,
+            url: finalUrl,
+            filename: origName,
+            mimetype: origType,
+            size: origSize,
+          };
         }
       } catch (err) {
         console.warn("Server upload endpoint unavailable (e.g. Vercel static deployment). Using embedded Data URL storage:", err);

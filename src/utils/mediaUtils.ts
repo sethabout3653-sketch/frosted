@@ -22,48 +22,120 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 
 /**
- * Extracts a clean lowercase file extension from a filename or URL (ignoring query strings/hashes).
+ * Extracts a clean lowercase file extension from a filename or URL (checking query params, JSON payloads, and paths).
  */
 export function getFileExtension(filenameOrUrl: string = ""): string {
   if (!filenameOrUrl) return "";
   
+  // 1. JSON payload support
+  if (filenameOrUrl.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(filenameOrUrl);
+      if (parsed.name) return getFileExtension(parsed.name);
+      if (parsed.url) return getFileExtension(parsed.url);
+    } catch (e) {}
+  }
+
+  // 2. Query parameter check (?name=... or ?filename=...)
+  try {
+    if (filenameOrUrl.includes("?name=") || filenameOrUrl.includes("&name=") || 
+        filenameOrUrl.includes("?filename=") || filenameOrUrl.includes("&filename=")) {
+      const u = new URL(filenameOrUrl, "https://local.dummy");
+      const name = u.searchParams.get("name") || u.searchParams.get("filename");
+      if (name) {
+        const dotIdx = name.lastIndexOf(".");
+        if (dotIdx !== -1 && dotIdx < name.length - 1) {
+          const ext = name.slice(dotIdx + 1).toLowerCase();
+          if (ext === "jpeg") return "jpg";
+          return ext;
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 3. Data URL check
   if (filenameOrUrl.startsWith("data:")) {
     const match = filenameOrUrl.match(/^data:([a-zA-Z0-9\/\-\+\.]+);/);
     if (match && match[1]) {
       const parts = match[1].split("/");
-      return parts.length > 1 ? parts[1].toLowerCase() : "";
+      const subtype = parts.length > 1 ? parts[1].toLowerCase() : "";
+      if (subtype === "jpeg") return "jpg";
+      if (subtype === "quicktime") return "mov";
+      if (subtype.includes("wordprocessingml")) return "docx";
+      if (subtype.includes("spreadsheetml")) return "xlsx";
+      if (subtype.includes("presentationml")) return "pptx";
+      return subtype;
     }
     return "";
   }
   
+  // 4. Standard path / filename
   try {
     const clean = filenameOrUrl.split("?")[0].split("#")[0];
     const lastSlash = clean.lastIndexOf("/");
     const basename = lastSlash !== -1 ? clean.slice(lastSlash + 1) : clean;
     const dotIndex = basename.lastIndexOf(".");
     if (dotIndex !== -1 && dotIndex < basename.length - 1) {
-      return basename.slice(dotIndex + 1).toLowerCase();
+      const ext = basename.slice(dotIndex + 1).toLowerCase();
+      if (ext === "jpeg") return "jpg";
+      return ext;
     }
   } catch (e) {}
   return "";
 }
 
 /**
- * Extracts a clean filename from a URL or attachment string.
+ * Extracts a clean, human-friendly filename from a URL or attachment string,
+ * prioritizing query params and stripping Multer server timestamp suffixes.
  */
 export function getFileName(urlOrPath: string = "", fallback: string = "file"): string {
   if (!urlOrPath) return fallback;
   
+  // 1. JSON payload support
+  if (urlOrPath.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(urlOrPath);
+      if (parsed.name) return parsed.name;
+      if (parsed.filename) return parsed.filename;
+      if (parsed.url) return getFileName(parsed.url, fallback);
+    } catch (e) {}
+  }
+
+  // 2. Query parameter check (?name=... or ?filename=...)
+  try {
+    if (urlOrPath.includes("?name=") || urlOrPath.includes("&name=") || 
+        urlOrPath.includes("?filename=") || urlOrPath.includes("&filename=")) {
+      const u = new URL(urlOrPath, "https://local.dummy");
+      const name = u.searchParams.get("name") || u.searchParams.get("filename");
+      if (name) {
+        return decodeURIComponent(name).trim();
+      }
+    }
+  } catch (e) {}
+
+  // 3. Data URLs
   if (urlOrPath.startsWith("data:")) {
     const ext = getFileExtension(urlOrPath);
     return ext ? `${fallback}.${ext}` : fallback;
   }
   
+  // 4. Clean path and strip server disk timestamp suffixes like: name-1725999999999-123456789.ext
   try {
     const clean = urlOrPath.split("?")[0].split("#")[0];
     const lastSlash = clean.lastIndexOf("/");
-    const name = lastSlash !== -1 ? clean.slice(lastSlash + 1) : clean;
-    return decodeURIComponent(name) || fallback;
+    let name = lastSlash !== -1 ? clean.slice(lastSlash + 1) : clean;
+    name = decodeURIComponent(name) || fallback;
+
+    // Detect and clean Multer generated suffix: <basename>-<10-14 digits>-<5-12 digits>.<ext>
+    const multerPattern = /^(.*?)-(\d{10,14})-(\d{5,12})(\.[a-zA-Z0-9]+)$/;
+    const match = name.match(multerPattern);
+    if (match) {
+      const base = match[1].replace(/_/g, " ");
+      const ext = match[4];
+      return `${base}${ext}`;
+    }
+
+    return name;
   } catch (e) {
     return fallback;
   }

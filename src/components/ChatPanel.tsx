@@ -489,11 +489,17 @@ export default function ChatPanel({
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const currentText = text.trim();
-    const currentAttachment = attachment;
+    let currentAttachment = attachment;
     const currentType = attachmentType;
     const currentName = attachmentName;
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
+
+    // Attach original file name, MIME type, and size to the URL so all other users receive exact name & extension
+    if (currentAttachment && currentName && !currentAttachment.startsWith("data:") && !currentAttachment.includes("?name=") && !currentAttachment.includes("&name=")) {
+      const sep = currentAttachment.includes("?") ? "&" : "?";
+      currentAttachment = `${currentAttachment}${sep}name=${encodeURIComponent(currentName)}&type=${encodeURIComponent(currentType || "")}&size=${currentSize || 0}`;
+    }
 
     const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);

@@ -17,6 +17,9 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  ScreenShare,
+  ScreenShareOff,
+  MonitorUp,
 } from "lucide-react";
 import {
   collection,
@@ -46,6 +49,8 @@ interface Participant extends ChatProfile {
   isMuted?: boolean;
   isVideoOn?: boolean;
   isVideoLoading?: boolean;
+  isScreenSharing?: boolean;
+  isScreenAudioOn?: boolean;
 }
 
 const ICE_SERVERS: RTCConfiguration = {
@@ -158,6 +163,32 @@ export default function VoiceChannel({
   const isMountedRef = useRef<boolean>(true);
   const isVideoOnRef = useRef<boolean>(false);
 
+  // Screen Sharing states and refs
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isScreenShareLoading, setIsScreenShareLoading] = useState(false);
+  const [isScreenAudioOn, setIsScreenAudioOn] = useState(false);
+  const [screenAudioVolume, setScreenAudioVolume] = useState<number>(1.0);
+  const [fullscreenType, setFullscreenType] = useState<"camera" | "screen">("camera");
+
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const localScreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteScreenVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
+  const remoteScreenStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const dummyScreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dummyScreenTrackRef = useRef<MediaStreamTrack | null>(null);
+  const isScreenSharingRef = useRef<boolean>(false);
+  const isScreenAudioOnRef = useRef<boolean>(false);
+
+  // Senders for dynamic track replacement
+  const cameraSendersRef = useRef<{ [uid: string]: RTCRtpSender }>({});
+  const screenSendersRef = useRef<{ [uid: string]: RTCRtpSender }>({});
+  const audioSendersRef = useRef<{ [uid: string]: RTCRtpSender }>({});
+
+  // Web Audio nodes for mixed microphone + screen audio
+  const screenAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const screenGainNodeRef = useRef<GainNode | null>(null);
+  const mixedDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+
   // Reusable dummy video track generator for initial WebRTC video m-line negotiation
   const dummyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const dummyTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -179,6 +210,20 @@ export default function VoiceChannel({
   useEffect(() => {
     isCameraLoadingRef.current = isCameraLoading;
   }, [isCameraLoading]);
+
+  useEffect(() => {
+    isScreenSharingRef.current = isScreenSharing;
+  }, [isScreenSharing]);
+
+  useEffect(() => {
+    isScreenAudioOnRef.current = isScreenAudioOn;
+  }, [isScreenAudioOn]);
+
+  useEffect(() => {
+    if (screenGainNodeRef.current) {
+      screenGainNodeRef.current.gain.value = screenAudioVolume;
+    }
+  }, [screenAudioVolume]);
 
   // 1-second interval to continuously re-evaluate presence and prune disconnected/lagging participants
   useEffect(() => {
@@ -207,6 +252,28 @@ export default function VoiceChannel({
       });
   }, [participants, currentTime]);
 
+  // Active Screen Share descriptor (local or remote)
+  const activeScreenShare = useMemo(() => {
+    if (isScreenSharing) {
+      return {
+        uid: profile.uid,
+        username: profile.username,
+        isLocal: true,
+        hasAudio: isScreenAudioOn,
+      };
+    }
+    const remoteSharer = activeParticipants.find((p) => p.isScreenSharing);
+    if (remoteSharer) {
+      return {
+        uid: remoteSharer.uid,
+        username: remoteSharer.username,
+        isLocal: false,
+        hasAudio: !!remoteSharer.isScreenAudioOn,
+      };
+    }
+    return null;
+  }, [isScreenSharing, profile.uid, profile.username, isScreenAudioOn, activeParticipants]);
+
   // Fullscreen user video state and controls
   const [fullscreenUid, setFullscreenUid] = useState<string | null>(null);
   const [fullscreenFit, setFullscreenFit] = useState<"contain" | "cover">("contain");
@@ -221,6 +288,7 @@ export default function VoiceChannel({
       document.exitFullscreen().catch(() => {});
     }
     setFullscreenUid(null);
+    setFullscreenType("camera");
     setIsNativeFullscreen(false);
   }, []);
 
@@ -282,29 +350,48 @@ export default function VoiceChannel({
   // Re-bind video stream in fullscreen when track or fullscreen target updates
   useEffect(() => {
     if (!fullscreenUid) return;
-    const isLocal = fullscreenUid === profile.uid;
-    const stream = isLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
-    if (fullscreenVideoRef.current && stream) {
-      if (fullscreenVideoRef.current.srcObject !== stream) {
-        fullscreenVideoRef.current.srcObject = stream;
+    if (fullscreenType === "screen") {
+      const isLocal = fullscreenUid === profile.uid;
+      const stream = isLocal ? screenStreamRef.current : remoteScreenStreamsRef.current[fullscreenUid];
+      if (fullscreenVideoRef.current && stream) {
+        if (fullscreenVideoRef.current.srcObject !== stream) {
+          fullscreenVideoRef.current.srcObject = stream;
+        }
+        fullscreenVideoRef.current.play().catch(() => {});
       }
-      fullscreenVideoRef.current.play().catch(() => {});
+    } else {
+      const isLocal = fullscreenUid === profile.uid;
+      const stream = isLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
+      if (fullscreenVideoRef.current && stream) {
+        if (fullscreenVideoRef.current.srcObject !== stream) {
+          fullscreenVideoRef.current.srcObject = stream;
+        }
+        fullscreenVideoRef.current.play().catch(() => {});
+      }
     }
-  }, [fullscreenUid, trackTrigger, isVideoOn, profile.uid]);
+  }, [fullscreenUid, fullscreenType, trackTrigger, isVideoOn, isScreenSharing, profile.uid]);
 
-  // List of active participants with video on (for quick switching in fullscreen)
+  // List of active video/screen feeds (for quick switching in fullscreen)
   const participantsWithVideo = useMemo(() => {
-    const list: { uid: string; username: string; isLocal: boolean }[] = [];
+    const list: { uid: string; username: string; isLocal: boolean; type: "camera" | "screen" }[] = [];
+    if (isScreenSharing) {
+      list.push({ uid: profile.uid, username: `${profile.username} (Screen)`, isLocal: true, type: "screen" });
+    }
+    activeParticipants.forEach((p) => {
+      if (p.isScreenSharing) {
+        list.push({ uid: p.uid, username: `${p.username} (Screen)`, isLocal: false, type: "screen" });
+      }
+    });
     if (isVideoOn) {
-      list.push({ uid: profile.uid, username: `${profile.username} (You)`, isLocal: true });
+      list.push({ uid: profile.uid, username: `${profile.username} (Camera)`, isLocal: true, type: "camera" });
     }
     activeParticipants.forEach((p) => {
       if (p.isVideoOn) {
-        list.push({ uid: p.uid, username: p.username, isLocal: false });
+        list.push({ uid: p.uid, username: `${p.username} (Camera)`, isLocal: false, type: "camera" });
       }
     });
     return list;
-  }, [isVideoOn, profile.uid, profile.username, activeParticipants]);
+  }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants]);
 
   // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
   // while keeping noise suppression & AGC disabled so ANY sound (music, instruments, soundboards, whispers) is fully allowed
@@ -390,6 +477,17 @@ export default function VoiceChannel({
         source.connect(analyser);
         analyserRef.current = analyser;
 
+        // Mixed destination node that combines microphone and any screen share audio
+        const mixedDest = ctx.createMediaStreamDestination();
+        mixedDestinationRef.current = mixedDest;
+
+        const micGain = ctx.createGain();
+        micGain.gain.value = isMutedRef.current ? 0 : 1.0;
+        gainNodeRef.current = micGain;
+
+        source.connect(micGain);
+        micGain.connect(mixedDest);
+
         // Monitor real-time volume levels & speech/sound activity for local user and remote participants
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const updateLevel = () => {
@@ -461,6 +559,29 @@ export default function VoiceChannel({
     return track;
   }, []);
 
+  const getOrCreateDummyScreenTrack = useCallback((): MediaStreamTrack => {
+    if (dummyScreenTrackRef.current && dummyScreenTrackRef.current.readyState === "live") {
+      return dummyScreenTrackRef.current;
+    }
+    let canvas = dummyScreenCanvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.width = 16;
+      canvas.height = 16;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#030303";
+        ctx.fillRect(0, 0, 16, 16);
+      }
+      dummyScreenCanvasRef.current = canvas;
+    }
+    const canvasStream = canvas.captureStream(5);
+    const track = canvasStream.getVideoTracks()[0];
+    track.enabled = true;
+    dummyScreenTrackRef.current = track;
+    return track;
+  }, []);
+
   const stopAllMediaTracks = useCallback(() => {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -504,11 +625,42 @@ export default function VoiceChannel({
       videoStreamRef.current = null;
     }
 
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+          t.enabled = false;
+        } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+
     if (dummyTrackRef.current) {
       try {
         dummyTrackRef.current.stop();
       } catch {}
       dummyTrackRef.current = null;
+    }
+
+    if (dummyScreenTrackRef.current) {
+      try {
+        dummyScreenTrackRef.current.stop();
+      } catch {}
+      dummyScreenTrackRef.current = null;
+    }
+
+    if (screenAudioSourceRef.current) {
+      try {
+        screenAudioSourceRef.current.disconnect();
+      } catch {}
+      screenAudioSourceRef.current = null;
+    }
+
+    if (screenGainNodeRef.current) {
+      try {
+        screenGainNodeRef.current.disconnect();
+      } catch {}
+      screenGainNodeRef.current = null;
     }
 
     Object.values(peersRef.current).forEach((pc: RTCPeerConnection) => {
@@ -525,6 +677,9 @@ export default function VoiceChannel({
     });
     peersRef.current = {};
     iceCandidateQueuesRef.current = {};
+    cameraSendersRef.current = {};
+    screenSendersRef.current = {};
+    audioSendersRef.current = {};
 
     Object.values(remoteStreamsRef.current).forEach((stream: MediaStream) => {
       stream.getTracks().forEach((t) => {
@@ -534,6 +689,15 @@ export default function VoiceChannel({
       });
     });
     remoteStreamsRef.current = {};
+
+    Object.values(remoteScreenStreamsRef.current).forEach((stream: MediaStream) => {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+    });
+    remoteScreenStreamsRef.current = {};
 
     (Object.values(remoteAnalysersRef.current) as Array<{ analyser: AnalyserNode; source: MediaStreamAudioSourceNode }>).forEach((entry) => {
       try {
@@ -593,6 +757,17 @@ export default function VoiceChannel({
           if (videoEl && videoEl.srcObject !== stream) {
             videoEl.srcObject = stream;
             videoEl.play().catch(() => {});
+          }
+        }
+      }
+
+      if (p.isScreenSharing) {
+        const screenStream = remoteScreenStreamsRef.current[p.uid];
+        if (screenStream) {
+          const screenVideoEl = remoteScreenVideoRefs.current[p.uid];
+          if (screenVideoEl && screenVideoEl.srcObject !== screenStream) {
+            screenVideoEl.srcObject = screenStream;
+            screenVideoEl.play().catch(() => {});
           }
         }
       }
@@ -689,13 +864,14 @@ export default function VoiceChannel({
       peersRef.current[partnerUid] = pc;
       iceCandidateQueuesRef.current[partnerUid] = [];
 
-      // 1. Add microphone audio track
+      // 1. Add microphone / mixed audio track
       micStream.getAudioTracks().forEach((track) => {
-        pc.addTrack(track, micStream);
+        const audioSender = pc.addTrack(track, micStream);
+        audioSendersRef.current[partnerUid] = audioSender;
       });
 
       // Maximize audio sender encoding bitrate to 510kbps uncapped
-      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      const audioSender = audioSendersRef.current[partnerUid] || pc.getSenders().find((s) => s.track?.kind === "audio");
       if (audioSender && audioSender.setParameters) {
         try {
           const params = audioSender.getParameters();
@@ -709,12 +885,21 @@ export default function VoiceChannel({
         } catch (e) {}
       }
 
-      // 2. Add the camera track only when enabled, otherwise use a stable placeholder
+      // 2. Add camera track (transceiver 1)
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
       const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
         ? realVideoTrack
         : getOrCreateDummyVideoTrack();
-      pc.addTrack(cameraTrack, micStream);
+      const cameraSender = pc.addTrack(cameraTrack, micStream);
+      cameraSendersRef.current[partnerUid] = cameraSender;
+
+      // 3. Add screen share track (transceiver 2)
+      const realScreenTrack = screenStreamRef.current?.getVideoTracks()[0];
+      const screenTrack = realScreenTrack && realScreenTrack.readyState === "live"
+        ? realScreenTrack
+        : getOrCreateDummyScreenTrack();
+      const screenSender = pc.addTrack(screenTrack, micStream);
+      screenSendersRef.current[partnerUid] = screenSender;
 
       // Handle local ICE candidates
       pc.onicecandidate = (event) => {
@@ -723,50 +908,83 @@ export default function VoiceChannel({
         }
       };
 
-      // Handle remote incoming tracks (both audio and video)
+      // Handle remote incoming tracks (audio, camera, and screen share)
       pc.ontrack = (event) => {
-        if (!remoteStreamsRef.current[partnerUid]) {
-          remoteStreamsRef.current[partnerUid] = new MediaStream();
-        }
-        const rStream = remoteStreamsRef.current[partnerUid];
-        if (event.track && !rStream.getTracks().some((track) => track.id === event.track.id)) {
-          if (event.track.kind === "audio") {
+        if (event.track.kind === "audio") {
+          if (!remoteStreamsRef.current[partnerUid]) {
+            remoteStreamsRef.current[partnerUid] = new MediaStream();
+          }
+          const rStream = remoteStreamsRef.current[partnerUid];
+          if (!rStream.getTracks().some((track) => track.id === event.track.id)) {
             rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
+            rStream.addTrack(event.track);
           }
-          rStream.addTrack(event.track);
-        }
 
-        // Attach to remote audio player
-        const audioEl = remoteAudioRefs.current[partnerUid];
-        if (audioEl) {
-          if (audioEl.srcObject !== rStream) {
-            audioEl.srcObject = rStream;
-          }
-          audioEl.play().catch(() => {});
-        }
-
-        // Attach remote audio track to analyser for accurate speaking detection
-        if (event.track.kind === "audio" && audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-          try {
-            if (remoteAnalysersRef.current[partnerUid]) {
-              remoteAnalysersRef.current[partnerUid].source.disconnect();
+          // Attach to remote audio player
+          const audioEl = remoteAudioRefs.current[partnerUid];
+          if (audioEl) {
+            if (audioEl.srcObject !== rStream) {
+              audioEl.srcObject = rStream;
             }
-            const rSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([event.track]));
-            const rAnalyser = audioCtxRef.current.createAnalyser();
-            rAnalyser.fftSize = 128;
-            rAnalyser.smoothingTimeConstant = 0.2;
-            rSource.connect(rAnalyser);
-            remoteAnalysersRef.current[partnerUid] = { analyser: rAnalyser, source: rSource };
-          } catch (e) {
-            console.warn("Could not create remote audio analyser:", e);
+            audioEl.play().catch(() => {});
           }
-        }
 
-        // Attach to remote video player
-        const videoEl = remoteVideoRefs.current[partnerUid];
-        if (videoEl) {
-          if (videoEl.srcObject !== rStream) videoEl.srcObject = rStream;
-          videoEl.play().catch(() => {});
+          // Attach remote audio track to analyser for accurate speaking detection
+          if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+            try {
+              if (remoteAnalysersRef.current[partnerUid]) {
+                remoteAnalysersRef.current[partnerUid].source.disconnect();
+              }
+              const rSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([event.track]));
+              const rAnalyser = audioCtxRef.current.createAnalyser();
+              rAnalyser.fftSize = 128;
+              rAnalyser.smoothingTimeConstant = 0.2;
+              rSource.connect(rAnalyser);
+              remoteAnalysersRef.current[partnerUid] = { analyser: rAnalyser, source: rSource };
+            } catch (e) {
+              console.warn("Could not create remote audio analyser:", e);
+            }
+          }
+        } else if (event.track.kind === "video") {
+          const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
+          const isScreen = event.transceiver === videoTransceivers[1] || event.transceiver.mid === "2";
+
+          if (isScreen) {
+            if (!remoteScreenStreamsRef.current[partnerUid]) {
+              remoteScreenStreamsRef.current[partnerUid] = new MediaStream();
+            }
+            const scrStream = remoteScreenStreamsRef.current[partnerUid];
+            if (!scrStream.getTracks().some((track) => track.id === event.track.id)) {
+              scrStream.getVideoTracks().forEach((track) => scrStream.removeTrack(track));
+              scrStream.addTrack(event.track);
+            }
+
+            const screenEl = remoteScreenVideoRefs.current[partnerUid];
+            if (screenEl) {
+              if (screenEl.srcObject !== scrStream) {
+                screenEl.srcObject = scrStream;
+              }
+              screenEl.play().catch(() => {});
+            }
+          } else {
+            // Camera track
+            if (!remoteStreamsRef.current[partnerUid]) {
+              remoteStreamsRef.current[partnerUid] = new MediaStream();
+            }
+            const rStream = remoteStreamsRef.current[partnerUid];
+            if (!rStream.getTracks().some((track) => track.id === event.track.id)) {
+              rStream.getVideoTracks().forEach((track) => rStream.removeTrack(track));
+              rStream.addTrack(event.track);
+            }
+
+            const videoEl = remoteVideoRefs.current[partnerUid];
+            if (videoEl) {
+              if (videoEl.srcObject !== rStream) {
+                videoEl.srcObject = rStream;
+              }
+              videoEl.play().catch(() => {});
+            }
+          }
         }
 
         setTrackTrigger((v) => v + 1);
@@ -783,6 +1001,13 @@ export default function VoiceChannel({
           } catch (e) {}
           delete peersRef.current[partnerUid];
           delete iceCandidateQueuesRef.current[partnerUid];
+          delete cameraSendersRef.current[partnerUid];
+          delete screenSendersRef.current[partnerUid];
+          delete audioSendersRef.current[partnerUid];
+          if (remoteScreenStreamsRef.current[partnerUid]) {
+            remoteScreenStreamsRef.current[partnerUid].getTracks().forEach((t) => t.stop());
+            delete remoteScreenStreamsRef.current[partnerUid];
+          }
           if (remoteAnalysersRef.current[partnerUid]) {
             try {
               remoteAnalysersRef.current[partnerUid].source.disconnect();
@@ -799,7 +1024,7 @@ export default function VoiceChannel({
 
       return pc;
     },
-    [getOrCreateDummyVideoTrack, sendSignal]
+    [getOrCreateDummyVideoTrack, getOrCreateDummyScreenTrack, sendSignal]
   );
 
   const initiateCall = useCallback(
@@ -963,6 +1188,8 @@ export default function VoiceChannel({
           isMuted: false,
           isVideoOn: false,
           isVideoLoading: false,
+          isScreenSharing: false,
+          isScreenAudioOn: false,
           timestamp: Date.now(),
         });
 
@@ -1018,9 +1245,16 @@ export default function VoiceChannel({
                 } catch (e) {}
                 delete peersRef.current[peerUid];
                 delete iceCandidateQueuesRef.current[peerUid];
+                delete cameraSendersRef.current[peerUid];
+                delete screenSendersRef.current[peerUid];
+                delete audioSendersRef.current[peerUid];
                 if (remoteStreamsRef.current[peerUid]) {
                   remoteStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
                   delete remoteStreamsRef.current[peerUid];
+                }
+                if (remoteScreenStreamsRef.current[peerUid]) {
+                  remoteScreenStreamsRef.current[peerUid].getTracks().forEach((t) => t.stop());
+                  delete remoteScreenStreamsRef.current[peerUid];
                 }
               }
             });
@@ -1084,6 +1318,8 @@ export default function VoiceChannel({
           isMuted: isMutedRef.current,
           isVideoOn: isVideoOnRef.current,
           isVideoLoading: isCameraLoadingRef.current,
+          isScreenSharing: isScreenSharingRef.current,
+          isScreenAudioOn: isScreenAudioOnRef.current,
         }).catch(() => {});
         await updateDoc(doc(db, "presence", profile.uid), {
           lastSeen: Date.now(),
@@ -1138,9 +1374,16 @@ export default function VoiceChannel({
           } catch (e) {}
           delete peersRef.current[p.uid];
           delete iceCandidateQueuesRef.current[p.uid];
+          delete cameraSendersRef.current[p.uid];
+          delete screenSendersRef.current[p.uid];
+          delete audioSendersRef.current[p.uid];
           if (remoteStreamsRef.current[p.uid]) {
             remoteStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
             delete remoteStreamsRef.current[p.uid];
+          }
+          if (remoteScreenStreamsRef.current[p.uid]) {
+            remoteScreenStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteScreenStreamsRef.current[p.uid];
           }
         }
         
@@ -1166,6 +1409,10 @@ export default function VoiceChannel({
       rawStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = !nextMuted;
       });
+    }
+
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = nextMuted ? 0 : 1.0;
     }
 
     try {
@@ -1234,13 +1481,11 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = pc.getSenders().find(
+              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
                 (s) => s.track?.kind === "video"
               );
               if (videoSender) {
                 await videoSender.replaceTrack(realVideoTrack);
-              } else if (localStreamRef.current) {
-                pc.addTrack(realVideoTrack, localStreamRef.current);
               }
             }
           })
@@ -1264,7 +1509,7 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = pc.getSenders().find(
+              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
                 (s) => s.track?.kind === "video"
               );
               if (videoSender) {
@@ -1306,6 +1551,178 @@ export default function VoiceChannel({
         isVideoOn: false,
         isVideoLoading: false,
       }).catch(() => {});
+    }
+  };
+
+  // Screen audio volume dynamic listener
+  useEffect(() => {
+    if (screenGainNodeRef.current) {
+      screenGainNodeRef.current.gain.value = screenAudioVolume;
+    }
+  }, [screenAudioVolume]);
+
+  // Stop Screen Share
+  const stopScreenShare = useCallback(async () => {
+    setIsScreenSharing(false);
+    isScreenSharingRef.current = false;
+    setIsScreenShareLoading(false);
+    setIsScreenAudioOn(false);
+    isScreenAudioOnRef.current = false;
+
+    // 1. Swap back to dummy screen track across all peers
+    const dummyTrack = getOrCreateDummyScreenTrack();
+    await Promise.all(
+      Object.keys(peersRef.current).map(async (pUid) => {
+        const sender = screenSendersRef.current[pUid];
+        if (sender) {
+          try {
+            await sender.replaceTrack(dummyTrack);
+          } catch (e) {}
+        }
+      })
+    );
+
+    // 2. Disconnect screen audio from Web Audio mix
+    if (screenAudioSourceRef.current) {
+      try {
+        screenAudioSourceRef.current.disconnect();
+      } catch (e) {}
+      screenAudioSourceRef.current = null;
+    }
+    if (screenGainNodeRef.current) {
+      try {
+        screenGainNodeRef.current.disconnect();
+      } catch (e) {}
+      screenGainNodeRef.current = null;
+    }
+
+    // 3. Stop screen capture stream tracks
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+          track.enabled = false;
+        } catch (e) {}
+      });
+      screenStreamRef.current = null;
+    }
+
+    if (localScreenVideoRef.current) {
+      localScreenVideoRef.current.srcObject = null;
+    }
+
+    // If currently viewing local screen in fullscreen, revert
+    if (fullscreenUid === profile.uid && fullscreenType === "screen") {
+      setFullscreenUid(null);
+      setFullscreenType("camera");
+    }
+
+    // 4. Update Firestore
+    await updateDoc(doc(db, "voice_users", profile.uid), {
+      isScreenSharing: false,
+      isScreenAudioOn: false,
+    }).catch(() => {});
+  }, [fullscreenType, fullscreenUid, getOrCreateDummyScreenTrack, profile.uid]);
+
+  // Start Screen Share with Audio Support
+  const startScreenShare = async () => {
+    if (isScreenShareLoading) return;
+    setIsScreenShareLoading(true);
+
+    try {
+      // Prompt user to select screen / window / tab with audio support
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          displaySurface: "monitor",
+          frameRate: { ideal: 30, max: 60 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 2,
+        },
+      });
+
+      if (!isMountedRef.current) {
+        displayStream.getTracks().forEach((t) => t.stop());
+        setIsScreenShareLoading(false);
+        return;
+      }
+
+      screenStreamRef.current = displayStream;
+      const screenVideoTrack = displayStream.getVideoTracks()[0];
+      const screenAudioTracks = displayStream.getAudioTracks();
+      const hasAudio = screenAudioTracks.length > 0;
+
+      // Handle user clicking native browser "Stop sharing" button
+      screenVideoTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      // Connect screen audio to the live AudioContext mix if audio track is present
+      if (hasAudio && audioCtxRef.current && mixedDestinationRef.current) {
+        try {
+          const screenAudioSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
+          const screenGain = audioCtxRef.current.createGain();
+          screenGain.gain.value = screenAudioVolume;
+          screenAudioSource.connect(screenGain);
+          screenGain.connect(mixedDestinationRef.current);
+          screenAudioSourceRef.current = screenAudioSource;
+          screenGainNodeRef.current = screenGain;
+          setIsScreenAudioOn(true);
+          isScreenAudioOnRef.current = true;
+        } catch (audioErr) {
+          console.warn("Screen audio mixing note:", audioErr);
+        }
+      }
+
+      // Attach to local preview element if present
+      if (localScreenVideoRef.current) {
+        localScreenVideoRef.current.srcObject = displayStream;
+        localScreenVideoRef.current.play().catch(() => {});
+      }
+
+      // Replace screen dummy track with real screen track across all active peers
+      await Promise.all(
+        Object.keys(peersRef.current).map(async (pUid) => {
+          const pc = peersRef.current[pUid];
+          if (pc && pc.connectionState !== "closed") {
+            const screenSender = screenSendersRef.current[pUid];
+            if (screenSender) {
+              await screenSender.replaceTrack(screenVideoTrack);
+            }
+          }
+        })
+      );
+
+      setIsScreenSharing(true);
+      isScreenSharingRef.current = true;
+      setIsScreenShareLoading(false);
+
+      await updateDoc(doc(db, "voice_users", profile.uid), {
+        isScreenSharing: true,
+        isScreenAudioOn: hasAudio,
+      });
+    } catch (err: any) {
+      setIsScreenShareLoading(false);
+      // If user cancelled browser dialog, avoid annoying error alert
+      if (err?.name !== "NotAllowedError" && err?.name !== "AbortError") {
+        console.error("Failed to start screen share:", err);
+        setCameraNotice("Could not start screen share. Please check display permissions.");
+        setTimeout(() => setCameraNotice(null), 5000);
+      }
+    }
+  };
+
+  // Toggle Screen Share
+  const toggleScreenShare = () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
     }
   };
 
@@ -1364,7 +1781,7 @@ export default function VoiceChannel({
   }
 
   const activeRemoteWithVideo = activeParticipants.find((p) => p.isVideoOn);
-  const anyVideoOn = !!activeRemoteWithVideo || isVideoOn;
+  const anyVideoOn = !!activeRemoteWithVideo || isVideoOn || !!activeScreenShare;
 
   return (
     <>
@@ -1420,14 +1837,124 @@ export default function VoiceChannel({
           <div
             className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center group"
             onDoubleClick={() => {
-              if (activeRemoteWithVideo) {
+              if (activeScreenShare) {
+                setFullscreenUid(activeScreenShare.uid);
+                setFullscreenType("screen");
+              } else if (activeRemoteWithVideo) {
                 setFullscreenUid(activeRemoteWithVideo.uid);
+                setFullscreenType("camera");
               } else if (isVideoOn) {
                 setFullscreenUid(profile.uid);
+                setFullscreenType("camera");
               }
             }}
           >
-            {activeRemoteWithVideo ? (
+            {activeScreenShare ? (
+              <>
+                {activeScreenShare.isLocal ? (
+                  <video
+                    ref={(el) => {
+                      localScreenVideoRef.current = el;
+                      if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                        el.srcObject = screenStreamRef.current;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <video
+                    ref={(el) => {
+                      remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
+                      const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
+                      if (el && stream && el.srcObject !== stream) {
+                        el.srcObject = stream;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain"
+                  />
+                )}
+                <div className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-semibold text-white flex items-center gap-1">
+                  <MonitorUp size={11} className="text-emerald-400" />
+                  <span className="truncate max-w-[120px]">{activeScreenShare.username}</span>
+                  {activeScreenShare.hasAudio && (
+                    <Volume2 size={10} className="text-sky-300 ml-0.5" />
+                  )}
+                </div>
+
+                {/* PiP Fullscreen Button for Screen Share */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFullscreenUid(activeScreenShare.uid);
+                    setFullscreenType("screen");
+                  }}
+                  className="absolute top-2 left-2 p-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white/80 hover:text-white backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shadow z-10"
+                  title={`Full screen ${activeScreenShare.username}'s screen`}
+                >
+                  <Maximize2 size={12} />
+                </button>
+
+                {/* Picture-in-picture camera overlay inside PiP window */}
+                {(activeRemoteWithVideo || isVideoOn) && (
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (activeRemoteWithVideo) {
+                        setFullscreenUid(activeRemoteWithVideo.uid);
+                        setFullscreenType("camera");
+                      } else {
+                        setFullscreenUid(profile.uid);
+                        setFullscreenType("camera");
+                      }
+                    }}
+                    className="absolute top-2 right-2 w-20 aspect-video rounded-md overflow-hidden border border-neutral-700 shadow-md bg-black cursor-pointer group/local"
+                    title="Click to view camera fullscreen"
+                  >
+                    {activeRemoteWithVideo ? (
+                      <video
+                        ref={(el) => {
+                          remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                          const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                          if (el && stream && el.srcObject !== stream) {
+                            el.srcObject = stream;
+                            el.play().catch(() => {});
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <video
+                        ref={(el) => {
+                          localVideoRef.current = el;
+                          if (el && videoStreamRef.current && el.srcObject !== videoStreamRef.current) {
+                            el.srcObject = videoStreamRef.current;
+                            el.play().catch(() => {});
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover transform -scale-x-100"
+                      />
+                    )}
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/local:opacity-100 flex items-center justify-center transition-opacity">
+                      <Maximize2 size={10} className="text-white" />
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : activeRemoteWithVideo ? (
               <>
                 <video
                   ref={(el) => {
@@ -1452,6 +1979,7 @@ export default function VoiceChannel({
                   onClick={(e) => {
                     e.stopPropagation();
                     setFullscreenUid(activeRemoteWithVideo.uid);
+                    setFullscreenType("camera");
                   }}
                   className="absolute top-2 left-2 p-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white/80 hover:text-white backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shadow z-10"
                   title={`Full screen ${activeRemoteWithVideo.username}'s video`}
@@ -1464,6 +1992,7 @@ export default function VoiceChannel({
                     onClick={(e) => {
                       e.stopPropagation();
                       setFullscreenUid(profile.uid);
+                      setFullscreenType("camera");
                     }}
                     className="absolute top-2 right-2 w-20 aspect-video rounded-md overflow-hidden border border-neutral-700 shadow-md bg-black cursor-pointer group/local"
                     title="Click to full screen your video"
@@ -1511,6 +2040,7 @@ export default function VoiceChannel({
                   onClick={(e) => {
                     e.stopPropagation();
                     setFullscreenUid(profile.uid);
+                    setFullscreenType("camera");
                   }}
                   className="absolute top-2 left-2 p-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white/80 hover:text-white backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shadow z-10"
                   title="Full screen your video"
@@ -1647,6 +2177,18 @@ export default function VoiceChannel({
           </button>
 
           <button
+            onClick={toggleScreenShare}
+            className={`p-2 rounded-xl transition-all cursor-pointer ${
+              isScreenSharing
+                ? "bg-emerald-600 text-white font-bold"
+                : "bg-[#2b2d31] text-white hover:bg-[#35373c]"
+            }`}
+            title={isScreenSharing ? "Stop sharing screen" : "Share your screen"}
+          >
+            {isScreenSharing ? <ScreenShare size={14} /> : <MonitorUp size={14} />}
+          </button>
+
+          <button
             onClick={handleLeave}
             className="p-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white transition-all cursor-pointer active:scale-95"
             title="Disconnect"
@@ -1688,10 +2230,9 @@ export default function VoiceChannel({
         </div>
       )}
 
-      {/* Main Grid: Local User & Remote Participants */}
-      <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
-        {/* Local User Tile */}
-        {(() => {
+      {/* Helper to render participant camera/avatar tiles */}
+      {(() => {
+        const renderLocalTile = (compact = false) => {
           const localColor = userColors[profile.uid] || {
             hex: "#5865F2",
             rgb: [88, 101, 242] as [number, number, number],
@@ -1702,14 +2243,22 @@ export default function VoiceChannel({
 
           return (
             <div
-              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200"
+              key="local-user-tile"
+              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
+                compact ? "h-full flex-shrink-0" : "w-full"
+              }`}
               style={{
                 borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(38, 38, 38, 0.9)",
                 boxShadow: isLocalSpeaking && !isMuted 
                   ? `0 0 24px ${localColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
-              onDoubleClick={() => isVideoOn && setFullscreenUid(profile.uid)}
+              onDoubleClick={() => {
+                if (isVideoOn) {
+                  setFullscreenUid(profile.uid);
+                  setFullscreenType("camera");
+                }
+              }}
             >
               {/* Fullscreen Video Button */}
               {isVideoOn && (
@@ -1717,25 +2266,26 @@ export default function VoiceChannel({
                   onClick={(e) => {
                     e.stopPropagation();
                     setFullscreenUid(profile.uid);
+                    setFullscreenType("camera");
                   }}
-                  className="absolute top-3 right-3 p-2 rounded-xl bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
                   title="Full screen your video"
                 >
-                  <Maximize2 size={15} />
+                  <Maximize2 size={compact ? 13 : 15} />
                 </button>
               )}
 
-              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
+              {/* Audio Status Badge */}
               {(isMuted || isLocalSpeaking) && (
-                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                <div className="absolute top-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
                   <div
-                    className="w-2 h-2 rounded-full transition-colors"
+                    className="w-1.5 h-1.5 rounded-full transition-colors"
                     style={{
                       backgroundColor: isMuted ? "#ef4444" : localColor.hex,
                       boxShadow: isLocalSpeaking && !isMuted ? `0 0 8px ${localColor.glow}` : undefined,
                     }}
                   />
-                  <span className="text-[10px] font-bold text-white tracking-wider">
+                  <span className="text-[9px] font-bold text-white tracking-wider">
                     {isMuted ? "MUTED" : "SPEAKING"}
                   </span>
                 </div>
@@ -1765,7 +2315,7 @@ export default function VoiceChannel({
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                         alt="Loading camera"
-                        className="w-12 h-12 object-contain"
+                        className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
                       />
                     </div>
                   )}
@@ -1775,17 +2325,17 @@ export default function VoiceChannel({
                   <img
                     src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                     alt="Loading camera"
-                    className="w-12 h-12 object-contain"
+                    className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
                   />
                 </div>
               ) : (
-                <div className="flex flex-col items-center gap-3">
+                <div className="flex flex-col items-center gap-2">
                   <div className="relative">
                     {profile.photoURL ? (
                       <img
                         src={profile.photoURL}
                         alt={profile.username}
-                        className="w-20 h-20 rounded-full object-cover shadow-md transition-all duration-150"
+                        className={`${compact ? "w-12 h-12" : "w-20 h-20"} rounded-full object-cover shadow-md transition-all duration-150`}
                         style={{
                           borderWidth: "2px",
                           borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
@@ -1795,7 +2345,7 @@ export default function VoiceChannel({
                       />
                     ) : (
                       <div
-                        className="w-20 h-20 rounded-full border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150"
+                        className={`${compact ? "w-12 h-12 text-lg" : "w-20 h-20 text-2xl"} rounded-full border-2 flex items-center justify-center font-bold text-white transition-all duration-150`}
                         style={{
                           backgroundColor: localColor.hex + "22",
                           borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(64, 64, 64, 0.8)",
@@ -1808,32 +2358,30 @@ export default function VoiceChannel({
                       </div>
                     )}
                     {isMuted && (
-                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
-                        <MicOff size={14} />
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                        <MicOff size={compact ? 11 : 14} />
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
-                <span className="text-xs font-bold text-white">
+              <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+                <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>
                   {profile.username} (You)
                 </span>
                 {isMuted && (
-                  <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                  <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
                     Muted
                   </span>
                 )}
               </div>
             </div>
           );
-        })()}
+        };
 
-        {/* Remote Participants Tiles */}
-        {activeParticipants.map((p) => {
+        const renderRemoteTile = (p: Participant, compact = false) => {
           const isSpeaking = !!remoteSpeaking[p.uid] && !p.isMuted;
-
           const pColor = userColors[p.uid] || {
             hex: "#5865F2",
             rgb: [88, 101, 242] as [number, number, number],
@@ -1845,14 +2393,21 @@ export default function VoiceChannel({
           return (
             <div
               key={p.uid}
-              className="relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200"
+              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
+                compact ? "h-full flex-shrink-0" : "w-full"
+              }`}
               style={{
                 borderColor: isSpeaking ? pColor.border : "rgba(38, 38, 38, 0.9)",
                 boxShadow: isSpeaking 
                   ? `0 0 24px ${pColor.glow}`
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
-              onDoubleClick={() => p.isVideoOn && setFullscreenUid(p.uid)}
+              onDoubleClick={() => {
+                if (p.isVideoOn) {
+                  setFullscreenUid(p.uid);
+                  setFullscreenType("camera");
+                }
+              }}
             >
               {/* Fullscreen Video Button */}
               {p.isVideoOn && (
@@ -1860,31 +2415,32 @@ export default function VoiceChannel({
                   onClick={(e) => {
                     e.stopPropagation();
                     setFullscreenUid(p.uid);
+                    setFullscreenType("camera");
                   }}
-                  className="absolute top-3 right-3 p-2 rounded-xl bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
                   title={`Full screen ${p.username}'s video`}
                 >
-                  <Maximize2 size={15} />
+                  <Maximize2 size={compact ? 13 : 15} />
                 </button>
               )}
 
-              {/* Audio Status Badge - Only shown when active (MUTED or SPEAKING) */}
+              {/* Audio Status Badge */}
               {(p.isMuted || isSpeaking) && (
-                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                <div className="absolute top-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
                   <div
-                    className="w-2 h-2 rounded-full transition-colors"
+                    className="w-1.5 h-1.5 rounded-full transition-colors"
                     style={{
                       backgroundColor: p.isMuted ? "#ef4444" : pColor.hex,
                       boxShadow: isSpeaking ? `0 0 8px ${pColor.glow}` : undefined,
                     }}
                   />
-                  <span className="text-[10px] font-bold text-white tracking-wider">
+                  <span className="text-[9px] font-bold text-white tracking-wider">
                     {p.isMuted ? "MUTED" : "SPEAKING"}
                   </span>
                 </div>
               )}
 
-              {/* Video Element rendered when remote user enabled their camera */}
+              {/* Video Element */}
               {p.isVideoOn ? (
                 <div className="relative w-full h-full">
                   <video
@@ -1910,34 +2466,32 @@ export default function VoiceChannel({
                     }`}
                   />
 
-                  {/* Loading screen while remote video is connecting or buffering */}
                   {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                         alt="Loading camera"
-                        className="w-12 h-12 object-contain"
+                        className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
                       />
                     </div>
                   )}
                 </div>
               ) : p.isVideoLoading ? (
-                /* Loading screen when remote user is starting camera (before isVideoOn is set) */
                 <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
                   <img
                     src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
                     alt="Loading camera"
-                    className="w-12 h-12 object-contain"
+                    className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
                   />
                 </div>
               ) : (
-                <div className="flex flex-col items-center gap-3">
+                <div className="flex flex-col items-center gap-2">
                   <div className="relative">
                     {p.photoURL ? (
                       <img
                         src={p.photoURL}
                         alt={p.username}
-                        className="w-20 h-20 rounded-full object-cover shadow-md transition-all duration-150"
+                        className={`${compact ? "w-12 h-12" : "w-20 h-20"} rounded-full object-cover shadow-md transition-all duration-150`}
                         style={{
                           borderWidth: "2px",
                           borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
@@ -1947,7 +2501,7 @@ export default function VoiceChannel({
                       />
                     ) : (
                       <div
-                        className="w-20 h-20 rounded-full border-2 flex items-center justify-center text-2xl font-bold text-white transition-all duration-150"
+                        className={`${compact ? "w-12 h-12 text-lg" : "w-20 h-20 text-2xl"} rounded-full border-2 flex items-center justify-center font-bold text-white transition-all duration-150`}
                         style={{
                           backgroundColor: pColor.hex + "22",
                           borderColor: isSpeaking ? pColor.border : "rgba(64, 64, 64, 0.8)",
@@ -1960,26 +2514,128 @@ export default function VoiceChannel({
                       </div>
                     )}
                     {p.isMuted && (
-                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1.5 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
-                        <MicOff size={14} />
+                      <div className="absolute -bottom-1 -right-1 bg-red-600 p-1 rounded-full text-white shadow-lg border-2 border-[#0f0f0f]">
+                        <MicOff size={compact ? 11 : 14} />
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              <div className="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-3 py-1 rounded-lg border border-neutral-800 flex items-center gap-2 z-20">
-                <span className="text-xs font-bold text-white">{p.username}</span>
+              <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+                <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
                 {p.isMuted && (
-                  <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60">
+                  <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
                     Muted
                   </span>
                 )}
               </div>
             </div>
           );
-        })}
-      </div>
+        };
+
+        if (activeScreenShare) {
+          return (
+            <div className="flex-1 min-h-0 flex flex-col p-4 md:p-6 gap-4 overflow-hidden">
+              {/* Zoom-style Main Presentation Stage */}
+              <div
+                className="relative flex-1 min-h-0 bg-[#07080a] rounded-2xl border border-neutral-800/90 overflow-hidden shadow-2xl flex items-center justify-center group"
+                onDoubleClick={() => {
+                  setFullscreenUid(activeScreenShare.uid);
+                  setFullscreenType("screen");
+                }}
+              >
+                {activeScreenShare.isLocal ? (
+                  <video
+                    ref={(el) => {
+                      localScreenVideoRef.current = el;
+                      if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                        el.srcObject = screenStreamRef.current;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <video
+                    ref={(el) => {
+                      remoteScreenVideoRefs.current[activeScreenShare.uid] = el;
+                      const stream = remoteScreenStreamsRef.current[activeScreenShare.uid];
+                      if (el && stream && el.srcObject !== stream) {
+                        el.srcObject = stream;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain"
+                  />
+                )}
+
+                {/* Stage Header Badge */}
+                <div className="absolute top-4 left-4 flex items-center gap-2 z-20">
+                  <div className="bg-black/85 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2.5 shadow-lg">
+                    <MonitorUp size={15} className="text-emerald-400 animate-pulse" />
+                    <span className="text-xs font-bold text-white tracking-wide">
+                      {activeScreenShare.username}'s Screen
+                    </span>
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider">
+                      LIVE
+                    </span>
+                    {activeScreenShare.hasAudio && (
+                      <span className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider flex items-center gap-1">
+                        <Volume2 size={11} /> Screen Audio
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Stage Controls: Stop Sharing & Fullscreen */}
+                <div className="absolute top-4 right-4 flex items-center gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {activeScreenShare.isLocal && (
+                    <button
+                      onClick={stopScreenShare}
+                      className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all cursor-pointer shadow-xl flex items-center gap-1.5 active:scale-95"
+                      title="Stop sharing your screen"
+                    >
+                      <ScreenShareOff size={14} />
+                      <span>Stop Sharing</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setFullscreenUid(activeScreenShare.uid);
+                      setFullscreenType("screen");
+                    }}
+                    className="p-2 rounded-xl bg-black/80 hover:bg-black text-white/90 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-xl transition-all cursor-pointer hover:scale-105"
+                    title="Full screen this presentation"
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Bottom Zoom-style Participant Strip (Displays Everyone's Camera Feeds) */}
+              <div className="h-28 sm:h-36 flex-shrink-0 flex items-center gap-3 overflow-x-auto pb-1 px-1">
+                {renderLocalTile(true)}
+                {activeParticipants.map((p) => renderRemoteTile(p, true))}
+              </div>
+            </div>
+          );
+        }
+
+        /* Regular Participant Grid */
+        return (
+          <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-center align-middle">
+            {renderLocalTile(false)}
+            {activeParticipants.map((p) => renderRemoteTile(p, false))}
+          </div>
+        );
+      })()}
 
       {/* Bottom Controls Bar */}
       <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-4 flex-shrink-0 relative">
@@ -2022,6 +2678,47 @@ export default function VoiceChannel({
           )}
         </button>
 
+        {/* Screen Share Button */}
+        <button
+          onClick={toggleScreenShare}
+          className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
+            isScreenSharing
+              ? "bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40"
+              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+          }`}
+          title={
+            isScreenSharing
+              ? "Stop Screen Sharing"
+              : "Share Screen (Zoom-style presentation with system audio)"
+          }
+        >
+          {isScreenSharing ? (
+            <ScreenShare size={20} className="stroke-[2.2]" />
+          ) : (
+            <MonitorUp size={20} className="stroke-[2.2]" />
+          )}
+        </button>
+
+        {/* Screen Audio Volume Control when local screen audio is active */}
+        {isScreenSharing && isScreenAudioOn && (
+          <div className="hidden lg:flex items-center gap-2 bg-neutral-900/90 border border-neutral-800 px-3 py-2 rounded-2xl animate-in fade-in duration-200">
+            <Volume2 size={16} className="text-sky-400 flex-shrink-0" />
+            <input
+              type="range"
+              min="0"
+              max="1.5"
+              step="0.05"
+              value={screenAudioVolume}
+              onChange={(e) => setScreenAudioVolume(parseFloat(e.target.value))}
+              className="w-16 sm:w-20 accent-sky-400 cursor-pointer"
+              title={`Screen Audio Volume: ${Math.round(screenAudioVolume * 100)}%`}
+            />
+            <span className="text-[10px] font-bold text-neutral-400 w-7">
+              {Math.round(screenAudioVolume * 100)}%
+            </span>
+          </div>
+        )}
+
         <button
           onClick={handleLeave}
           className="p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white shadow-xl transition-all cursor-pointer active:scale-95"
@@ -2055,6 +2752,11 @@ export default function VoiceChannel({
       const targetIsVideo = isFullscreenLocal
         ? isVideoOn
         : !!fullscreenParticipant?.isVideoOn;
+      const isTargetScreen = fullscreenType === "screen";
+      const targetHasAudio = isFullscreenLocal
+        ? isScreenAudioOn
+        : !!fullscreenParticipant?.isScreenAudioOn;
+
       const targetColor = userColors[fullscreenUid] || {
         hex: "#5865F2",
         rgb: [88, 101, 242] as [number, number, number],
@@ -2062,6 +2764,14 @@ export default function VoiceChannel({
         border: "rgba(88, 101, 242, 0.85)",
         ring: "rgba(88, 101, 242, 0.35)",
       };
+
+      const screenStream = isFullscreenLocal
+        ? screenStreamRef.current
+        : remoteScreenStreamsRef.current[fullscreenUid];
+
+      const cameraStream = isFullscreenLocal
+        ? videoStreamRef.current
+        : remoteStreamsRef.current[fullscreenUid];
 
       return (
         <div
@@ -2101,6 +2811,20 @@ export default function VoiceChannel({
                 <span className="text-sm font-semibold text-white truncate max-w-[200px]">
                   {targetUsername}
                 </span>
+                {isTargetScreen ? (
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-extrabold flex items-center gap-1">
+                    <MonitorUp size={11} /> SCREEN SHARE
+                  </span>
+                ) : targetIsVideo ? (
+                  <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded font-bold">
+                    CAMERA
+                  </span>
+                ) : null}
+                {isTargetScreen && targetHasAudio && (
+                  <span className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                    <Volume2 size={10} /> AUDIO
+                  </span>
+                )}
                 {targetIsMuted ? (
                   <span className="text-[10px] bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded font-bold">
                     MUTED
@@ -2110,38 +2834,37 @@ export default function VoiceChannel({
                     <Radio size={10} className="animate-pulse" /> SPEAKING
                   </span>
                 ) : null}
-                {targetIsVideo && (
-                  <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded font-bold">
-                    LIVE
-                  </span>
-                )}
               </div>
             </div>
 
             {/* Right Side Buttons */}
             <div className="flex items-center gap-2">
-              {/* Switcher pills for other active cameras */}
+              {/* Switcher pills for active cameras and screen shares */}
               {participantsWithVideo.length > 1 && (
                 <div className="hidden md:flex items-center gap-1.5 bg-black/60 backdrop-blur-md px-2 py-1 rounded-full border border-white/10">
                   <span className="text-[11px] text-neutral-400 font-medium px-1.5">Switch:</span>
                   {participantsWithVideo.map((item) => (
                     <button
-                      key={item.uid}
-                      onClick={() => setFullscreenUid(item.uid)}
-                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-all cursor-pointer ${
-                        fullscreenUid === item.uid
+                      key={`${item.uid}-${item.type}`}
+                      onClick={() => {
+                        setFullscreenUid(item.uid);
+                        setFullscreenType(item.type);
+                      }}
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                        fullscreenUid === item.uid && fullscreenType === item.type
                           ? "bg-white text-black font-semibold shadow"
                           : "text-neutral-300 hover:text-white hover:bg-white/10"
                       }`}
                     >
-                      {item.username}
+                      {item.type === "screen" && <MonitorUp size={12} />}
+                      <span>{item.username}</span>
                     </button>
                   ))}
                 </div>
               )}
 
               {/* Video Fit button */}
-              {targetIsVideo && (
+              {(targetIsVideo || isTargetScreen) && (
                 <button
                   onClick={() => setFullscreenFit((f) => (f === "contain" ? "cover" : "contain"))}
                   className="px-3 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/10 text-neutral-200 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer shadow-lg"
@@ -2171,18 +2894,63 @@ export default function VoiceChannel({
             </div>
           </div>
 
-          {/* Video or Avatar Display Area */}
+          {/* Video or Screen or Avatar Display Area */}
           <div
             className="relative w-full h-full flex-1 flex items-center justify-center overflow-hidden bg-black"
             onDoubleClick={() => setFullscreenFit((f) => (f === "contain" ? "cover" : "contain"))}
           >
-            {targetIsVideo ? (
+            {isTargetScreen ? (
+              <div className="relative w-full h-full flex items-center justify-center">
+                <video
+                  ref={(el) => {
+                    fullscreenVideoRef.current = el;
+                    if (el && screenStream && el.srcObject !== screenStream) {
+                      el.srcObject = screenStream;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full max-w-full max-h-full transition-all duration-150 cursor-pointer ${
+                    fullscreenFit === "cover" ? "object-cover" : "object-contain"
+                  }`}
+                />
+
+                {/* Floating camera PiP in fullscreen mode */}
+                {((isFullscreenLocal && isVideoOn) || (!isFullscreenLocal && fullscreenParticipant?.isVideoOn)) && (
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFullscreenType("camera");
+                    }}
+                    className="absolute top-20 right-6 w-44 sm:w-56 aspect-video rounded-xl overflow-hidden border border-neutral-700 shadow-2xl bg-black cursor-pointer group/campip z-30 transition-transform hover:scale-105"
+                    title="Click to view camera in main fullscreen"
+                  >
+                    <video
+                      ref={(el) => {
+                        if (el && cameraStream && el.srcObject !== cameraStream) {
+                          el.srcObject = cameraStream;
+                          el.play().catch(() => {});
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className={`w-full h-full object-cover ${isFullscreenLocal ? "transform -scale-x-100" : ""}`}
+                    />
+                    <div className="absolute bottom-2 left-2 bg-black/85 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-bold text-white shadow">
+                      {targetUsername}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : targetIsVideo ? (
               <video
                 ref={(el) => {
                   fullscreenVideoRef.current = el;
-                  const stream = isFullscreenLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
-                  if (el && stream && el.srcObject !== stream) {
-                    el.srcObject = stream;
+                  if (el && cameraStream && el.srcObject !== cameraStream) {
+                    el.srcObject = cameraStream;
                     el.play().catch(() => {});
                   }
                 }}
@@ -2243,20 +3011,24 @@ export default function VoiceChannel({
               showFullscreenControls ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
-            {/* Mobile quick switcher if more than 1 video feed */}
+            {/* Mobile quick switcher if more than 1 video/screen feed */}
             {participantsWithVideo.length > 1 && (
               <div className="flex md:hidden items-center gap-1.5 bg-black/70 backdrop-blur-md p-1 rounded-full border border-white/10 max-w-full overflow-x-auto">
                 {participantsWithVideo.map((item) => (
                   <button
-                    key={item.uid}
-                    onClick={() => setFullscreenUid(item.uid)}
-                    className={`text-xs px-2.5 py-1 rounded-full whitespace-nowrap transition-all cursor-pointer ${
-                      fullscreenUid === item.uid
+                    key={`${item.uid}-${item.type}`}
+                    onClick={() => {
+                      setFullscreenUid(item.uid);
+                      setFullscreenType(item.type);
+                    }}
+                    className={`text-xs px-2.5 py-1 rounded-full whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 ${
+                      fullscreenUid === item.uid && fullscreenType === item.type
                         ? "bg-white text-black font-semibold shadow"
                         : "text-neutral-300 hover:text-white hover:bg-white/10"
                     }`}
                   >
-                    {item.username}
+                    {item.type === "screen" && <MonitorUp size={11} />}
+                    <span>{item.username}</span>
                   </button>
                 ))}
               </div>
@@ -2297,6 +3069,36 @@ export default function VoiceChannel({
                   <VideoOff size={18} />
                 )}
               </button>
+
+              {/* Screen Share toggle */}
+              <button
+                onClick={toggleScreenShare}
+                className={`p-3 rounded-xl transition-all cursor-pointer ${
+                  isScreenSharing
+                    ? "bg-emerald-600 text-white font-bold shadow-lg"
+                    : "bg-neutral-800 text-white hover:bg-neutral-700"
+                }`}
+                title={isScreenSharing ? "Stop Screen Sharing" : "Share Screen"}
+              >
+                {isScreenSharing ? <ScreenShare size={18} /> : <MonitorUp size={18} />}
+              </button>
+
+              {/* Screen Audio volume in fullscreen */}
+              {isScreenSharing && isScreenAudioOn && (
+                <div className="hidden sm:flex items-center gap-2 px-2 py-1 bg-neutral-900 rounded-xl border border-neutral-700">
+                  <Volume2 size={14} className="text-sky-400" />
+                  <input
+                    type="range"
+                    min="0"
+                    max="1.5"
+                    step="0.05"
+                    value={screenAudioVolume}
+                    onChange={(e) => setScreenAudioVolume(parseFloat(e.target.value))}
+                    className="w-16 accent-sky-400 cursor-pointer"
+                    title={`Screen Audio Volume: ${Math.round(screenAudioVolume * 100)}%`}
+                  />
+                </div>
+              )}
 
               <div className="h-6 w-px bg-neutral-700 mx-1" />
 

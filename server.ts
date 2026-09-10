@@ -25,12 +25,39 @@ async function startServer() {
     }
   }
 
-  function getExtensionFromMime(mime: string, originalname: string): string {
+  function getExtensionFromMime(mime: string, originalname: string = ""): string {
     const origExt = path.extname(originalname);
     if (origExt && origExt.length > 1) return origExt.toLowerCase();
 
-    const m = (mime || "").toLowerCase();
-    if (m.includes("mp4")) return ".mp4";
+    const m = (mime || "").toLowerCase().trim();
+
+    // Document types
+    if (m.includes("pdf")) return ".pdf";
+    if (m.includes("wordprocessingml") || m.includes("docx")) return ".docx";
+    if (m.includes("msword") || m === "application/doc") return ".doc";
+    if (m.includes("spreadsheetml") || m.includes("xlsx")) return ".xlsx";
+    if (m.includes("ms-excel") || m === "application/xls") return ".xls";
+    if (m.includes("presentationml") || m.includes("pptx")) return ".pptx";
+    if (m.includes("ms-powerpoint") || m === "application/ppt") return ".ppt";
+    if (m.includes("rtf")) return ".rtf";
+    if (m.includes("csv")) return ".csv";
+    if (m.includes("json")) return ".json";
+    if (m.includes("text/markdown") || m.includes("markdown")) return ".md";
+    if (m.includes("text/html") || m.includes("html")) return ".html";
+    if (m.includes("text/css")) return ".css";
+    if (m.includes("javascript")) return ".js";
+    if (m.includes("typescript")) return ".ts";
+    if (m.includes("text/plain")) return ".txt";
+
+    // Archive types
+    if (m.includes("zip")) return ".zip";
+    if (m.includes("rar")) return ".rar";
+    if (m.includes("7z")) return ".7z";
+    if (m.includes("tar")) return ".tar";
+    if (m.includes("gzip") || m.includes("gz")) return ".gz";
+
+    // Video types
+    if (m.includes("mp4") || m.includes("m4v")) return ".mp4";
     if (m.includes("webm")) return ".webm";
     if (m.includes("quicktime") || m.includes("mov")) return ".mov";
     if (m.includes("matroska") || m.includes("mkv")) return ".mkv";
@@ -40,6 +67,7 @@ async function startServer() {
     if (m.includes("3gpp") || m.includes("3gp")) return ".3gp";
     if (m.startsWith("video/")) return ".mp4";
 
+    // Audio types
     if (m.includes("mpeg") || m.includes("mp3")) return ".mp3";
     if (m.includes("wav") || m.includes("wave")) return ".wav";
     if (m.includes("ogg") || m.includes("oga")) return ".ogg";
@@ -49,6 +77,7 @@ async function startServer() {
     if (m.includes("opus")) return ".opus";
     if (m.startsWith("audio/")) return ".mp3";
 
+    // Image types
     if (m.includes("png")) return ".png";
     if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
     if (m.includes("webp")) return ".webp";
@@ -56,6 +85,9 @@ async function startServer() {
     if (m.includes("svg")) return ".svg";
     if (m.includes("bmp")) return ".bmp";
     if (m.includes("avif")) return ".avif";
+    if (m.includes("ico") || m.includes("icon")) return ".ico";
+    if (m.includes("heic")) return ".heic";
+    if (m.includes("tiff") || m.includes("tif")) return ".tiff";
     if (m.startsWith("image/")) return ".png";
 
     return "";
@@ -64,6 +96,7 @@ async function startServer() {
   function detectFileMimeType(filePath: string): string {
     try {
       const ext = path.extname(filePath).toLowerCase();
+      // Videos
       if (ext === ".mp4" || ext === ".m4v") return "video/mp4";
       if (ext === ".webm") return "video/webm";
       if (ext === ".mov") return "video/quicktime";
@@ -74,21 +107,45 @@ async function startServer() {
       if (ext === ".ogv") return "video/ogg";
       if (ext === ".3gp" || ext === ".3gpp") return "video/3gpp";
       if (ext === ".ts") return "video/mp2t";
+      // Audio
       if (ext === ".mp3") return "audio/mpeg";
       if (ext === ".wav") return "audio/wav";
       if (ext === ".ogg" || ext === ".oga" || ext === ".opus") return "audio/ogg";
       if (ext === ".m4a") return "audio/mp4";
       if (ext === ".flac") return "audio/flac";
       if (ext === ".aac") return "audio/aac";
+      // Images
       if (ext === ".png") return "image/png";
       if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
       if (ext === ".gif") return "image/gif";
       if (ext === ".webp") return "image/webp";
       if (ext === ".svg") return "image/svg+xml";
+      if (ext === ".bmp") return "image/bmp";
+      if (ext === ".ico") return "image/x-icon";
+      if (ext === ".avif") return "image/avif";
+      if (ext === ".heic") return "image/heic";
+      // Documents
       if (ext === ".pdf") return "application/pdf";
-      if (ext === ".zip") return "application/zip";
+      if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      if (ext === ".doc") return "application/msword";
+      if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      if (ext === ".xls") return "application/vnd.ms-excel";
+      if (ext === ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+      if (ext === ".ppt") return "application/vnd.ms-powerpoint";
+      if (ext === ".csv") return "text/csv";
       if (ext === ".json") return "application/json";
-      if (ext === ".txt" || ext === ".md" || ext === ".log" || ext === ".csv") return "text/plain";
+      if (ext === ".txt" || ext === ".log") return "text/plain";
+      if (ext === ".md") return "text/markdown";
+      if (ext === ".html" || ext === ".htm") return "text/html";
+      if (ext === ".css") return "text/css";
+      if (ext === ".js") return "application/javascript";
+      if (ext === ".ts" || ext === ".tsx") return "application/typescript";
+      // Archives
+      if (ext === ".zip") return "application/zip";
+      if (ext === ".rar") return "application/x-rar-compressed";
+      if (ext === ".7z") return "application/x-7z-compressed";
+      if (ext === ".tar") return "application/x-tar";
+      if (ext === ".gz") return "application/gzip";
 
       // Inspect file header magic bytes if file exists
       if (fs.existsSync(filePath)) {
@@ -219,6 +276,21 @@ async function startServer() {
     next();
   });
 
+  // Persistent registry of uploaded file metadata (original name, mime, size, ext)
+  const fileMetadataPath = path.join(uploadsDir, "file_metadata.json");
+  let fileMetadataStore: Record<string, { originalName: string; mimeType: string; size: number; ext: string }> = {};
+  try {
+    if (fs.existsSync(fileMetadataPath)) {
+      fileMetadataStore = JSON.parse(fs.readFileSync(fileMetadataPath, "utf-8"));
+    }
+  } catch (e) {}
+
+  const saveFileMetadata = () => {
+    try {
+      fs.writeFileSync(fileMetadataPath, JSON.stringify(fileMetadataStore), "utf-8");
+    } catch (e) {}
+  };
+
   // Primary file serving route with HTTP Range streaming (for video/audio) and magic byte detection
   app.get(["/uploads/:filename", "/uploads/*"], (req, res) => {
     const rawFn = req.params.filename || req.params[0] || "";
@@ -232,7 +304,8 @@ async function startServer() {
     res.setHeader("Content-Type", mimeType);
     res.setHeader("Accept-Ranges", "bytes");
 
-    const downloadName = (req.query.filename as string) || (req.query.name as string) || path.basename(targetPath);
+    const meta = fileMetadataStore[fn] || fileMetadataStore[path.basename(targetPath)];
+    const downloadName = (req.query.filename as string) || (req.query.name as string) || meta?.originalName || path.basename(targetPath);
     if (req.query.download !== undefined) {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadName)}"`);
     }
@@ -278,12 +351,17 @@ async function startServer() {
         const targetPath = resolveStoredFilePath(fn);
         if (targetPath && fs.existsSync(targetPath)) {
           const mime = detectFileMimeType(targetPath);
-          const ext = getExtensionFromMime(mime, targetPath);
-          if (!path.extname(customName) && ext) {
-            customName = `${customName}${ext}`;
+          const meta = fileMetadataStore[fn] || fileMetadataStore[path.basename(targetPath)];
+          let finalDownloadName = customName;
+          if ((!finalDownloadName || finalDownloadName === "download") && meta?.originalName) {
+            finalDownloadName = meta.originalName;
           }
-          res.setHeader("Content-Type", mime);
-          return res.download(targetPath, customName);
+          if (!path.extname(finalDownloadName)) {
+            const ext = meta?.ext ? `.${meta.ext}` : (path.extname(targetPath) || getExtensionFromMime(mime, targetPath));
+            if (ext) finalDownloadName = `${finalDownloadName}${ext}`;
+          }
+          res.setHeader("Content-Type", meta?.mimeType || mime);
+          return res.download(targetPath, finalDownloadName);
         }
       }
 
@@ -334,12 +412,35 @@ async function startServer() {
           if (mime.startsWith("video/")) cat = "video";
           else if (mime.startsWith("audio/")) cat = "audio";
           else if (mime.startsWith("image/")) cat = "image";
+
+          const meta = fileMetadataStore[fn] || fileMetadataStore[path.basename(targetPath)];
+          let origName = meta?.originalName;
+
+          if (!origName) {
+            try {
+              const u = new URL(fileUrl, "https://local.dummy");
+              origName = u.searchParams.get("name") || u.searchParams.get("filename") || undefined;
+            } catch (e) {}
+          }
+
+          if (!origName) {
+            const diskBase = path.basename(targetPath);
+            const m = diskBase.match(/^(.*?)-(\d{10,14})-(\d{5,12})(\.[a-zA-Z0-9]+)$/);
+            if (m) {
+              origName = `${m[1].replace(/_/g, " ")}${m[4]}`;
+            } else {
+              origName = diskBase;
+            }
+          }
+
+          const fileExt = path.extname(origName || targetPath).replace(/^\./, "");
+
           return res.json({
             type: cat,
-            mimeType: mime,
-            size: stat.size,
-            filename: path.basename(targetPath),
-            extension: path.extname(targetPath).replace(/^\./, ""),
+            mimeType: meta?.mimeType || mime,
+            size: meta?.size || stat.size,
+            filename: origName,
+            extension: fileExt,
           });
         }
       }
@@ -588,7 +689,7 @@ async function startServer() {
 
         const ext = getExtensionFromMime(detectedMime, file.originalname);
         let currentDiskName = file.filename;
-        let origName = file.originalname;
+        let origName = file.originalname || "attachment";
 
         // If file on disk lacks extension but we know it, rename on disk
         if (ext && !path.extname(currentDiskName) && file.path && fs.existsSync(file.path)) {
@@ -604,40 +705,69 @@ async function startServer() {
           origName = `${origName}${ext}`;
         }
 
-        const fileUrl = `/uploads/${currentDiskName}`;
+        const cleanExt = (path.extname(origName) || ext || "").replace(/^\./, "").toLowerCase();
+
+        // Save original metadata permanently
+        fileMetadataStore[currentDiskName] = {
+          originalName: origName,
+          mimeType: detectedMime,
+          size: file.size,
+          ext: cleanExt,
+        };
+        saveFileMetadata();
+
+        const fileUrl = `/uploads/${currentDiskName}?name=${encodeURIComponent(origName)}&type=${encodeURIComponent(detectedMime)}&size=${file.size}`;
         return res.json({
           url: fileUrl,
           filename: origName,
           mimetype: detectedMime,
           size: file.size,
+          extension: cleanExt,
         });
       }
 
       // B. JSON payload with base64 data URL
       if (req.body && req.body.fileData) {
         const { fileData, filename, mimetype, size } = req.body;
-        // Optionally save to disk as a file if it's base64
-        const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        const matches = fileData.match(/^data:([A-Za-z0-9\/\-\+\.]+);base64,(.+)$/);
+        const resolvedMime = mimetype || (matches ? matches[1] : "application/octet-stream");
+        let origName = filename || "uploaded_file";
+        const ext = path.extname(origName) || getExtensionFromMime(resolvedMime, origName);
+        if (!path.extname(origName) && ext) {
+          origName = `${origName}${ext}`;
+        }
+        const cleanExt = (path.extname(origName) || ext || "").replace(/^\./, "").toLowerCase();
+
         if (matches && matches.length === 3) {
-          const ext = mimetype ? `.${mimetype.split("/")[1] || "bin"}` : ".bin";
-          const uniqueName = `upload-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+          const uniqueName = `upload-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext || ".bin"}`;
           const filePath = path.join(uploadsDir, uniqueName);
           try {
             fs.writeFileSync(filePath, Buffer.from(matches[2], "base64"));
-            return res.json({
-              url: `/uploads/${uniqueName}`,
-              filename: filename || uniqueName,
-              mimetype: mimetype || matches[1],
+            fileMetadataStore[uniqueName] = {
+              originalName: origName,
+              mimeType: resolvedMime,
               size: size || fileData.length,
+              ext: cleanExt,
+            };
+            saveFileMetadata();
+
+            const fileUrl = `/uploads/${uniqueName}?name=${encodeURIComponent(origName)}&type=${encodeURIComponent(resolvedMime)}&size=${size || fileData.length}`;
+            return res.json({
+              url: fileUrl,
+              filename: origName,
+              mimetype: resolvedMime,
+              size: size || fileData.length,
+              extension: cleanExt,
             });
           } catch (e) {}
         }
 
         return res.json({
           url: fileData,
-          filename: filename || "uploaded_file",
-          mimetype: mimetype || "application/octet-stream",
+          filename: origName,
+          mimetype: resolvedMime,
           size: size || fileData.length,
+          extension: cleanExt,
         });
       }
 
