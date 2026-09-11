@@ -390,7 +390,7 @@ function notifyListeners(colName: string) {
 }
 
 // ---------------------------------------------------------
-// Native Cross-Tab Web BroadcastChannel (100% Vercel compatible, ZERO WebSockets)
+// Native Cross-Tab Web BroadcastChannel & Server SSE Bridge (Zero-delay multi-user sync)
 // ---------------------------------------------------------
 const broadcastBus: BroadcastChannel | null =
   typeof window !== "undefined" && typeof window.BroadcastChannel !== "undefined"
@@ -400,6 +400,71 @@ const broadcastBus: BroadcastChannel | null =
 const signalListeners = new Set<(signal: any) => void>();
 const seenSignalIds = new Set<string>();
 
+function handleIncomingDbMutation(colName: string, action: string, data: any, id?: string, pk?: string) {
+  if (!colName) return;
+  const colMap = getColMap(colName);
+  const actualPk = pk || getPk(colName);
+
+  if (action === "delete_all") {
+    colMap.clear();
+    notifyListeners(colName);
+  } else if (action === "insert" || action === "upsert" || action === "set") {
+    const docId = data?.[actualPk] || data?.id || data?.uid || id;
+    if (docId) {
+      if (colName === "voice_users") {
+        const isSharing =
+          data.isScreenSharing === true ||
+          data.channelId === "screenshare" ||
+          data.channelId === "screenshare:audio";
+        data.isScreenSharing = isSharing;
+        data.isScreenAudioOn =
+          data.isScreenAudioOn === true || data.channelId === "screenshare:audio";
+      }
+      colMap.set(docId, data);
+      notifyListeners(colName);
+    }
+  } else if (action === "update") {
+    const docId = id || data?.[actualPk] || data?.uid;
+    if (docId) {
+      const existing = colMap.get(docId) || {};
+      const merged = { ...existing, ...data };
+      if (colName === "voice_users") {
+        const isSharing =
+          merged.isScreenSharing === true ||
+          merged.channelId === "screenshare" ||
+          merged.channelId === "screenshare:audio";
+        merged.isScreenSharing = isSharing;
+        merged.isScreenAudioOn =
+          merged.isScreenAudioOn === true || merged.channelId === "screenshare:audio";
+      }
+      colMap.set(docId, merged);
+      notifyListeners(colName);
+    }
+  } else if (action === "delete") {
+    const docId = id || data?.[actualPk] || data?.uid;
+    if (docId) {
+      colMap.delete(docId);
+      notifyListeners(colName);
+    }
+  }
+}
+
+function handleIncomingWebRTCSignal(payload: any) {
+  if (!payload || !payload.id) return;
+  if (seenSignalIds.has(payload.id)) return;
+  seenSignalIds.add(payload.id);
+  if (seenSignalIds.size > 1000) {
+    const first = seenSignalIds.values().next().value;
+    if (first) seenSignalIds.delete(first);
+  }
+
+  signalListeners.forEach((fn) => {
+    try {
+      fn(payload);
+    } catch (e) {}
+  });
+}
+
 if (broadcastBus) {
   broadcastBus.onmessage = (event) => {
     const msg = event.data;
@@ -407,59 +472,68 @@ if (broadcastBus) {
 
     if (msg.type === "db_mutation") {
       const { colName, action, data, id, pk } = msg.payload || {};
-      if (!colName) return;
-      const colMap = getColMap(colName);
-      const actualPk = pk || getPk(colName);
-
-      if (action === "delete_all") {
-        colMap.clear();
-        notifyListeners(colName);
-      } else if (action === "insert" || action === "upsert") {
-        const docId = data?.[actualPk] || data?.id || data?.uid || id;
-        if (docId) {
-          if (colName === "voice_users") {
-            const isSharing =
-              data.isScreenSharing === true ||
-              data.channelId === "screenshare" ||
-              data.channelId === "screenshare:audio";
-            data.isScreenSharing = isSharing;
-            data.isScreenAudioOn =
-              data.isScreenAudioOn === true || data.channelId === "screenshare:audio";
-          }
-          colMap.set(docId, data);
-          notifyListeners(colName);
-        }
-      } else if (action === "update") {
-        const docId = id || data?.[actualPk];
-        if (docId) {
-          const existing = colMap.get(docId) || {};
-          const merged = { ...existing, ...data };
-          if (colName === "voice_users") {
-            const isSharing =
-              merged.isScreenSharing === true ||
-              merged.channelId === "screenshare" ||
-              merged.channelId === "screenshare:audio";
-            merged.isScreenSharing = isSharing;
-            merged.isScreenAudioOn =
-              merged.isScreenAudioOn === true || merged.channelId === "screenshare:audio";
-          }
-          colMap.set(docId, merged);
-          notifyListeners(colName);
-        }
-      } else if (action === "delete") {
-        if (id) {
-          colMap.delete(id);
-          notifyListeners(colName);
-        }
-      }
+      handleIncomingDbMutation(colName, action, data, id, pk);
     } else if (msg.type === "webrtc_signal") {
-      signalListeners.forEach((fn) => {
-        try {
-          fn(msg.payload);
-        } catch (e) {}
-      });
+      handleIncomingWebRTCSignal(msg.payload);
     }
   };
+}
+
+// ---------------------------------------------------------
+// Real-time Server SSE Stream Bridge (Syncs all devices/browsers across the internet)
+// ---------------------------------------------------------
+let sseSource: EventSource | null = null;
+let sseReconnectTimer: any = null;
+
+function initServerSSE() {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") return;
+  if (sseSource) {
+    try {
+      sseSource.close();
+    } catch (e) {}
+  }
+
+  try {
+    sseSource = new EventSource("/api/cassandra/stream");
+
+    sseSource.onmessage = (e) => {
+      if (!e.data || e.data.startsWith(":")) return;
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "init" && msg.data) {
+          Object.entries(msg.data).forEach(([cName, docs]: [string, any]) => {
+            const colMap = getColMap(cName);
+            if (docs && typeof docs === "object") {
+              Object.entries(docs).forEach(([docId, docData]) => {
+                colMap.set(docId, docData);
+              });
+              notifyListeners(cName);
+            }
+          });
+        } else if (msg.type === "change") {
+          handleIncomingDbMutation(msg.collection, msg.op, msg.data, msg.id);
+        } else if (msg.type === "webrtc_signal") {
+          handleIncomingWebRTCSignal(msg.payload);
+        }
+      } catch (err) {}
+    };
+
+    sseSource.onerror = () => {
+      try {
+        sseSource?.close();
+      } catch (e) {}
+      sseSource = null;
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = setTimeout(initServerSSE, 3000);
+    };
+  } catch (err) {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = setTimeout(initServerSSE, 5000);
+  }
+}
+
+if (typeof window !== "undefined") {
+  initServerSSE();
 }
 
 function broadcastMutation(
@@ -485,6 +559,26 @@ function broadcastMutation(
   }
 }
 
+async function serverWrite(op: string, colName: string, id: string, data: any) {
+  try {
+    await fetch("/api/cassandra/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op, collection: colName, id, data }),
+    });
+  } catch (e) {}
+}
+
+async function serverSendSignal(signal: any) {
+  try {
+    await fetch("/api/webrtc/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(signal),
+    });
+  } catch (e) {}
+}
+
 let voiceSignalsChannel: any = null;
 
 export function sendBroadcastSignal(payload: {
@@ -492,6 +586,7 @@ export function sendBroadcastSignal(payload: {
   targetUid: string;
   type: string;
   sdp?: string;
+  candidate?: string;
   timestamp: number;
 }) {
   const fullSignal = {
@@ -509,7 +604,10 @@ export function sendBroadcastSignal(payload: {
     } catch (e) {}
   }
 
-  // 2. Explicit httpSend() via modern Supabase Realtime REST API (non-deprecated, zero WebSockets)
+  // 2. Instant server-side push (broadcasts via SSE to all remote browsers in <5ms)
+  serverSendSignal(fullSignal);
+
+  // 3. Fallback Supabase REST delivery
   try {
     if (!voiceSignalsChannel) {
       voiceSignalsChannel = supabase.channel("voice_signals");
@@ -519,7 +617,6 @@ export function sendBroadcastSignal(payload: {
     }
   } catch (err) {}
 
-  // 3. Reliable HTTP REST delivery for remote peers (no WebSockets needed)
   try {
     const cleanSig = sanitizeForSupabase("signals", fullSignal);
     supabase.from("signals").insert(cleanSig).then(undefined, () => {});
@@ -540,12 +637,32 @@ export function subscribeBroadcastSignals(
   };
   signalListeners.add(handler);
 
-  // Adaptive HTTP signal poller (1.2s interval) to receive signals from other remote browsers
+  // Ultra-fast HTTP signal poller (800ms interval) to receive signals even if SSE drops
   let isPolling = false;
+  let lastPollTs = Date.now() - 10000;
+
   const pollRemoteSignals = async () => {
     if (isPolling) return;
     isPolling = true;
     try {
+      // 1. Poll dedicated server signals
+      const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}&since=${lastPollTs}`).catch(() => null);
+      if (res && res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json && Array.isArray(json.signals)) {
+          lastPollTs = json.timestamp || Date.now();
+          json.signals.forEach((sig: any) => {
+            if (sig && sig.uid !== myUid && !seenSignalIds.has(sig.id)) {
+              seenSignalIds.add(sig.id);
+              try {
+                onSignal(sig);
+              } catch (e) {}
+            }
+          });
+        }
+      }
+
+      // 2. Poll Supabase fallback
       const now = Date.now();
       const { data, error } = await supabase
         .from("signals")
@@ -576,7 +693,7 @@ export function subscribeBroadcastSignals(
     }
   };
 
-  const timer = setInterval(pollRemoteSignals, 1200);
+  const timer = setInterval(pollRemoteSignals, 800);
 
   return () => {
     clearInterval(timer);
@@ -669,7 +786,10 @@ export async function setDoc(
   // 2. Native Web BroadcastChannel (instant multi-tab sync)
   broadcastMutation(docRef.colName, "upsert", payload, docRef.id);
 
-  // 3. Non-blocking background database persist via HTTP REST
+  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  serverWrite("set", docRef.colName, docRef.id, payload);
+
+  // 4. Non-blocking background database persist via HTTP REST
   backgroundUpsert(docRef.colName, payload, pk);
 }
 
@@ -689,7 +809,10 @@ export async function updateDoc(docRef: { colName: string; id: string }, data: a
   // 2. Instant multi-tab broadcast
   broadcastMutation(docRef.colName, "update", payload, docRef.id);
 
-  // 3. Non-blocking background database persist via HTTP REST
+  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  serverWrite("update", docRef.colName, docRef.id, payload);
+
+  // 4. Non-blocking background database persist via HTTP REST
   backgroundUpdate(docRef.colName, payload, pk, docRef.id);
 }
 
@@ -704,7 +827,10 @@ export async function deleteDoc(docRef: { colName: string; id: string }) {
   // 2. Instant multi-tab broadcast
   broadcastMutation(docRef.colName, "delete", {}, docRef.id);
 
-  // 3. Non-blocking background database delete via HTTP REST
+  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  serverWrite("delete", docRef.colName, docRef.id, {});
+
+  // 4. Non-blocking background database delete via HTTP REST
   backgroundDelete(docRef.colName, pk, docRef.id);
 }
 
@@ -724,7 +850,10 @@ export async function addDoc(colName: string, data: any) {
   // 2. Instant multi-tab broadcast
   broadcastMutation(colName, "insert", payload, id);
 
-  // 3. Non-blocking background database persist via HTTP REST
+  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  serverWrite("set", colName, id, payload);
+
+  // 4. Non-blocking background database persist via HTTP REST
   backgroundInsert(colName, payload);
 
   return { colName, id };

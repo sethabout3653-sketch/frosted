@@ -502,6 +502,15 @@ async function startServer() {
 
   // Connected SSE clients for real-time broadcasts
   const sseClients = new Set<express.Response>();
+  let recentWebRTCSignals: Array<{
+    id: string;
+    uid: string;
+    targetUid: string;
+    type: string;
+    sdp?: string;
+    candidate?: string;
+    timestamp: number;
+  }> = [];
 
   const broadcastCassandraChange = (
     op: string,
@@ -515,6 +524,23 @@ async function startServer() {
       collection,
       id,
       data,
+      timestamp: Date.now(),
+    });
+
+    sseClients.forEach((client) => {
+      try {
+        client.write(`data: ${payload}\n\n`);
+        (client as any).flush?.();
+      } catch (e) {
+        sseClients.delete(client);
+      }
+    });
+  };
+
+  const broadcastWebRTCSignal = (signal: any) => {
+    const payload = JSON.stringify({
+      type: "webrtc_signal",
+      payload: signal,
       timestamp: Date.now(),
     });
 
@@ -572,6 +598,52 @@ async function startServer() {
       clearInterval(heartbeat);
       sseClients.delete(res);
     });
+  });
+
+  // Dedicated WebRTC Signaling Endpoints (Zero-delay P2P negotiation)
+  app.post("/api/webrtc/signal", (req, res) => {
+    try {
+      const { uid, targetUid, type, sdp, candidate, timestamp } = req.body || {};
+      if (!uid || !targetUid || !type) {
+        return res.status(400).json({ error: "Missing required signal fields" });
+      }
+
+      const sigObj = {
+        id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
+        uid,
+        targetUid,
+        type,
+        sdp: sdp || undefined,
+        candidate: candidate || undefined,
+        timestamp: timestamp || Date.now(),
+      };
+
+      recentWebRTCSignals.push(sigObj);
+      const cutoff = Date.now() - 30000;
+      if (recentWebRTCSignals.length > 500) {
+        recentWebRTCSignals = recentWebRTCSignals.filter((s) => s.timestamp > cutoff);
+      }
+
+      // Broadcast immediately via SSE to all connected clients
+      broadcastWebRTCSignal(sigObj);
+
+      res.json({ success: true, id: sigObj.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/webrtc/signals", (req, res) => {
+    const targetUid = req.query.uid as string;
+    const since = parseInt(req.query.since as string, 10) || (Date.now() - 15000);
+    if (!targetUid) {
+      return res.json({ signals: [] });
+    }
+
+    const matched = recentWebRTCSignals.filter(
+      (s) => (s.targetUid === targetUid || s.targetUid === "all") && s.timestamp > since && s.uid !== targetUid
+    );
+    res.json({ signals: matched, timestamp: Date.now() });
   });
 
   // 2. Cassandra Data / Query Endpoint

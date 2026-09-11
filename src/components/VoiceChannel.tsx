@@ -1435,17 +1435,21 @@ export default function VoiceChannel({
                 const isDead =
                   !pc ||
                   pc.connectionState === "closed" ||
-                  pc.connectionState === "failed";
+                  pc.connectionState === "failed" ||
+                  pc.iceConnectionState === "failed";
 
                 const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
                 const failCount = callFailCountRef.current[u.uid] || 0;
-                const backoffTime = failCount > 3 ? 30000 : 8000;
+                const backoffTime = failCount > 3 ? 15000 : 3000;
+
+                const shouldInitiate =
+                  (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
+                  (profile.uid > u.uid && now - lastAttempt > (backoffTime + 3000));
 
                 if (
-                  profile.uid < u.uid &&
+                  shouldInitiate &&
                   isDead &&
-                  localStreamRef.current &&
-                  now - lastAttempt > backoffTime
+                  localStreamRef.current
                 ) {
                   lastCallAttemptRef.current[u.uid] = now;
                   initiateCall(u.uid, localStreamRef.current);
