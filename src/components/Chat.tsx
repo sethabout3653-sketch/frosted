@@ -33,6 +33,7 @@ import {
   db,
   handleFirestoreError,
   OperationType,
+  toTimestampMs,
 } from "../supabase-adapter";
 
 export default function Chat({
@@ -91,13 +92,16 @@ export default function Chat({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any voice participant whose heartbeat is older than 7 seconds, sorted deterministically
+  // Filter out any voice participant whose heartbeat is older than 8 seconds, strictly excluding anonymous users
   const voiceUsers = rawVoiceUsers
     .filter((u) => {
-      if (!u) return false;
+      if (!u || !u.uid) return false;
+      const uname = (u.username || "").trim();
+      if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") return false;
       if (profile && u.uid === profile.uid) return true;
-      const ts = u.timestamp || u.lastSeen;
-      return typeof ts === "number" ? currentTime - ts < 7000 : true;
+      const ts = toTimestampMs(u.timestamp || u.lastSeen);
+      if (ts <= 0) return false;
+      return currentTime - ts < 8000;
     })
     .sort((a, b) => {
       if (!a || !b) return 0;
@@ -121,13 +125,13 @@ export default function Chat({
         const now = Date.now();
         snapshot.docs.forEach((d) => {
           const data = d.data();
-          const uname = (data.username || "").trim();
-          if (!uname || uname.toLowerCase() === "anonymous") {
+          const uname = (data?.username || "").trim();
+          if (!data?.uid || !uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
             deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
             return;
           }
-          const ts = data.timestamp || data.lastSeen;
-          if (typeof ts === "number" && now - ts > 15000) {
+          const ts = toTimestampMs(data.timestamp || data.lastSeen);
+          if (ts > 0 && now - ts > 10000) {
             deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
           } else {
             validUsers.push(data);

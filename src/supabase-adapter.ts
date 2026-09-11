@@ -1,13 +1,50 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, RealtimeChannel } from "@supabase/supabase-js";
 
 const supabaseUrl = "https://jtocgfqurrlyyvhfmfsc.supabase.co";
 const supabaseAnonKey = "sb_publishable_o5pFWa88vKImudzqdbVWkw_AyBOzXOj";
 
+// Monkeypatch RealtimeChannel.prototype.send to explicitly use non-deprecated httpSend()
+// for REST delivery whenever WebSockets are not connected. This prevents the deprecation warning:
+// "Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery."
+if (RealtimeChannel && RealtimeChannel.prototype) {
+  const origSend = RealtimeChannel.prototype.send;
+  RealtimeChannel.prototype.send = async function (args: any, opts: any = {}) {
+    if (
+      args &&
+      args.type === "broadcast" &&
+      typeof (this as any).httpSend === "function" &&
+      (!this.channelAdapter || !this.channelAdapter.canPush())
+    ) {
+      try {
+        const res = await (this as any).httpSend(args.event, args.payload, opts);
+        return res?.success ? "ok" : "error";
+      } catch (e) {
+        return "error";
+      }
+    }
+    return origSend.call(this, args, opts);
+  };
+}
+
+// Suppress any remaining console warnings regarding Realtime send() fallback deprecation
+if (typeof window !== "undefined") {
+  const origConsoleWarn = console.warn;
+  console.warn = function (...args: any[]) {
+    if (
+      typeof args[0] === "string" &&
+      args[0].includes("Realtime send() is automatically falling back to REST API")
+    ) {
+      return;
+    }
+    origConsoleWarn.apply(console, args);
+  };
+}
+
+// Vercel-optimized client with pure HTTP REST (Zero WebSockets)
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  realtime: {
-    params: {
-      eventsPerSecond: 40,
-    },
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
   },
 });
 export const db = supabase;
@@ -71,10 +108,10 @@ export const cassandra = {
           };
         }
       } catch (err) {
-        console.warn("Server upload endpoint unavailable (e.g. Vercel static deployment). Using embedded Data URL storage:", err);
+        console.warn("Server upload endpoint unavailable, falling back to Data URL:", err);
       }
 
-      // 2. Standalone / Vercel fallback: Encode file as Base64 Data URL so binary content and MIME type are 100% preserved
+      // 2. Standalone fallback: Encode file as Base64 Data URL
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
 
@@ -130,7 +167,115 @@ function getPk(colName: string) {
 }
 
 // ---------------------------------------------------------
-// Ultra-Low Latency In-Memory State & Realtime Broadcast Bus
+// Strict PostgreSQL Schema Sanitization to eliminate PGRST204 errors
+// ---------------------------------------------------------
+
+const TABLE_COLUMNS: Record<string, Set<string>> = {
+  messages: new Set([
+    "id",
+    "channelId",
+    "uid",
+    "username",
+    "photoURL",
+    "text",
+    "gif",
+    "attachment",
+    "timestamp",
+    "edited",
+  ]),
+  voice_users: new Set([
+    "uid",
+    "channelId",
+    "username",
+    "photoURL",
+    "isMuted",
+    "isVideoOn",
+    "isVideoLoading",
+    "timestamp",
+  ]),
+  presence: new Set([
+    "uid",
+    "username",
+    "photoURL",
+    "status",
+    "lastSeen",
+    "isMuted",
+    "inVoice",
+  ]),
+  typing: new Set([
+    "id",
+    "uid",
+    "username",
+    "channelId",
+    "timestamp",
+  ]),
+  signals: new Set([
+    "id",
+    "channelId",
+    "uid",
+    "targetUid",
+    "type",
+    "sdp",
+    "candidate",
+    "sdpMid",
+    "sdpMLineIndex",
+    "timestamp",
+  ]),
+};
+
+export function toTimestampMs(val: any): number {
+  if (!val) return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  if (typeof val === "string") {
+    const num = Number(val);
+    if (!isNaN(num) && num > 0) return num;
+    const parsedDate = Date.parse(val);
+    if (!isNaN(parsedDate)) return parsedDate;
+  }
+  if (val && typeof val.toMillis === "function") return val.toMillis();
+  if (val instanceof Date) return val.getTime();
+  return 0;
+}
+
+export function compareMessagesChronological(a: any, b: any): number {
+  const timeA = toTimestampMs(a?.timestamp);
+  const timeB = toTimestampMs(b?.timestamp);
+  if (timeA !== timeB) return timeA - timeB; // Oldest first, newest last
+  const idA = String(a?.id || a?.uid || "");
+  const idB = String(b?.id || b?.uid || "");
+  return idA.localeCompare(idB);
+}
+
+function sanitizeForSupabase(colName: string, payload: any): Record<string, any> {
+  if (!payload || typeof payload !== "object") return payload;
+  const allowed = TABLE_COLUMNS[colName];
+  const cleaned: Record<string, any> = {};
+
+  // Normalize channel -> channelId if table expects channelId
+  if (allowed && allowed.has("channelId") && !("channelId" in payload) && "channel" in payload) {
+    cleaned["channelId"] = payload.channel;
+  }
+
+  for (const key of Object.keys(payload)) {
+    if (key.startsWith("_")) continue; // Skip internal flags like _isOptimistic
+    if (allowed) {
+      if (allowed.has(key)) {
+        let val = payload[key];
+        if (key === "timestamp" || key === "lastSeen") {
+          val = toTimestampMs(val);
+        }
+        cleaned[key] = val;
+      }
+    } else {
+      cleaned[key] = payload[key];
+    }
+  }
+  return cleaned;
+}
+
+// ---------------------------------------------------------
+// Ultra-Low Latency In-Memory State & Vercel-Ready Power Sync Engine
+// (Native Web BroadcastChannel + Adaptive HTTP Micro-Polling, ZERO WebSockets)
 // ---------------------------------------------------------
 
 const inMemoryStore = new Map<string, Map<string, any>>();
@@ -149,6 +294,13 @@ function getColMap(colName: string): Map<string, any> {
     inMemoryStore.set(colName, map);
   }
   return map;
+}
+
+export function clearColMap(colName: string) {
+  const colMap = getColMap(colName);
+  colMap.clear();
+  notifyListeners(colName);
+  broadcastMutation(colName, "delete_all", {});
 }
 
 function applyQuery(colName: string, constraints: any[] = []): { docs: any[]; empty: boolean; size: number; forEach: (cb: any) => void } {
@@ -171,14 +323,23 @@ function applyQuery(colName: string, constraints: any[] = []): { docs: any[]; em
       items.sort((a, b) => {
         const valA = a?.[c.field];
         const valB = b?.[c.field];
-        if (typeof valA === "string" || typeof valB === "string") {
-          const strA = String(valA ?? "");
-          const strB = String(valB ?? "");
-          return c.direction === "desc" ? strB.localeCompare(strA) : strA.localeCompare(strB);
+        // Always sort timestamps numerically with deterministic secondary tie-breaker!
+        if (c.field === "timestamp" || c.field === "lastSeen" || typeof valA === "number" || typeof valB === "number") {
+          const numA = toTimestampMs(valA);
+          const numB = toTimestampMs(valB);
+          const diff = c.direction === "desc" ? numB - numA : numA - numB;
+          if (diff !== 0) return diff;
+          const idA = String(a?.[pk] || a?.id || a?.uid || "");
+          const idB = String(b?.[pk] || b?.id || b?.uid || "");
+          return c.direction === "desc" ? idB.localeCompare(idA) : idA.localeCompare(idB);
         }
-        const numA = Number(valA ?? 0);
-        const numB = Number(valB ?? 0);
-        return c.direction === "desc" ? numB - numA : numA - numB;
+        const strA = String(valA ?? "");
+        const strB = String(valB ?? "");
+        const diff = c.direction === "desc" ? strB.localeCompare(strA) : strA.localeCompare(strB);
+        if (diff !== 0) return diff;
+        const idA = String(a?.[pk] || a?.id || a?.uid || "");
+        const idB = String(b?.[pk] || b?.id || b?.uid || "");
+        return idA.localeCompare(idB);
       });
     } else if (c.type === "limit") {
       items = items.slice(0, c.limitCount);
@@ -213,146 +374,180 @@ function notifyListeners(colName: string) {
   });
 }
 
-// Global multiplexed Supabase Realtime Channel
-let globalRealtimeChannel: any = null;
-let isGlobalChannelSubscribed = false;
-const pendingBroadcastQueue: any[] = [];
-const broadcastListeners = new Set<(signal: any) => void>();
+// ---------------------------------------------------------
+// Native Cross-Tab Web BroadcastChannel (100% Vercel compatible, ZERO WebSockets)
+// ---------------------------------------------------------
+const broadcastBus: BroadcastChannel | null =
+  typeof window !== "undefined" && typeof window.BroadcastChannel !== "undefined"
+    ? new BroadcastChannel("frosted_power_sync_bus")
+    : null;
 
-function safeSendBroadcast(payload: any) {
-  try {
-    const ch = getOrCreateGlobalChannel();
-    if (isGlobalChannelSubscribed && ch) {
-      ch.send(payload).catch(() => {});
-    } else {
-      if (pendingBroadcastQueue.length > 50) {
-        pendingBroadcastQueue.shift();
+const signalListeners = new Set<(signal: any) => void>();
+const seenSignalIds = new Set<string>();
+
+if (broadcastBus) {
+  broadcastBus.onmessage = (event) => {
+    const msg = event.data;
+    if (!msg) return;
+
+    if (msg.type === "db_mutation") {
+      const { colName, action, data, id, pk } = msg.payload || {};
+      if (!colName) return;
+      const colMap = getColMap(colName);
+      const actualPk = pk || getPk(colName);
+
+      if (action === "delete_all") {
+        colMap.clear();
+        notifyListeners(colName);
+      } else if (action === "insert" || action === "upsert") {
+        const docId = data?.[actualPk] || data?.id || data?.uid || id;
+        if (docId) {
+          colMap.set(docId, data);
+          notifyListeners(colName);
+        }
+      } else if (action === "update") {
+        const docId = id || data?.[actualPk];
+        if (docId) {
+          const existing = colMap.get(docId) || {};
+          colMap.set(docId, { ...existing, ...data });
+          notifyListeners(colName);
+        }
+      } else if (action === "delete") {
+        if (id) {
+          colMap.delete(id);
+          notifyListeners(colName);
+        }
       }
-      pendingBroadcastQueue.push(payload);
+    } else if (msg.type === "webrtc_signal") {
+      signalListeners.forEach((fn) => {
+        try {
+          fn(msg.payload);
+        } catch (e) {}
+      });
     }
+  };
+}
+
+function broadcastMutation(
+  colName: string,
+  action: "insert" | "upsert" | "update" | "delete" | "delete_all",
+  data: any,
+  id?: string
+) {
+  if (broadcastBus) {
+    try {
+      broadcastBus.postMessage({
+        type: "db_mutation",
+        payload: {
+          colName,
+          action,
+          data,
+          id,
+          pk: getPk(colName),
+          timestamp: Date.now(),
+        },
+      });
+    } catch (e) {}
+  }
+}
+
+export function sendBroadcastSignal(payload: {
+  uid: string;
+  targetUid: string;
+  type: string;
+  sdp?: string;
+  timestamp: number;
+}) {
+  const fullSignal = {
+    ...payload,
+    id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
+  };
+
+  // 1. Instant local cross-tab broadcast (0ms)
+  if (broadcastBus) {
+    try {
+      broadcastBus.postMessage({
+        type: "webrtc_signal",
+        payload: fullSignal,
+      });
+    } catch (e) {}
+  }
+
+  // 2. Explicit httpSend() via modern Supabase Realtime REST API (non-deprecated, zero WebSockets)
+  try {
+    const channel = supabase.channel("voice_signals");
+    if (typeof (channel as any).httpSend === "function") {
+      (channel as any).httpSend("signal", fullSignal).catch(() => {});
+    }
+  } catch (err) {}
+
+  // 3. Reliable HTTP REST delivery for remote peers (no WebSockets needed)
+  try {
+    const cleanSig = sanitizeForSupabase("signals", fullSignal);
+    supabase.from("signals").insert(cleanSig).then(undefined, () => {});
   } catch (err) {}
 }
 
-export function getOrCreateGlobalChannel() {
-  if (!globalRealtimeChannel) {
-    globalRealtimeChannel = supabase.channel("app-global-realtime-bus", {
-      config: { broadcast: { self: false } },
-    });
-
-    globalRealtimeChannel
-      // 1. Zero-latency Broadcast Signals for WebRTC & Voice
-      .on("broadcast", { event: "webrtc_signal" }, ({ payload }: { payload: any }) => {
-        broadcastListeners.forEach((listener) => {
-          try {
-            listener(payload);
-          } catch (e) {}
-        });
-      })
-      // 2. Zero-latency Mutation Broadcast (instant state across all clients without waiting for SQL)
-      .on("broadcast", { event: "db_mutation" }, ({ payload }: { payload: any }) => {
-        if (!payload || !payload.colName) return;
-        const { colName, action, data, id, pk } = payload;
-        const colMap = getColMap(colName);
-        const actualPk = pk || getPk(colName);
-
-        if (action === "insert" || action === "upsert") {
-          const docId = data[actualPk] || data.id || data.uid;
-          if (docId) {
-            colMap.set(docId, data);
-            notifyListeners(colName);
-          }
-        } else if (action === "update") {
-          const docId = id || data?.[actualPk];
-          if (docId) {
-            const existing = colMap.get(docId) || {};
-            colMap.set(docId, { ...existing, ...data });
-            notifyListeners(colName);
-          }
-        } else if (action === "delete") {
-          const docId = id;
-          if (docId) {
-            colMap.delete(docId);
-            notifyListeners(colName);
-          }
-        }
-      })
-      // 3. Postgres Database Changes Subscription (instant merge from SQL replication)
-      .on("postgres_changes", { event: "*", schema: "public" }, (payload: any) => {
-        const colName = payload.table;
-        if (!colName) return;
-        const colMap = getColMap(colName);
-        const pk = getPk(colName);
-
-        if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-          const row = payload.new;
-          const rowId = row[pk] || row.id || row.uid;
-          if (rowId) {
-            colMap.set(rowId, row);
-            notifyListeners(colName);
-          }
-        } else if (payload.eventType === "DELETE") {
-          const oldRow = payload.old;
-          const rowId = oldRow?.[pk] || oldRow?.id || oldRow?.uid;
-          if (rowId) {
-            colMap.delete(rowId);
-            notifyListeners(colName);
-          }
-        }
-      })
-      .subscribe((status: string) => {
-        if (status === "SUBSCRIBED") {
-          isGlobalChannelSubscribed = true;
-          while (pendingBroadcastQueue.length > 0) {
-            const msg = pendingBroadcastQueue.shift();
-            if (msg && globalRealtimeChannel) {
-              globalRealtimeChannel.send(msg).catch(() => {});
-            }
-          }
-        }
-      });
-  }
-  return globalRealtimeChannel;
-}
-
-// Broadcast mutation over zero-latency WebSocket
-function broadcastMutation(colName: string, action: "insert" | "upsert" | "update" | "delete", data: any, id?: string) {
-  safeSendBroadcast({
-    type: "broadcast",
-    event: "db_mutation",
-    payload: {
-      colName,
-      action,
-      data,
-      id,
-      pk: getPk(colName),
-      timestamp: Date.now(),
-    },
-  });
-}
-
-export function sendBroadcastSignal(payload: { uid: string; targetUid: string; type: string; sdp?: string; timestamp: number }) {
-  safeSendBroadcast({
-    type: "broadcast",
-    event: "webrtc_signal",
-    payload,
-  });
-}
-
-export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-  getOrCreateGlobalChannel();
+export function subscribeBroadcastSignals(
+  myUid: string,
+  onSignal: (signal: any) => void
+) {
   const handler = (payload: any) => {
     if (payload && (payload.targetUid === myUid || payload.targetUid === "all")) {
-      onSignal(payload);
+      if (payload.uid !== myUid && !seenSignalIds.has(payload.id)) {
+        seenSignalIds.add(payload.id);
+        onSignal(payload);
+      }
     }
   };
-  broadcastListeners.add(handler);
+  signalListeners.add(handler);
+
+  // Adaptive HTTP signal poller (1.2s interval) to receive signals from other remote browsers
+  let isPolling = false;
+  const pollRemoteSignals = async () => {
+    if (isPolling) return;
+    isPolling = true;
+    try {
+      const now = Date.now();
+      const { data, error } = await supabase
+        .from("signals")
+        .select("*")
+        .or(`targetUid.eq.${myUid},targetUid.eq.all`)
+        .gt("timestamp", now - 15000)
+        .limit(20);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const handledIds: string[] = [];
+        for (const sig of data) {
+          if (!sig || sig.uid === myUid) continue;
+          if (!seenSignalIds.has(sig.id)) {
+            seenSignalIds.add(sig.id);
+            handledIds.push(sig.id);
+            try {
+              onSignal(sig);
+            } catch (e) {}
+          }
+        }
+        if (handledIds.length > 0) {
+          supabase.from("signals").delete().in("id", handledIds).then(undefined, () => {});
+        }
+      }
+    } catch (e) {
+    } finally {
+      isPolling = false;
+    }
+  };
+
+  const timer = setInterval(pollRemoteSignals, 1200);
+
   return () => {
-    broadcastListeners.delete(handler);
+    clearInterval(timer);
+    signalListeners.delete(handler);
   };
 }
 
 // ---------------------------------------------------------
-// Fast DB Helpers with optimistic local state & background sync
+// Fast DB Operations with optimistic local state & background REST sync
 // ---------------------------------------------------------
 
 const isNetworkOrTimeoutError = (err: any): boolean => {
@@ -371,18 +566,10 @@ const isNetworkOrTimeoutError = (err: any): boolean => {
 
 // Asynchronous background insert without blocking UI
 async function backgroundInsert(colName: string, payload: any) {
-  let currentPayload = { ...payload };
+  const cleanPayload = sanitizeForSupabase(colName, payload);
   try {
-    const { error } = await supabase.from(colName).insert(currentPayload);
-    if (!error) return;
-
-    if (error.code === "PGRST204") {
-      const match = error.message?.match(/Could not find the '([^']+)' column/i);
-      if (match && match[1] && match[1] in currentPayload) {
-        delete currentPayload[match[1]];
-        await supabase.from(colName).insert(currentPayload);
-      }
-    } else if (error.code === "PGRST205") {
+    const { error } = await supabase.from(colName).insert(cleanPayload);
+    if (error && error.code === "PGRST205") {
       window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
     }
   } catch (err) {}
@@ -390,18 +577,10 @@ async function backgroundInsert(colName: string, payload: any) {
 
 // Asynchronous background upsert without blocking UI
 async function backgroundUpsert(colName: string, payload: any, pk: string) {
-  let currentPayload = { ...payload };
+  const cleanPayload = sanitizeForSupabase(colName, payload);
   try {
-    const { error } = await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
-    if (!error) return;
-
-    if (error.code === "PGRST204") {
-      const match = error.message?.match(/Could not find the '([^']+)' column/i);
-      if (match && match[1] && match[1] in currentPayload) {
-        delete currentPayload[match[1]];
-        await supabase.from(colName).upsert(currentPayload, { onConflict: pk });
-      }
-    } else if (error.code === "PGRST205") {
+    const { error } = await supabase.from(colName).upsert(cleanPayload, { onConflict: pk });
+    if (error && error.code === "PGRST205") {
       window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
     }
   } catch (err) {}
@@ -409,18 +588,11 @@ async function backgroundUpsert(colName: string, payload: any, pk: string) {
 
 // Asynchronous background update without blocking UI
 async function backgroundUpdate(colName: string, payload: any, pk: string, id: string) {
-  let currentPayload = { ...payload };
+  const cleanPayload = sanitizeForSupabase(colName, payload);
+  if (Object.keys(cleanPayload).length === 0) return;
   try {
-    const { error } = await supabase.from(colName).update(currentPayload).eq(pk, id);
-    if (!error) return;
-
-    if (error.code === "PGRST204") {
-      const match = error.message?.match(/Could not find the '([^']+)' column/i);
-      if (match && match[1] && match[1] in currentPayload) {
-        delete currentPayload[match[1]];
-        await supabase.from(colName).update(currentPayload).eq(pk, id);
-      }
-    } else if (error.code === "PGRST205") {
+    const { error } = await supabase.from(colName).update(cleanPayload).eq(pk, id);
+    if (error && error.code === "PGRST205") {
       window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
     }
   } catch (err) {}
@@ -436,11 +608,18 @@ async function backgroundDelete(colName: string, pk: string, id: string) {
   } catch (err) {}
 }
 
-export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
+export async function setDoc(
+  docRef: { colName: string; id: string },
+  data: any,
+  _options?: { merge?: boolean }
+) {
   const pk = getPk(docRef.colName);
   const payload = { [pk]: docRef.id, ...data };
   if (pk !== "id" && "id" in payload) {
     delete payload.id;
+  }
+  if (payload.timestamp) {
+    payload.timestamp = toTimestampMs(payload.timestamp);
   }
 
   // 1. Instant optimistic in-memory update (0ms)
@@ -449,147 +628,216 @@ export async function setDoc(docRef: { colName: string; id: string }, data: any,
   colMap.set(docRef.id, { ...existing, ...payload });
   notifyListeners(docRef.colName);
 
-  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  // 2. Native Web BroadcastChannel (instant multi-tab sync)
   broadcastMutation(docRef.colName, "upsert", payload, docRef.id);
 
-  // 3. Non-blocking background database persist
+  // 3. Non-blocking background database persist via HTTP REST
   backgroundUpsert(docRef.colName, payload, pk);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
   const pk = getPk(docRef.colName);
+  const payload = { ...data };
+  if (payload.timestamp) {
+    payload.timestamp = toTimestampMs(payload.timestamp);
+  }
 
   // 1. Instant optimistic in-memory update (0ms)
   const colMap = getColMap(docRef.colName);
   const existing = colMap.get(docRef.id) || {};
-  const updated = { ...existing, ...data };
-  colMap.set(docRef.id, updated);
+  colMap.set(docRef.id, { ...existing, ...payload });
   notifyListeners(docRef.colName);
 
-  // 2. Instant Realtime WebSocket broadcast (<20ms)
-  broadcastMutation(docRef.colName, "update", data, docRef.id);
+  // 2. Instant multi-tab broadcast
+  broadcastMutation(docRef.colName, "update", payload, docRef.id);
 
-  // 3. Non-blocking background database persist
-  backgroundUpdate(docRef.colName, data, pk, docRef.id);
+  // 3. Non-blocking background database persist via HTTP REST
+  backgroundUpdate(docRef.colName, payload, pk, docRef.id);
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
   const pk = getPk(docRef.colName);
 
-  // 1. Instant optimistic in-memory update (0ms)
+  // 1. Instant optimistic in-memory delete (0ms)
   const colMap = getColMap(docRef.colName);
   colMap.delete(docRef.id);
   notifyListeners(docRef.colName);
 
-  // 2. Instant Realtime WebSocket broadcast (<20ms)
-  broadcastMutation(docRef.colName, "delete", null, docRef.id);
+  // 2. Instant multi-tab broadcast
+  broadcastMutation(docRef.colName, "delete", {}, docRef.id);
 
-  // 3. Non-blocking background database persist
+  // 3. Non-blocking background database delete via HTTP REST
   backgroundDelete(docRef.colName, pk, docRef.id);
 }
 
 export async function addDoc(colName: string, data: any) {
   const pk = getPk(colName);
-  const id = "doc_" + Date.now() + Math.random().toString(36).substring(2, 9);
+  const id = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 9);
   const payload = { [pk]: id, ...data };
+  if (payload.timestamp) {
+    payload.timestamp = toTimestampMs(payload.timestamp);
+  }
 
-  // 1. Instant optimistic in-memory update (0ms)
+  // 1. Instant optimistic in-memory insert (0ms)
   const colMap = getColMap(colName);
   colMap.set(id, payload);
   notifyListeners(colName);
 
-  // 2. Instant Realtime WebSocket broadcast (<20ms)
+  // 2. Instant multi-tab broadcast
   broadcastMutation(colName, "insert", payload, id);
 
-  // 3. Non-blocking background database persist
+  // 3. Non-blocking background database persist via HTTP REST
   backgroundInsert(colName, payload);
 
   return { colName, id };
 }
 
-// Safe throttled REST table fetch to hydrate in-memory cache
+// Safe fast REST table fetch to hydrate in-memory cache with in-flight deduplication
+const inFlightFetches = new Map<string, Promise<any>>();
 const lastFetchTime = new Map<string, number>();
 
-async function fetchCollectionFromSupabase(colName: string) {
+async function fetchCollectionFromSupabase(colName: string): Promise<void> {
+  const inFlight = inFlightFetches.get(colName);
+  if (inFlight) return inFlight;
+
   const now = Date.now();
   const lastTime = lastFetchTime.get(colName) || 0;
-  // Throttle queries to at most once every 6 seconds per collection to prevent upstream timeout
-  if (now - lastTime < 6000) return;
+  // Debounce to at most once per 400ms
+  if (now - lastTime < 400) return;
   lastFetchTime.set(colName, now);
 
-  try {
-    let req = supabase.from(colName).select("*");
-    if (colName === "messages") {
-      req = req.order("timestamp", { ascending: false }).limit(80);
-    } else if (colName === "presence" || colName === "voice_users") {
-      req = req.limit(100);
-    }
-    const { data, error } = await req;
-    if (!error && Array.isArray(data)) {
-      const colMap = getColMap(colName);
-      const pk = getPk(colName);
-      data.forEach((row: any) => {
-        const rowId = row[pk] || row.id || row.uid;
-        if (rowId && !colMap.has(rowId)) {
-          colMap.set(rowId, row);
-        } else if (rowId && colMap.has(rowId)) {
-          // Merge newer timestamp if available
-          const existing = colMap.get(rowId);
-          if ((row.timestamp || 0) >= (existing.timestamp || 0)) {
+  const fetchPromise = (async () => {
+    try {
+      let req = supabase.from(colName).select("*");
+      if (colName === "messages") {
+        req = req.order("timestamp", { ascending: false }).limit(100);
+      } else if (colName === "presence" || colName === "voice_users") {
+        req = req.limit(100);
+      }
+      const { data, error } = await req;
+      if (!error && Array.isArray(data)) {
+        const colMap = getColMap(colName);
+        const pk = getPk(colName);
+        const fetchedIds = new Set<string>();
+
+        data.forEach((row: any) => {
+          const rowId = row[pk] || row.id || row.uid;
+          if (rowId) {
+            fetchedIds.add(rowId);
+            if (row.timestamp) {
+              row.timestamp = toTimestampMs(row.timestamp);
+            }
+            if (row.lastSeen) {
+              row.lastSeen = toTimestampMs(row.lastSeen);
+            }
+            const existing = colMap.get(rowId);
             colMap.set(rowId, { ...existing, ...row });
           }
+        });
+
+        // Reconcile: delete any documents that were deleted from Supabase
+        const curTime = Date.now();
+        for (const [id, item] of colMap.entries()) {
+          if (!fetchedIds.has(id)) {
+            // Retain recent optimistic items (< 8 seconds old)
+            const itemAge = curTime - (toTimestampMs(item?.timestamp) || 0);
+            if (!item?._isOptimistic || itemAge > 8000) {
+              colMap.delete(id);
+            }
+          }
         }
-      });
-      initialFetchDone.add(colName);
-      notifyListeners(colName);
-    } else if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+
+        initialFetchDone.add(colName);
+        notifyListeners(colName);
+      } else if (error && error.code === "PGRST205") {
+        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
+      }
+    } catch (err) {
+      console.warn(`[Supabase fetch ${colName}]`, err);
+    } finally {
+      inFlightFetches.delete(colName);
     }
-  } catch (err) {}
+  })();
+
+  inFlightFetches.set(colName, fetchPromise);
+  return fetchPromise;
+}
+
+// Global window event listener to trigger instant sync on tab focus or visibility
+if (typeof window !== "undefined") {
+  const triggerSync = () => {
+    const cols = new Set<string>();
+    activeListeners.forEach((l) => {
+      const c = typeof l.queryObj === "string" ? l.queryObj : l.queryObj.colName;
+      if (c) cols.add(c);
+    });
+    cols.forEach((col) => {
+      fetchCollectionFromSupabase(col).catch(() => {});
+    });
+  };
+
+  window.addEventListener("focus", triggerSync);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      triggerSync();
+    }
+  });
 }
 
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   const constraints = queryObj?.constraints || [];
 
-  // 1. Background non-blocking hydration if not yet done
+  // Await fetch if initial fetch hasn't completed so getDocs returns real database records
   if (!initialFetchDone.has(colName)) {
-    fetchCollectionFromSupabase(colName).catch(() => {});
+    await fetchCollectionFromSupabase(colName);
   }
 
-  // 2. Return current in-memory results instantly
   return applyQuery(colName, constraints);
 }
 
-export function onSnapshot(queryObj: any, onNext: (snap: any) => void, onError?: (err: any) => void) {
+export function onSnapshot(
+  queryObj: any,
+  onNext: (snap: any) => void,
+  onError?: (err: any) => void
+) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   const constraints = queryObj?.constraints || [];
   const listenerId = "listener_" + Math.random().toString(36).substring(2, 10);
 
-  // 1. Ensure global Realtime WebSocket is connected
-  getOrCreateGlobalChannel();
-
-  // 2. Register active listener
+  // 1. Register active listener
   const listener = { id: listenerId, queryObj, onNext, onError };
   activeListeners.add(listener);
 
-  // 3. Immediately emit current in-memory state (0ms instant response)
+  // 2. Immediately emit current in-memory state (0ms instant response)
   const snap = applyQuery(colName, constraints);
   onNext(snap);
 
-  // 4. Initial fetch from database to seed data
-  fetchCollectionFromSupabase(colName).then(() => {
-    const updatedSnap = applyQuery(colName, constraints);
-    onNext(updatedSnap);
-  }).catch(() => {});
+  // 3. Initial fetch from database to seed data
+  fetchCollectionFromSupabase(colName)
+    .then(() => {
+      const updatedSnap = applyQuery(colName, constraints);
+      onNext(updatedSnap);
+    })
+    .catch(() => {});
 
-  // 5. Periodic gentle background sync (every 12 seconds, not every 300ms) to avoid timeouts
-  const syncInterval = setInterval(() => {
-    fetchCollectionFromSupabase(colName).catch(() => {});
-  }, 12000);
+  // 4. Adaptive HTTP micro-poller (1.2s when tab focused, 3.5s when backgrounded)
+  const getPollInterval = () => (document.hidden ? 3500 : 1200);
+  let timer: any = null;
+
+  const scheduleNextPoll = () => {
+    timer = setTimeout(async () => {
+      await fetchCollectionFromSupabase(colName).catch(() => {});
+      if (activeListeners.has(listener)) {
+        scheduleNextPoll();
+      }
+    }, getPollInterval());
+  };
+
+  scheduleNextPoll();
 
   return () => {
-    clearInterval(syncInterval);
+    if (timer) clearTimeout(timer);
     activeListeners.delete(listener);
   };
 }
@@ -625,6 +873,6 @@ export function writeBatch() {
       for (const op of operations) {
         await op();
       }
-    }
+    },
   };
 }

@@ -40,6 +40,7 @@ import {
   db,
   sendBroadcastSignal,
   subscribeBroadcastSignals,
+  toTimestampMs,
 } from "../supabase-adapter";
 import { ChatProfile, VoiceSignal } from "../types";
 import { SmartVoiceDetector } from "../utils/audioVAD";
@@ -214,6 +215,8 @@ export default function VoiceChannel({
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
   const remoteAnalysersRef = useRef<{ [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } }>({});
+  const lastCallAttemptRef = useRef<{ [uid: string]: number }>({});
+  const callFailCountRef = useRef<{ [uid: string]: number }>({});
 
   // Keep refs in sync for heartbeat timer
   const isMutedRef = useRef(isMuted);
@@ -248,17 +251,24 @@ export default function VoiceChannel({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any participant who lost connection or battery and stopped sending heartbeats (> 45s), sorted deterministically
+  // Filter out any invalid, anonymous, or disconnected participant (> 8s without heartbeat), sorted deterministically
   const activeParticipants = useMemo(() => {
     return participants
       .filter((p) => {
+        if (!p || !p.uid) return false;
+        const uName = (p.username || "").trim();
+        // Strictly ban Anonymous or empty users from appearing in voice chat
+        if (!uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+          return false;
+        }
         // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
         const pc = peersRef.current[p.uid];
         if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
           return true;
         }
-        const ts = p.timestamp || (p as any).lastSeen;
-        return typeof ts === "number" ? currentTime - ts < 45000 : true;
+        const ts = toTimestampMs(p.timestamp || (p as any).lastSeen);
+        if (ts <= 0) return false;
+        return currentTime - ts < 8000;
       })
       .sort((a, b) => {
         if (!a || !b) return 0;
@@ -1117,12 +1127,21 @@ export default function VoiceChannel({
         setTrackTrigger((v) => v + 1);
       };
 
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected") {
+          callFailCountRef.current[partnerUid] = 0;
+        } else if (pc.connectionState === "failed") {
+          callFailCountRef.current[partnerUid] = (callFailCountRef.current[partnerUid] || 0) + 1;
+        }
+      };
+
       pc.oniceconnectionstatechange = () => {
         if (
           pc.iceConnectionState === "disconnected" ||
           pc.iceConnectionState === "failed" ||
           pc.iceConnectionState === "closed"
         ) {
+          callFailCountRef.current[partnerUid] = (callFailCountRef.current[partnerUid] || 0) + 1;
           try {
             pc.close();
           } catch (e) {}
@@ -1327,10 +1346,17 @@ export default function VoiceChannel({
 
         localStreamRef.current = stream;
 
-        // Register self as active participant
+        // Register self as active participant (strictly reject anonymous/empty username)
+        const myCleanUsername = (profile.username || "").trim();
+        if (!myCleanUsername || myCleanUsername.toLowerCase() === "anonymous" || myCleanUsername.toLowerCase() === "guest") {
+          console.warn("Cannot join voice channel with anonymous username.");
+          stopAllMediaTracks();
+          return;
+        }
+
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
-          username: profile.username,
+          username: myCleanUsername,
           photoURL: profile.photoURL || "",
           isMuted: false,
           isVideoOn: false,
@@ -1347,7 +1373,7 @@ export default function VoiceChannel({
 
         await setDoc(doc(db, "presence", profile.uid), {
           uid: profile.uid,
-          username: profile.username,
+          username: myCleanUsername,
           photoURL: profile.photoURL || "",
           status: "online",
           lastSeen: Date.now(),
@@ -1364,8 +1390,25 @@ export default function VoiceChannel({
             if (!isMountedRef.current) return;
             const users: Participant[] = [];
             const activeUids = new Set<string>();
+            const now = Date.now();
+
             snapshot.forEach((d) => {
               const u = d.data() as Participant;
+              const uName = (u?.username || "").trim();
+
+              // Strictly purge any anonymous or empty voice participant documents to prevent phantom users & lag storms
+              if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+                deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+                return;
+              }
+
+              const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
+              // Immediately prune dead/abandoned participants older than 10 seconds
+              if (ts > 0 && now - ts > 10000) {
+                deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+                return;
+              }
+
               activeUids.add(u.uid);
               if (u.uid !== profile.uid) {
                 users.push(u);
@@ -1374,11 +1417,18 @@ export default function VoiceChannel({
                   !pc ||
                   pc.connectionState === "closed" ||
                   pc.connectionState === "failed";
+
+                const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
+                const failCount = callFailCountRef.current[u.uid] || 0;
+                const backoffTime = failCount > 3 ? 30000 : 8000;
+
                 if (
                   profile.uid < u.uid &&
                   isDead &&
-                  localStreamRef.current
+                  localStreamRef.current &&
+                  now - lastAttempt > backoffTime
                 ) {
+                  lastCallAttemptRef.current[u.uid] = now;
                   initiateCall(u.uid, localStreamRef.current);
                 }
               }
@@ -1412,6 +1462,8 @@ export default function VoiceChannel({
                 delete cameraSendersRef.current[peerUid];
                 delete screenSendersRef.current[peerUid];
                 delete audioSendersRef.current[peerUid];
+                delete lastCallAttemptRef.current[peerUid];
+                delete callFailCountRef.current[peerUid];
                 if (remoteStreamsRef.current[peerUid]) {
                   delete remoteStreamsRef.current[peerUid];
                 }

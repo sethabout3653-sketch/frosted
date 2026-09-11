@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   db,
   supabase,
@@ -16,6 +16,8 @@ import {
   cassandra,
   handleFirestoreError,
   OperationType,
+  toTimestampMs,
+  compareMessagesChronological,
 } from "../supabase-adapter";
 import { ChatMessage, ChatProfile } from "../types";
 import {
@@ -129,26 +131,17 @@ export default function ChatPanel({
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
   const [isLocalTyping, setIsLocalTyping] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(initialCache.length === 0);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [isClearingMessages, setIsClearingMessages] = useState(false);
   const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const isInitialLoadRef = useRef<boolean>(true);
+  const isUserScrolledUpRef = useRef<boolean>(false);
+  const lastKnownLatestMsgIdRef = useRef<string | null>(null);
   const isLoadingOlderRef = useRef<boolean>(false);
   const prevScrollHeightRef = useRef<number>(0);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const hasPurgedRef = useRef<boolean>(false);
-
-  // Initial purge of all current messages as requested
-  useEffect(() => {
-    if (!hasPurgedRef.current) {
-      hasPurgedRef.current = true;
-      handleDeleteAllMessages();
-    }
-  }, []);
 
   const updateTypingStatus = async (typing: boolean) => {
     if (!profile) return;
@@ -207,7 +200,7 @@ export default function ChatPanel({
     return () => clearInterval(checkStale);
   }, []);
 
-  // Cleanup local typing state on active channel change
+  // Cleanup local typing state and reset scroll position on active channel change
   useEffect(() => {
     if (isLocalTyping) {
       updateTypingStatus(false);
@@ -216,6 +209,10 @@ export default function ChatPanel({
       clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = null;
     }
+    isInitialLoadRef.current = true;
+    isUserScrolledUpRef.current = false;
+    lastKnownLatestMsgIdRef.current = null;
+    setShowScrollBottomBtn(false);
   }, [activeChannel]);
 
   // Cleanup on unmount
@@ -368,25 +365,35 @@ export default function ChatPanel({
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as any;
           const uname = (data.username || "").trim();
-          if (!uname || uname.toLowerCase() === "anonymous") {
+          if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
             deleteDoc(doc(db, "messages", docSnap.id)).catch(() => {});
             return;
           }
-          newMessages.push({ id: docSnap.id, ...data } as ChatMessage);
+          newMessages.push({
+            id: docSnap.id,
+            ...data,
+            timestamp: toTimestampMs(data.timestamp),
+          } as ChatMessage);
         });
 
         // If returned messages equal or exceed limit, more older messages exist
         setHasMoreOlderMessages(newMessages.length >= messageLimit);
 
-        const reversed = newMessages.reverse();
         setMessages((prev) => {
-          // Keep any local optimistic messages that haven't arrived in the snapshot yet
+          const now = Date.now();
+          // Keep only true local optimistic messages that haven't arrived in the snapshot yet (<8s old)
           const pending = prev.filter(
             (m) =>
-              (m.id.startsWith("temp_") || m.id.startsWith("doc_")) &&
-              !reversed.some((sm) => sm.id === m.id)
+              Boolean((m as any)._isOptimistic) &&
+              now - (toTimestampMs(m.timestamp) || 0) < 8000 &&
+              !newMessages.some((sm) => sm.id === m.id)
           );
-          const finalMessages = [...reversed, ...pending];
+
+          const combinedMap = new Map<string, ChatMessage>();
+          newMessages.forEach((m) => combinedMap.set(m.id, m));
+          pending.forEach((m) => combinedMap.set(m.id, m));
+
+          const finalMessages = Array.from(combinedMap.values()).sort(compareMessagesChronological);
           saveCachedMessages(finalMessages);
           return finalMessages;
         });
@@ -410,26 +417,38 @@ export default function ChatPanel({
         // 2. Initial load: scroll to bottom once
         if (isInitialLoadRef.current) {
           isInitialLoadRef.current = false;
+          if (newMessages.length > 0) {
+            const latest = [...newMessages].sort(compareMessagesChronological).pop();
+            lastKnownLatestMsgIdRef.current = latest?.id || null;
+          }
           window.setTimeout(() => scrollToBottom("auto"), 50);
           return;
         }
 
-        // 3. When someone chatted: check if user is near bottom or if it's our own message
+        // 3. Detect if a brand new message actually arrived
+        const latestMessage = newMessages.length > 0
+          ? [...newMessages].sort(compareMessagesChronological).pop()
+          : null;
+
+        const isNewIncomingMessage =
+          Boolean(latestMessage) &&
+          latestMessage?.id !== lastKnownLatestMsgIdRef.current;
+
+        if (latestMessage) {
+          lastKnownLatestMsgIdRef.current = latestMessage.id;
+        }
+
+        // 4. CRITICAL: When scrolling or reading through older messages,
+        // DO NOT automatically jump or scroll to latest messages!
         const container = chatContainerRef.current;
-        const isNearBottom = container
-          ? container.scrollHeight - container.scrollTop - container.clientHeight < 160
-          : true;
+        if (!container) return;
 
-        const latestMessage = reversed[reversed.length - 1];
-        const isMyMessage =
-          latestMessage &&
-          (latestMessage.uid === profile.uid ||
-            latestMessage.id.startsWith("temp_") ||
-            latestMessage.id.startsWith("doc_"));
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const isAtBottom = distanceFromBottom <= 40 && !isUserScrolledUpRef.current;
 
-        // Only auto-scroll to bottom if the user is already near bottom or sent the message!
-        if (isNearBottom || isMyMessage) {
-          window.setTimeout(() => scrollToBottom("smooth"), 50);
+        // Only maintain bottom pin if user is already at the bottom AND a new message arrived
+        if (isAtBottom && isNewIncomingMessage) {
+          window.setTimeout(() => scrollToBottom("smooth"), 30);
         }
       },
       (error) => {
@@ -446,7 +465,10 @@ export default function ChatPanel({
     if (!chatContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    setShowScrollBottomBtn(distanceFromBottom > 240);
+    // Mark as scrolled up if more than 40px away from the bottom
+    const isScrolledUp = distanceFromBottom > 40;
+    isUserScrolledUpRef.current = isScrolledUp;
+    setShowScrollBottomBtn(distanceFromBottom > 140);
   };
 
   const handleLoadOlderMessages = () => {
@@ -459,40 +481,29 @@ export default function ChatPanel({
   };
 
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
-  };
-
-  const handleDeleteMessage = async (msgId: string) => {
-    setMessages((prev) => prev.filter((m) => m.id !== msgId));
-    try {
-      await deleteDoc(doc(db, "messages", msgId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior,
+      });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior });
     }
   };
 
-  const handleDeleteAllMessages = async () => {
-    setIsClearingMessages(true);
-    setMessages([]);
-    globalMessagesCache = [];
+  const handleDeleteMessage = async (msgId: string) => {
+    setMessages((prev) => {
+      const updated = prev.filter((m) => m.id !== msgId);
+      saveCachedMessages(updated);
+      return updated;
+    });
     try {
-      localStorage.removeItem(CACHE_KEY);
-    } catch {}
-
-    try {
-      const snap = await getDocs(collection(db, "messages"));
-      const deletePromises = snap.docs.map((docSnap) =>
-        deleteDoc(doc(db, "messages", docSnap.id)).catch(() => {})
-      );
-      await Promise.all(deletePromises);
+      await deleteDoc(doc(db, "messages", msgId));
       if (supabase && supabase.from) {
-        await supabase.from("messages").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+        await supabase.from("messages").delete().eq("id", msgId);
       }
     } catch (error) {
-      console.warn("Error deleting all messages:", error);
-    } finally {
-      setIsClearingMessages(false);
-      setShowClearConfirm(false);
+      handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }
   };
 
@@ -557,10 +568,12 @@ export default function ChatPanel({
     // Optimistically show message immediately on sender's screen (0ms latency)
     const optimisticMsg: ChatMessage = {
       id: msgId,
+      channelId: activeChannel,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
       timestamp: now,
+      _isOptimistic: true,
       ...(currentText ? { text: currentText } : {}),
       ...(currentAttachment ? { 
         attachment: currentAttachment,
@@ -570,7 +583,9 @@ export default function ChatPanel({
       } : {}),
     };
 
-    setMessages((prev) => [...prev, optimisticMsg]);
+    setMessages((prev) =>
+      [...prev.filter((m) => m.id !== msgId), optimisticMsg].sort(compareMessagesChronological)
+    );
     setText("");
     if (isLocalTyping) {
       updateTypingStatus(false);
@@ -584,10 +599,12 @@ export default function ChatPanel({
     setAttachmentName(null);
     setAttachmentSize(null);
     inputRef.current?.focus();
-    window.setTimeout(() => scrollToBottom(), 10);
+    isUserScrolledUpRef.current = false;
+    window.setTimeout(() => scrollToBottom("smooth"), 10);
 
     try {
       const msgData: Record<string, any> = {
+        channelId: activeChannel,
         uid: profile.uid,
         username: profile.username,
         photoURL: profile.photoURL || "",
@@ -621,19 +638,25 @@ export default function ChatPanel({
     // Optimistically show GIF immediately (0ms latency)
     const optimisticMsg: ChatMessage = {
       id: msgId,
+      channelId: activeChannel,
       uid: profile.uid,
       username: profile.username,
       photoURL: profile.photoURL || "",
       gif: gifUrl,
       timestamp: now,
+      _isOptimistic: true,
     };
 
-    setMessages((prev) => [...prev, optimisticMsg]);
+    setMessages((prev) =>
+      [...prev.filter((m) => m.id !== msgId), optimisticMsg].sort(compareMessagesChronological)
+    );
     setShowGiphy(false);
-    window.setTimeout(() => scrollToBottom(), 10);
+    isUserScrolledUpRef.current = false;
+    window.setTimeout(() => scrollToBottom("smooth"), 10);
 
     try {
       const msgData: Record<string, any> = {
+        channelId: activeChannel,
         uid: profile.uid,
         username: profile.username,
         photoURL: profile.photoURL || "",
@@ -721,13 +744,27 @@ export default function ChatPanel({
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
-  const filteredMessages = searchQuery.trim()
-    ? messages.filter(
-        (m) =>
-          m.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          m.username.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : messages;
+  const channelMessages = useMemo(() => {
+    return messages.filter((m) => {
+      // If message has channelId, ensure it belongs to activeChannel
+      if (m.channelId && activeChannel && m.channelId !== activeChannel) {
+        return false;
+      }
+      return true;
+    });
+  }, [messages, activeChannel]);
+
+  const filteredMessages = useMemo(() => {
+    const list = searchQuery.trim()
+      ? channelMessages.filter(
+          (m) =>
+            m.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            m.username.toLowerCase().includes(searchQuery.toLowerCase())
+        )
+      : channelMessages;
+
+    return [...list].sort(compareMessagesChronological);
+  }, [channelMessages, searchQuery]);
 
   // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
   // within 60 seconds they will not be shown as online.
@@ -819,15 +856,6 @@ export default function ChatPanel({
               />
             </div>
 
-            {/* Clear All Messages Button */}
-            <button
-              onClick={() => setShowClearConfirm(true)}
-              className="p-1.5 rounded-md text-neutral-400 hover:text-red-400 hover:bg-neutral-900 transition-colors"
-              title="Clear all messages"
-            >
-              <Trash2 size={18} />
-            </button>
-
             {/* Toggle Member Sidebar Button */}
             {setShowMembersSidebar && (
               <button
@@ -905,7 +933,6 @@ export default function ChatPanel({
             return (
               <div
                 key={`${msg.id || "msg"}-${mIdx}`}
-                style={{ contentVisibility: "auto", containIntrinsicSize: "0 60px" }}
                 className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
               >
                 {/* Avatar Circle */}
@@ -1009,7 +1036,10 @@ export default function ChatPanel({
           {showScrollBottomBtn && (
             <div className="sticky bottom-2 flex justify-center z-30 pointer-events-none pb-2">
               <button
-                onClick={() => scrollToBottom("smooth")}
+                onClick={() => {
+                  isUserScrolledUpRef.current = false;
+                  scrollToBottom("smooth");
+                }}
                 className="pointer-events-auto px-4 py-1.5 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700 text-xs font-semibold shadow-2xl transition-all flex items-center gap-1.5 cursor-pointer backdrop-blur-sm active:scale-95"
               >
                 <span>Latest messages</span>
@@ -1283,39 +1313,6 @@ export default function ChatPanel({
             </div>
           </div>
         </aside>
-      )}
-
-      {/* Clear All Messages Confirmation Modal */}
-      {showClearConfirm && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-center">
-            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 flex items-center justify-center mx-auto">
-              <Trash2 size={24} />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-white">Delete All Messages</h3>
-              <p className="text-xs text-neutral-400 mt-1">
-                Are you sure you want to delete all messages in this channel? This action cannot be undone.
-              </p>
-            </div>
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                onClick={() => setShowClearConfirm(false)}
-                disabled={isClearingMessages}
-                className="flex-1 py-2 px-4 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteAllMessages}
-                disabled={isClearingMessages}
-                className="flex-1 py-2 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold transition-colors shadow-lg shadow-red-600/20 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isClearingMessages ? "Deleting..." : "Delete All"}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

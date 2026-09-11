@@ -29,6 +29,7 @@ export interface ChatProfile {
 
 export interface ChatMessage {
   id: string;
+  channelId?: string;
   uid: string;
   username: string;
   photoURL: string;
@@ -40,6 +41,7 @@ export interface ChatMessage {
   attachmentSize?: number;
   timestamp: number;
   reactions?: Record<string, string[]>;
+  _isOptimistic?: boolean;
 }
 
 export interface VoiceSignal {
