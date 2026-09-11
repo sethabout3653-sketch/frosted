@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   db,
+  supabase,
   collection,
   query,
   orderBy,
@@ -128,6 +129,8 @@ export default function ChatPanel({
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
   const [isLocalTyping, setIsLocalTyping] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(initialCache.length === 0);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isClearingMessages, setIsClearingMessages] = useState(false);
   const typingTimeoutRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -137,6 +140,15 @@ export default function ChatPanel({
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const hasPurgedRef = useRef<boolean>(false);
+
+  // Initial purge of all current messages as requested
+  useEffect(() => {
+    if (!hasPurgedRef.current) {
+      hasPurgedRef.current = true;
+      handleDeleteAllMessages();
+    }
+  }, []);
 
   const updateTypingStatus = async (typing: boolean) => {
     if (!profile) return;
@@ -456,6 +468,31 @@ export default function ChatPanel({
       await deleteDoc(doc(db, "messages", msgId));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
+    }
+  };
+
+  const handleDeleteAllMessages = async () => {
+    setIsClearingMessages(true);
+    setMessages([]);
+    globalMessagesCache = [];
+    try {
+      localStorage.removeItem(CACHE_KEY);
+    } catch {}
+
+    try {
+      const snap = await getDocs(collection(db, "messages"));
+      const deletePromises = snap.docs.map((docSnap) =>
+        deleteDoc(doc(db, "messages", docSnap.id)).catch(() => {})
+      );
+      await Promise.all(deletePromises);
+      if (supabase && supabase.from) {
+        await supabase.from("messages").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      }
+    } catch (error) {
+      console.warn("Error deleting all messages:", error);
+    } finally {
+      setIsClearingMessages(false);
+      setShowClearConfirm(false);
     }
   };
 
@@ -781,6 +818,15 @@ export default function ChatPanel({
                 className="h-8 w-32 sm:w-44 bg-neutral-900 border border-neutral-800 rounded-md pl-8 pr-3 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-neutral-700 transition-colors"
               />
             </div>
+
+            {/* Clear All Messages Button */}
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="p-1.5 rounded-md text-neutral-400 hover:text-red-400 hover:bg-neutral-900 transition-colors"
+              title="Clear all messages"
+            >
+              <Trash2 size={18} />
+            </button>
 
             {/* Toggle Member Sidebar Button */}
             {setShowMembersSidebar && (
@@ -1237,6 +1283,39 @@ export default function ChatPanel({
             </div>
           </div>
         </aside>
+      )}
+
+      {/* Clear All Messages Confirmation Modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-center">
+            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 flex items-center justify-center mx-auto">
+              <Trash2 size={24} />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">Delete All Messages</h3>
+              <p className="text-xs text-neutral-400 mt-1">
+                Are you sure you want to delete all messages in this channel? This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                disabled={isClearingMessages}
+                className="flex-1 py-2 px-4 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteAllMessages}
+                disabled={isClearingMessages}
+                className="flex-1 py-2 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold transition-colors shadow-lg shadow-red-600/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isClearingMessages ? "Deleting..." : "Delete All"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
