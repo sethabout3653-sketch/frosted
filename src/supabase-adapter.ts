@@ -631,7 +631,7 @@ export async function setDoc(
   // 1. Instant optimistic in-memory update (0ms)
   const colMap = getColMap(docRef.colName);
   const existing = colMap.get(docRef.id) || {};
-  colMap.set(docRef.id, { ...existing, ...payload });
+  colMap.set(docRef.id, { ...existing, ...payload, _isOptimistic: true });
   notifyListeners(docRef.colName);
 
   // 2. Native Web BroadcastChannel (instant multi-tab sync)
@@ -651,7 +651,7 @@ export async function updateDoc(docRef: { colName: string; id: string }, data: a
   // 1. Instant optimistic in-memory update (0ms)
   const colMap = getColMap(docRef.colName);
   const existing = colMap.get(docRef.id) || {};
-  colMap.set(docRef.id, { ...existing, ...payload });
+  colMap.set(docRef.id, { ...existing, ...payload, _isOptimistic: true });
   notifyListeners(docRef.colName);
 
   // 2. Instant multi-tab broadcast
@@ -686,7 +686,7 @@ export async function addDoc(colName: string, data: any) {
 
   // 1. Instant optimistic in-memory insert (0ms)
   const colMap = getColMap(colName);
-  colMap.set(id, payload);
+  colMap.set(id, { ...payload, _isOptimistic: true });
   notifyListeners(colName);
 
   // 2. Instant multi-tab broadcast
@@ -802,6 +802,48 @@ export async function getDocs(queryObj: any) {
   return applyQuery(colName, constraints);
 }
 
+const activeChannels = new Map<string, any>();
+
+function ensureRealtimeSubscription(colName: string) {
+  if (typeof window === "undefined") return;
+  if (activeChannels.has(colName)) return;
+
+  const channel = supabase
+    .channel(`public:${colName}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: colName },
+      (payload) => {
+        const pk = getPk(colName);
+        const colMap = getColMap(colName);
+        
+        if (payload.eventType === "DELETE") {
+          const oldRecord = payload.old;
+          const id = oldRecord[pk] || oldRecord.id || oldRecord.uid;
+          if (id) {
+            colMap.delete(id);
+          }
+        } else {
+          // INSERT or UPDATE
+          const newRecord = payload.new;
+          const id = newRecord[pk] || newRecord.id || newRecord.uid;
+          if (id) {
+            // Restore timestamp formats if necessary
+            if (newRecord.timestamp) newRecord.timestamp = toTimestampMs(newRecord.timestamp);
+            if (newRecord.lastSeen) newRecord.lastSeen = toTimestampMs(newRecord.lastSeen);
+            
+            const existing = colMap.get(id);
+            colMap.set(id, { ...existing, ...newRecord });
+          }
+        }
+        notifyListeners(colName);
+      }
+    )
+    .subscribe();
+
+  activeChannels.set(colName, channel);
+}
+
 export function onSnapshot(
   queryObj: any,
   onNext: (snap: any) => void,
@@ -827,24 +869,38 @@ export function onSnapshot(
     })
     .catch(() => {});
 
-  // 4. Adaptive HTTP micro-poller (1.2s when tab focused, 3.5s when backgrounded)
-  const getPollInterval = () => (document.hidden ? 3500 : 1200);
-  let timer: any = null;
+  // 4. Start true WebSockets native realtime sync
+  ensureRealtimeSubscription(colName);
 
+  // 5. Very slow background HTTP heartbeat (30s) just for ultra-resiliency if WebSocket briefly drops
+  let timer: any = null;
   const scheduleNextPoll = () => {
     timer = setTimeout(async () => {
       await fetchCollectionFromSupabase(colName).catch(() => {});
       if (activeListeners.has(listener)) {
         scheduleNextPoll();
       }
-    }, getPollInterval());
+    }, 30000); // 30 second resiliency poll, letting native Realtime handle the fast lane
   };
-
   scheduleNextPoll();
 
   return () => {
     if (timer) clearTimeout(timer);
     activeListeners.delete(listener);
+    
+    // Cleanup channel if no one is listening to this table anymore
+    let hasOthers = false;
+    activeListeners.forEach(l => {
+      const lCol = typeof l.queryObj === "string" ? l.queryObj : l.queryObj.colName;
+      if (lCol === colName) hasOthers = true;
+    });
+    if (!hasOthers) {
+      const channel = activeChannels.get(colName);
+      if (channel) {
+        supabase.removeChannel(channel);
+        activeChannels.delete(colName);
+      }
+    }
   };
 }
 
