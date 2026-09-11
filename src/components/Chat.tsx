@@ -127,12 +127,18 @@ export default function Chat({
           const data = d.data();
           const uname = (data?.username || "").trim();
           if (!data?.uid || !uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
-            deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+            // Only clean up our own invalid document
+            if (data?.uid === profile?.uid) {
+              deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+            }
             return;
           }
           const ts = toTimestampMs(data.timestamp || data.lastSeen);
-          if (ts > 0 && now - ts > 10000) {
-            deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+          if (ts > 0 && now - ts > 12000) {
+            // Only clean up our own stale document to prevent clock sync race conditions across peers
+            if (data.uid === profile?.uid) {
+              deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+            }
           } else {
             validUsers.push(data);
           }
@@ -144,7 +150,7 @@ export default function Chat({
       }
     );
     return () => unsubscribe();
-  }, []);
+  }, [profile?.uid]);
 
   useEffect(() => {
     isOpenRef.current = isOpen;

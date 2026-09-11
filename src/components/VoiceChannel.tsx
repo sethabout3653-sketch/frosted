@@ -888,15 +888,8 @@ export default function VoiceChannel({
         sdp: data,
         timestamp: Date.now(),
       };
-      // 1. Instant delivery via Supabase Realtime Broadcast
+      // 1. Instant delivery via Supabase Realtime Broadcast & DB fallback
       sendBroadcastSignal(payload);
-
-      // 2. Persistent fallback via database table
-      try {
-        await addDoc(collection(db, "signals"), payload);
-      } catch (err) {
-        // Silently handled by broadcast
-      }
     },
     [profile.uid]
   );
@@ -1398,14 +1391,18 @@ export default function VoiceChannel({
 
               // Strictly purge any anonymous or empty voice participant documents to prevent phantom users & lag storms
               if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
-                deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+                if (u?.uid === profile.uid) {
+                  deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+                }
                 return;
               }
 
               const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-              // Immediately prune dead/abandoned participants older than 10 seconds
-              if (ts > 0 && now - ts > 10000) {
-                deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+              // Immediately prune dead/abandoned participants older than 12 seconds
+              if (ts > 0 && now - ts > 12000) {
+                if (u.uid === profile.uid) {
+                  deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
+                }
                 return;
               }
 
@@ -1618,7 +1615,7 @@ export default function VoiceChannel({
         }
         
         // If dead for over 180 seconds, clean up from Firestore
-        if (now - ts > 180000) {
+        if (now - ts > 180000 && p.uid === profile.uid) {
           deleteDoc(doc(db, "voice_users", p.uid)).catch(() => {});
         }
       }

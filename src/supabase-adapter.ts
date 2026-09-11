@@ -191,6 +191,8 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "isMuted",
     "isVideoOn",
     "isVideoLoading",
+    "isScreenSharing",
+    "isScreenAudioOn",
     "timestamp",
   ]),
   presence: new Set([
@@ -451,6 +453,8 @@ function broadcastMutation(
   }
 }
 
+let voiceSignalsChannel: any = null;
+
 export function sendBroadcastSignal(payload: {
   uid: string;
   targetUid: string;
@@ -475,9 +479,11 @@ export function sendBroadcastSignal(payload: {
 
   // 2. Explicit httpSend() via modern Supabase Realtime REST API (non-deprecated, zero WebSockets)
   try {
-    const channel = supabase.channel("voice_signals");
-    if (typeof (channel as any).httpSend === "function") {
-      (channel as any).httpSend("signal", fullSignal).catch(() => {});
+    if (!voiceSignalsChannel) {
+      voiceSignalsChannel = supabase.channel("voice_signals");
+    }
+    if (typeof voiceSignalsChannel.httpSend === "function") {
+      voiceSignalsChannel.httpSend("signal", fullSignal).catch(() => {});
     }
   } catch (err) {}
 
