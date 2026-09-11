@@ -287,7 +287,7 @@ export default function VoiceChannel({
       };
     }
     const remoteSharer = activeParticipants.find(
-      (p) => p.isScreenSharing === true
+      (p) => p.isScreenSharing === true || !!remoteScreenStreamsRef.current[p.uid]
     );
     if (remoteSharer) {
       return {
@@ -412,12 +412,14 @@ export default function VoiceChannel({
 
   // List of active video/screen feeds (for quick switching in fullscreen)
   const participantsWithVideo = useMemo(() => {
+    // Trigger this memo whenever trackTrigger changes as well, to catch remote streams
+    const dummy = trackTrigger; 
     const list: { uid: string; username: string; isLocal: boolean; type: "camera" | "screen" }[] = [];
     if (isScreenSharing) {
       list.push({ uid: profile.uid, username: `${profile.username} (Screen)`, isLocal: true, type: "screen" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isScreenSharing) {
+      if (p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) {
         list.push({ uid: p.uid, username: `${p.username} (Screen)`, isLocal: false, type: "screen" });
       }
     });
@@ -425,12 +427,12 @@ export default function VoiceChannel({
       list.push({ uid: profile.uid, username: `${profile.username} (Camera)`, isLocal: true, type: "camera" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isVideoOn) {
+      if (p.isVideoOn || remoteVideoRefs.current[p.uid]?.srcObject) {
         list.push({ uid: p.uid, username: `${p.username} (Camera)`, isLocal: false, type: "camera" });
       }
     });
     return list;
-  }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants]);
+  }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants, trackTrigger]);
 
   // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
   // while keeping noise suppression & AGC disabled so ANY sound (music, instruments, soundboards, whispers) is fully allowed
@@ -2904,7 +2906,7 @@ export default function VoiceChannel({
 
               <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
-                {p.isScreenSharing && (
+                {(p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) && (
                   <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
                     <MonitorUp size={9} />
                     <span>LIVE</span>

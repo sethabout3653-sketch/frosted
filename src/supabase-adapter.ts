@@ -191,8 +191,6 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "isMuted",
     "isVideoOn",
     "isVideoLoading",
-    "isScreenSharing",
-    "isScreenAudioOn",
     "timestamp",
   ]),
   presence: new Set([
