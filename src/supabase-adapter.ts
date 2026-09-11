@@ -207,6 +207,10 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "isMuted",
     "inVoice",
     "isScreenSharing",
+    "isVideoOn",
+    "isVideoLoading",
+    "isScreenAudioOn",
+    "timestamp",
   ]),
   typing: new Set([
     "id",

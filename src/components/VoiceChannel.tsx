@@ -214,6 +214,7 @@ export default function VoiceChannel({
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteAudioStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
   const remoteAnalysersRef = useRef<{ [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } }>({});
@@ -886,7 +887,7 @@ export default function VoiceChannel({
   const sendSignal = useCallback(
     async (
       targetUid: string,
-      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped",
+      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped" | "camera_started" | "camera_stopped" | "user_joined",
       data: string
     ) => {
       const payload = {
@@ -929,15 +930,10 @@ export default function VoiceChannel({
     if (audioTransceivers.length > 0) {
       const aTrack = audioTransceivers[0].receiver.track;
       if (aTrack) {
-        let rStream = remoteStreamsRef.current[partnerUid];
+        let rStream = remoteAudioStreamsRef.current[partnerUid];
         if (!rStream || !rStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
-          const newStream = new MediaStream([aTrack]);
-          // Keep video tracks if they exist
-          if (rStream) {
-            rStream.getVideoTracks().forEach(v => newStream.addTrack(v));
-          }
-          rStream = newStream;
-          remoteStreamsRef.current[partnerUid] = rStream;
+          rStream = new MediaStream([aTrack]);
+          remoteAudioStreamsRef.current[partnerUid] = rStream;
         }
         
         const audioEl = remoteAudioRefs.current[partnerUid];
@@ -955,13 +951,10 @@ export default function VoiceChannel({
     if (videoTransceivers.length >= 1) {
       const camTrack = videoTransceivers[0].receiver.track;
       if (camTrack) {
+        camTrack.enabled = true;
         let rStream = remoteStreamsRef.current[partnerUid];
         if (!rStream || !rStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
           rStream = new MediaStream([camTrack]);
-          // Keep audio tracks if they exist
-          if (remoteStreamsRef.current[partnerUid]) {
-             remoteStreamsRef.current[partnerUid].getAudioTracks().forEach(a => rStream.addTrack(a));
-          }
           remoteStreamsRef.current[partnerUid] = rStream;
         }
         
@@ -972,12 +965,14 @@ export default function VoiceChannel({
           }
           camEl.play().catch(() => {});
         }
+        setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
         camTrack.onunmute = () => {
           const el = remoteVideoRefs.current[partnerUid];
           if (el && remoteStreamsRef.current[partnerUid]) {
             el.srcObject = remoteStreamsRef.current[partnerUid];
             el.play().catch(() => {});
           }
+          setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
           setTrackTrigger((v) => v + 1);
         };
       }
@@ -1147,7 +1142,6 @@ export default function VoiceChannel({
 
       pc.oniceconnectionstatechange = () => {
         if (
-          pc.iceConnectionState === "disconnected" ||
           pc.iceConnectionState === "failed" ||
           pc.iceConnectionState === "closed"
         ) {
@@ -1240,7 +1234,7 @@ export default function VoiceChannel({
             try {
               await pc.setLocalDescription({ type: "rollback" });
             } catch (e) {
-              pc = createPeerConnection(partnerUid, micStream);
+              // Rollback may not be supported or necessary; continue with current PC
             }
           }
 
@@ -1296,6 +1290,9 @@ export default function VoiceChannel({
             signalData = JSON.parse(signal.sdp || "{}");
           } catch (e) {}
           remoteScreenSharersRef.current[partnerUid] = { hasAudio: !!signalData.hasAudio };
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: true } : p))
+          );
           const pc = peersRef.current[partnerUid];
           if (pc) {
             syncPeerTracks(partnerUid, pc);
@@ -1303,6 +1300,9 @@ export default function VoiceChannel({
           setTrackTrigger((v) => v + 1);
         } else if (signal.type === "screenshare_stopped") {
           delete remoteScreenSharersRef.current[partnerUid];
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: false } : p))
+          );
           if (remoteScreenStreamsRef.current[partnerUid]) {
             delete remoteScreenStreamsRef.current[partnerUid];
           }
@@ -1310,6 +1310,39 @@ export default function VoiceChannel({
             remoteScreenVideoRefs.current[partnerUid]!.srcObject = null;
           }
           setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_started") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoOn: true, isVideoLoading: false } : p))
+          );
+          setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
+          const pc = peersRef.current[partnerUid];
+          if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_stopped") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoOn: false, isVideoLoading: false } : p))
+          );
+          setRemoteVideoLoaded((prev) => {
+            const next = { ...prev };
+            delete next[partnerUid];
+            return next;
+          });
+          if (remoteStreamsRef.current[partnerUid]) {
+            delete remoteStreamsRef.current[partnerUid];
+          }
+          if (remoteVideoRefs.current[partnerUid]) {
+            remoteVideoRefs.current[partnerUid]!.srcObject = null;
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "user_joined") {
+          const pc = peersRef.current[partnerUid];
+          const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
+          if (isDead && localStreamRef.current) {
+            lastCallAttemptRef.current[partnerUid] = Date.now();
+            initiateCall(partnerUid, localStreamRef.current);
+          }
         }
       } catch (err: any) {
         const msg = String(err?.message || err || "");
@@ -1318,7 +1351,7 @@ export default function VoiceChannel({
         }
       }
     },
-    [createPeerConnection, processCandidateQueue, profile.uid, sendSignal]
+    [createPeerConnection, initiateCall, processCandidateQueue, profile.uid, sendSignal, syncPeerTracks]
   );
 
   // Main lifecycle: acquire microphone and register in voice_users
@@ -1399,6 +1432,9 @@ export default function VoiceChannel({
 
         hasJoinedVoiceRef.current = true;
 
+        // Broadcast join signal immediately so all active peers connect instantly
+        sendSignal("all", "user_joined", "");
+
         let latestVoiceDocs: any[] = [];
         let latestPresenceDocs: any[] = [];
 
@@ -1414,8 +1450,9 @@ export default function VoiceChannel({
             if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
               return;
             }
-            const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-            if (ts > 0 && now - ts <= 120000) {
+            let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
+            if (ts <= 0) ts = now;
+            if (now - ts <= 120000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1428,8 +1465,9 @@ export default function VoiceChannel({
               return;
             }
             if (pData.inVoice) {
-              const ts = toTimestampMs(pData.lastSeen || pData.timestamp);
-              if (ts > 0 && now - ts <= 45000) {
+              let ts = toTimestampMs(pData.lastSeen || pData.timestamp);
+              if (ts <= 0) ts = now;
+              if (now - ts <= 120000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,
@@ -1463,11 +1501,12 @@ export default function VoiceChannel({
 
               const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
               const failCount = callFailCountRef.current[u.uid] || 0;
-              const backoffTime = failCount > 3 ? 12000 : 2500;
+              const backoffTime = failCount > 3 ? 5000 : 800;
 
               const shouldInitiate =
+                lastAttempt === 0 ||
                 (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
-                (profile.uid > u.uid && now - lastAttempt > (backoffTime + 2500));
+                (profile.uid > u.uid && now - lastAttempt > (backoffTime + 600));
 
               if (shouldInitiate && isDead && localStreamRef.current) {
                 lastCallAttemptRef.current[u.uid] = now;
@@ -1476,7 +1515,7 @@ export default function VoiceChannel({
             }
           });
 
-          // Synchronize screen streams for all active users
+          // Synchronize screen & camera streams for all active users
           users.forEach((u) => {
             const isSharing = !!u.isScreenSharing || !!remoteScreenSharersRef.current[u.uid];
             if (!isSharing) {
@@ -1487,6 +1526,13 @@ export default function VoiceChannel({
                 remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
               }
             } else {
+              const pc = peersRef.current[u.uid];
+              if (pc) {
+                syncPeerTracks(u.uid, pc);
+              }
+            }
+
+            if (u.isVideoOn) {
               const pc = peersRef.current[u.uid];
               if (pc) {
                 syncPeerTracks(u.uid, pc);
@@ -1782,22 +1828,39 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
-                (s) => s.track?.kind === "video"
-              );
-              if (videoSender) {
-                await videoSender.replaceTrack(realVideoTrack);
+              let videoSender = cameraSendersRef.current[pUid];
+              if (!videoSender) {
+                const transceivers = pc.getTransceivers();
+                if (transceivers.length >= 2) {
+                  videoSender = transceivers[1].sender;
+                } else {
+                  videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
+                }
+                if (videoSender) {
+                  cameraSendersRef.current[pUid] = videoSender;
+                }
               }
+              if (videoSender) {
+                await videoSender.replaceTrack(realVideoTrack).catch(() => {});
+              }
+              sendSignal(pUid, "camera_started", "");
             }
           })
         );
+        sendSignal("all", "camera_started", "");
 
         // 3. Mark camera as active and ready in Firestore
         setIsCameraLoading(false);
         await updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoOn: true,
           isVideoLoading: false,
-        });
+          timestamp: Date.now(),
+        }).catch(() => {});
+        await updateDoc(doc(db, "presence", profile.uid), {
+          isVideoOn: true,
+          isVideoLoading: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
       } else {
         setIsVideoOn(false);
         isVideoOnRef.current = false;
@@ -1810,15 +1873,26 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
-                (s) => s.track?.kind === "video"
-              );
-              if (videoSender) {
-                await videoSender.replaceTrack(dummyTrack);
+              let videoSender = cameraSendersRef.current[pUid];
+              if (!videoSender) {
+                const transceivers = pc.getTransceivers();
+                if (transceivers.length >= 2) {
+                  videoSender = transceivers[1].sender;
+                } else {
+                  videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
+                }
+                if (videoSender) {
+                  cameraSendersRef.current[pUid] = videoSender;
+                }
               }
+              if (videoSender) {
+                await videoSender.replaceTrack(dummyTrack).catch(() => {});
+              }
+              sendSignal(pUid, "camera_stopped", "");
             }
           })
         );
+        sendSignal("all", "camera_stopped", "");
 
         // 2. Stop camera hardware so camera indicator light turns off
         if (videoStreamRef.current) {
@@ -1835,7 +1909,13 @@ export default function VoiceChannel({
         await updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoOn: false,
           isVideoLoading: false,
-        });
+          timestamp: Date.now(),
+        }).catch(() => {});
+        await updateDoc(doc(db, "presence", profile.uid), {
+          isVideoOn: false,
+          isVideoLoading: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
       }
     } catch (e: any) {
       console.error("Failed to toggle camera:", e);
@@ -1907,24 +1987,11 @@ export default function VoiceChannel({
               await sender.replaceTrack(dummyTrack);
             } catch (e) {}
           }
-          if (pc.signalingState === "stable") {
-            try {
-              const offer = await pc.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true,
-              });
-              const highQualityOffer = new RTCSessionDescription({
-                type: offer.type,
-                sdp: optimizeAudioSdp(offer.sdp || ""),
-              });
-              await pc.setLocalDescription(highQualityOffer);
-              sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
-            } catch (renegErr) {}
-          }
           sendSignal(pUid, "screenshare_stopped", "");
         }
       })
     );
+    sendSignal("all", "screenshare_stopped", "");
 
     // 2. Disconnect screen audio from Web Audio mix
     if (screenAudioSourceRef.current) {
@@ -2107,26 +2174,12 @@ export default function VoiceChannel({
               } catch (e) {}
             }
 
-            if (pc.signalingState === "stable") {
-              try {
-                const offer = await pc.createOffer({
-                  offerToReceiveAudio: true,
-                  offerToReceiveVideo: true,
-                });
-                const highQualityOffer = new RTCSessionDescription({
-                  type: offer.type,
-                  sdp: optimizeAudioSdp(offer.sdp || ""),
-                });
-                await pc.setLocalDescription(highQualityOffer);
-                sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
-              } catch (renegErr) {}
-            }
-
             // Send custom signaling message to notify peer that screen share started
             sendSignal(pUid, "screenshare_started", JSON.stringify({ hasAudio }));
           }
         })
       );
+      sendSignal("all", "screenshare_started", JSON.stringify({ hasAudio }));
 
       setIsScreenSharing(true);
       isScreenSharingRef.current = true;
@@ -2890,9 +2943,19 @@ export default function VoiceChannel({
                   <video
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
-                      const remoteStream = remoteStreamsRef.current[p.uid];
-                      if (el && remoteStream) {
-                        if (el.srcObject !== remoteStream) {
+                      if (el) {
+                        let remoteStream = remoteStreamsRef.current[p.uid];
+                        if (!remoteStream) {
+                          const pc = peersRef.current[p.uid];
+                          if (pc) {
+                            const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track?.kind === "video");
+                            if (videoTransceivers.length > 0 && videoTransceivers[0].receiver.track) {
+                              remoteStream = new MediaStream([videoTransceivers[0].receiver.track]);
+                              remoteStreamsRef.current[p.uid] = remoteStream;
+                            }
+                          }
+                        }
+                        if (remoteStream && el.srcObject !== remoteStream) {
                           el.srcObject = remoteStream;
                         }
                         el.play().catch(() => {});
@@ -2910,10 +2973,13 @@ export default function VoiceChannel({
                     onPlaying={() => {
                       setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
                     }}
+                    onCanPlay={() => {
+                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                    }}
                     className="w-full h-full object-cover"
                   />
 
-                  {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
+                  {p.isVideoLoading && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200 pointer-events-none">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
