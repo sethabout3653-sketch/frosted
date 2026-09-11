@@ -923,21 +923,29 @@ export default function VoiceChannel({
         }
         remoteStreamsRef.current[partnerUid] = rStream;
         
-        const audioEl = remoteAudioRefs.current[partnerUid];
-        if (audioEl) {
-          if (audioEl.srcObject !== rStream) {
-            audioEl.srcObject = rStream;
-          }
-          audioEl.play().catch(() => {});
+        let audioEl = remoteAudioRefs.current[partnerUid];
+        if (!audioEl) {
+          audioEl = new Audio();
+          audioEl.autoplay = true;
+          (audioEl as any).playsInline = true;
+          remoteAudioRefs.current[partnerUid] = audioEl;
         }
+        if (audioEl.srcObject !== rStream) {
+          audioEl.srcObject = rStream;
+        }
+        audioEl.play().catch(() => {});
         aTrack.onunmute = () => {
-          const el = remoteAudioRefs.current[partnerUid];
-          if (el) {
-            if (el.srcObject !== rStream) {
-              el.srcObject = rStream;
-            }
-            el.play().catch(() => {});
+          let el = remoteAudioRefs.current[partnerUid];
+          if (!el) {
+            el = new Audio();
+            el.autoplay = true;
+            (el as any).playsInline = true;
+            remoteAudioRefs.current[partnerUid] = el;
           }
+          if (el.srcObject !== rStream) {
+            el.srcObject = rStream;
+          }
+          el.play().catch(() => {});
         };
       }
     }
@@ -1088,22 +1096,30 @@ export default function VoiceChannel({
           }
           remoteStreamsRef.current[partnerUid] = rStream;
 
-          const audioEl = remoteAudioRefs.current[partnerUid];
-          if (audioEl) {
-            if (audioEl.srcObject !== rStream) {
-              audioEl.srcObject = rStream;
-            }
-            audioEl.play().catch(() => {});
+          let audioEl = remoteAudioRefs.current[partnerUid];
+          if (!audioEl) {
+            audioEl = new Audio();
+            audioEl.autoplay = true;
+            (audioEl as any).playsInline = true;
+            remoteAudioRefs.current[partnerUid] = audioEl;
           }
+          if (audioEl.srcObject !== rStream) {
+            audioEl.srcObject = rStream;
+          }
+          audioEl.play().catch(() => {});
 
           event.track.onunmute = () => {
-            const el = remoteAudioRefs.current[partnerUid];
-            if (el) {
-              if (el.srcObject !== rStream) {
-                el.srcObject = rStream;
-              }
-              el.play().catch(() => {});
+            let el = remoteAudioRefs.current[partnerUid];
+            if (!el) {
+              el = new Audio();
+              el.autoplay = true;
+              (el as any).playsInline = true;
+              remoteAudioRefs.current[partnerUid] = el;
             }
+            if (el.srcObject !== rStream) {
+              el.srcObject = rStream;
+            }
+            el.play().catch(() => {});
           };
 
           // Attach remote audio track to analyser for accurate speaking detection
@@ -2883,6 +2899,8 @@ export default function VoiceChannel({
             border: "rgba(88, 101, 242, 0.85)",
             ring: "rgba(88, 101, 242, 0.35)",
           };
+          const hasRemoteStream = !!(remoteStreamsRef.current[p.uid] && remoteStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled));
+          const isCameraShowing = !!(p.isVideoOn || hasRemoteStream);
 
           return (
             <div
@@ -2897,14 +2915,14 @@ export default function VoiceChannel({
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
               onDoubleClick={() => {
-                if (p.isVideoOn) {
+                if (isCameraShowing) {
                   setFullscreenUid(p.uid);
                   setFullscreenType("camera");
                 }
               }}
             >
               {/* Fullscreen Video Button */}
-              {p.isVideoOn && (
+              {isCameraShowing && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -2935,7 +2953,7 @@ export default function VoiceChannel({
               )}
 
               {/* Video Element */}
-              {p.isVideoOn ? (
+              {isCameraShowing ? (
                 <div className="relative w-full h-full">
                   <video
                     ref={(el) => {

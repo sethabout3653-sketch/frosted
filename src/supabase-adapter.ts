@@ -484,24 +484,32 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// Real-time Server SSE Stream Bridge (Syncs all devices/browsers across the internet)
+// Native WebSockets Real-time Engine for Render Hosting (Zero External Proxies)
 // ---------------------------------------------------------
-let sseSource: EventSource | null = null;
-let sseReconnectTimer: any = null;
+let wsClient: WebSocket | null = null;
+let wsReconnectTimer: any = null;
 
-function initServerSSE() {
-  if (typeof window === "undefined" || typeof EventSource === "undefined") return;
-  if (sseSource) {
-    try {
-      sseSource.close();
-    } catch (e) {}
+function initWebSocket() {
+  if (typeof window === "undefined" || typeof WebSocket === "undefined") return;
+  if (wsClient && (wsClient.readyState === WebSocket.CONNECTING || wsClient.readyState === WebSocket.OPEN)) {
+    return;
   }
 
   try {
-    sseSource = new EventSource("/api/cassandra/stream");
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-    sseSource.onmessage = (e) => {
-      if (!e.data || e.data.startsWith(":")) return;
+    wsClient = new WebSocket(wsUrl);
+
+    wsClient.onopen = () => {
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+    };
+
+    wsClient.onmessage = (e) => {
+      if (!e.data) return;
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "init" && msg.data) {
@@ -514,30 +522,47 @@ function initServerSSE() {
               notifyListeners(cName);
             }
           });
-        } else if (msg.type === "change") {
-          handleIncomingDbMutation(msg.collection, msg.op, msg.data, msg.id);
+        } else if (msg.type === "db_mutation") {
+          const { colName, action, data, id, pk } = msg.payload || {};
+          handleIncomingDbMutation(colName || msg.collection, action || msg.op, data || msg.data, id || msg.id, pk);
         } else if (msg.type === "webrtc_signal") {
           handleIncomingWebRTCSignal(msg.payload);
         }
       } catch (err) {}
     };
 
-    sseSource.onerror = () => {
-      try {
-        sseSource?.close();
-      } catch (e) {}
-      sseSource = null;
-      clearTimeout(sseReconnectTimer);
-      sseReconnectTimer = setTimeout(initServerSSE, 3000);
+    wsClient.onclose = () => {
+      scheduleWsReconnect();
+    };
+
+    wsClient.onerror = () => {
+      try { wsClient?.close(); } catch (e) {}
     };
   } catch (err) {
-    clearTimeout(sseReconnectTimer);
-    sseReconnectTimer = setTimeout(initServerSSE, 5000);
+    scheduleWsReconnect();
   }
 }
 
+function scheduleWsReconnect() {
+  if (wsReconnectTimer) return;
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    initWebSocket();
+  }, 2000);
+}
+
 if (typeof window !== "undefined") {
-  initServerSSE();
+  initWebSocket();
+}
+
+function sendWsMessage(msg: any): boolean {
+  if (wsClient && wsClient.readyState === WebSocket.OPEN) {
+    try {
+      wsClient.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {}
+  }
+  return false;
 }
 
 function broadcastMutation(
@@ -546,6 +571,7 @@ function broadcastMutation(
   data: any,
   id?: string
 ) {
+  // 1. Cross-tab local broadcast
   if (broadcastBus) {
     try {
       broadcastBus.postMessage({
@@ -561,9 +587,36 @@ function broadcastMutation(
       });
     } catch (e) {}
   }
+
+  // 2. Native WebSocket transmission to server
+  sendWsMessage({
+    type: "db_mutation",
+    payload: {
+      colName,
+      collection: colName,
+      action,
+      op: action,
+      data,
+      id,
+      pk: getPk(colName),
+      timestamp: Date.now(),
+    },
+  });
 }
 
 async function serverWrite(op: string, colName: string, id: string, data: any) {
+  sendWsMessage({
+    type: "db_mutation",
+    payload: {
+      colName,
+      collection: colName,
+      action: op,
+      op,
+      data,
+      id,
+      timestamp: Date.now(),
+    },
+  });
   try {
     await fetch("/api/cassandra/write", {
       method: "POST",
@@ -574,6 +627,10 @@ async function serverWrite(op: string, colName: string, id: string, data: any) {
 }
 
 async function serverSendSignal(signal: any) {
+  sendWsMessage({
+    type: "webrtc_signal",
+    payload: signal,
+  });
   try {
     await fetch("/api/webrtc/signal", {
       method: "POST",
@@ -608,23 +665,14 @@ export function sendBroadcastSignal(payload: {
     } catch (e) {}
   }
 
-  // 2. Instant server-side push (broadcasts via SSE to all remote browsers in <5ms)
+  // 2. Instant WebSocket push
+  sendWsMessage({
+    type: "webrtc_signal",
+    payload: fullSignal,
+  });
+
+  // 3. Fallback server push
   serverSendSignal(fullSignal);
-
-  // 3. Fallback Supabase REST delivery
-  try {
-    if (!voiceSignalsChannel) {
-      voiceSignalsChannel = supabase.channel("voice_signals");
-    }
-    if (typeof voiceSignalsChannel.httpSend === "function") {
-      voiceSignalsChannel.httpSend("signal", fullSignal).catch(() => {});
-    }
-  } catch (err) {}
-
-  try {
-    const cleanSig = sanitizeForSupabase("signals", fullSignal);
-    supabase.from("signals").insert(cleanSig).then(undefined, () => {});
-  } catch (err) {}
 }
 
 export function subscribeBroadcastSignals(

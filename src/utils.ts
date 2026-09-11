@@ -23,7 +23,7 @@ export function formatCoverUrl(cover: string): string {
 /**
  * Normalizes a game's play URL by replacing placeholders with raw.githack URLs.
  */
-export function formatGameUrl(url: string, _useProxy: boolean = false): string {
+export function formatGameUrl(url: string): string {
   if (!url) return "";
   let formattedUrl = url;
   if (formattedUrl.startsWith("http://")) formattedUrl = formattedUrl.replace("http://", "https://");
@@ -36,10 +36,10 @@ export function formatGameUrl(url: string, _useProxy: boolean = false): string {
 }
 
 /**
- * Returns the raw direct URL without proxying (useful for opening in a dedicated new tab).
+ * Returns the raw direct URL (useful for opening in a dedicated new tab).
  */
 export function getRawGameUrl(url: string): string {
-  return formatGameUrl(url, false);
+  return formatGameUrl(url);
 }
 
 /**
