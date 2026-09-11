@@ -180,6 +180,9 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "text",
     "gif",
     "attachment",
+    "attachmentType",
+    "attachmentName",
+    "attachmentSize",
     "timestamp",
     "edited",
   ]),
@@ -191,6 +194,8 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "isMuted",
     "isVideoOn",
     "isVideoLoading",
+    "isScreenSharing",
+    "isScreenAudioOn",
     "timestamp",
   ]),
   presence: new Set([
@@ -201,6 +206,7 @@ const TABLE_COLUMNS: Record<string, Set<string>> = {
     "lastSeen",
     "isMuted",
     "inVoice",
+    "isScreenSharing",
   ]),
   typing: new Set([
     "id",

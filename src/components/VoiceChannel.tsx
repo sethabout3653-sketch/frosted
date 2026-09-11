@@ -290,6 +290,8 @@ export default function VoiceChannel({
     const remoteSharer = activeParticipants.find(
       (p) =>
         p.isScreenSharing === true ||
+        p.channelId === "screenshare" ||
+        p.channelId === "screenshare:audio" ||
         !!remoteScreenSharersRef.current[p.uid] ||
         (!!remoteScreenStreamsRef.current[p.uid] &&
           remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled))
@@ -299,7 +301,7 @@ export default function VoiceChannel({
         uid: remoteSharer.uid,
         username: remoteSharer.username,
         isLocal: false,
-        hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
+        hasAudio: !!remoteSharer.isScreenAudioOn || remoteSharer.channelId === "screenshare:audio" || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
       };
     }
     return null;

@@ -113,6 +113,7 @@ export default function Chat({
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const initialSnapshotProcessedRef = useRef<boolean>(false);
   const notificationTimeoutRef = useRef<any>(null);
 
   // Real-time listener for voice users
@@ -164,75 +165,78 @@ export default function Chat({
     const q = query(
       collection(db, "messages"),
       orderBy("timestamp", "desc"),
-      limit(1)
+      limit(5)
     );
-    let initialLoad = true;
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        if (snapshot.empty) return;
-        const newest = snapshot.docs[0];
-        const msgId = newest.id;
-        const rawData = newest.data() as any;
-        const msg = { id: msgId, ...rawData } as ChatMessage;
-
-        // Skip notifying on initial mount/page load, and track initial latest message
-        if (initialLoad) {
-          initialLoad = false;
-          seenMessageIdsRef.current.add(msgId);
+        if (snapshot.empty) {
+          initialSnapshotProcessedRef.current = true;
           return;
         }
 
-        // Avoid duplicate alerts for the same message ID
-        if (seenMessageIdsRef.current.has(msgId)) {
-          return;
-        }
-        seenMessageIdsRef.current.add(msgId);
-
-        // Convert and check message timestamp age
-        const msgTime = toTimestampMs(msg.timestamp);
-        const now = Date.now();
-        const ageMs = now - msgTime;
-
-        // Only trigger notification & sound if message was "just sent" (within the last 15 seconds)
-        // If it was sent a long time ago, do not do notification or sound
-        const isJustSent = msgTime > 0 && ageMs >= -5000 && ageMs <= 15000;
-        if (!isJustSent) {
-          return;
-        }
-
-        // Also ensure message wasn't created before this session started
-        if (msgTime < sessionStartRef.current - 5000) {
+        // On the very first snapshot, register all existing messages as seen and never play sound
+        if (!initialSnapshotProcessedRef.current) {
+          initialSnapshotProcessedRef.current = true;
+          snapshot.docs.forEach((d) => {
+            seenMessageIdsRef.current.add(d.id);
+          });
           return;
         }
 
         const currentProfile = profileRef.current;
-        const isMe =
-          currentProfile &&
-          (msg.uid === currentProfile.uid ||
-            (msg.username === currentProfile.username &&
-              msg.photoURL === currentProfile.photoURL));
+        const now = Date.now();
 
-        if (!isMe) {
-          try {
-            messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
-            messageSoundRef.current.currentTime = 0;
-            messageSoundRef.current.volume = 0.8;
-            messageSoundRef.current.play().catch(() => {});
-          } catch (e) {}
-
-          if (!isOpenRef.current) {
-            if (notificationTimeoutRef.current) {
-              clearTimeout(notificationTimeoutRef.current);
-            }
-            setNotification(msg);
-            notificationTimeoutRef.current = setTimeout(() => {
-              setNotification(null);
-              notificationTimeoutRef.current = null;
-            }, 4000);
+        snapshot.docs.forEach((docSnap) => {
+          const msgId = docSnap.id;
+          if (seenMessageIdsRef.current.has(msgId)) {
+            return;
           }
-        }
+          seenMessageIdsRef.current.add(msgId);
+
+          const rawData = docSnap.data() as any;
+          const msg = { id: msgId, ...rawData } as ChatMessage;
+          const msgTime = toTimestampMs(msg.timestamp);
+
+          // Strictly ignore any message created before this session/tab was loaded
+          if (!msgTime || msgTime < sessionStartRef.current) {
+            return;
+          }
+
+          const ageMs = now - msgTime;
+          // Only trigger notification & sound if message was just sent (within 15 seconds)
+          // If it was sent a long time ago, don't do notification and sound
+          if (ageMs > 15000 || ageMs < -5000) {
+            return;
+          }
+
+          const isMe =
+            currentProfile &&
+            (msg.uid === currentProfile.uid ||
+              (msg.username === currentProfile.username &&
+                msg.photoURL === currentProfile.photoURL));
+
+          if (!isMe) {
+            try {
+              messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
+              messageSoundRef.current.currentTime = 0;
+              messageSoundRef.current.volume = 0.8;
+              messageSoundRef.current.play().catch(() => {});
+            } catch (e) {}
+
+            if (!isOpenRef.current) {
+              if (notificationTimeoutRef.current) {
+                clearTimeout(notificationTimeoutRef.current);
+              }
+              setNotification(msg);
+              notificationTimeoutRef.current = setTimeout(() => {
+                setNotification(null);
+                notificationTimeoutRef.current = null;
+              }, 4000);
+            }
+          }
+        });
       },
       (error) => {
         console.warn("Chat notifications listener error:", error);
