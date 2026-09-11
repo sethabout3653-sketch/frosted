@@ -256,6 +256,15 @@ function sanitizeForSupabase(colName: string, payload: any): Record<string, any>
     cleaned["channelId"] = payload.channel;
   }
 
+  // Voice users screen sharing bridge (persisted safely into existing channelId column)
+  if (colName === "voice_users") {
+    if (payload.isScreenSharing === true) {
+      cleaned["channelId"] = payload.isScreenAudioOn ? "screenshare:audio" : "screenshare";
+    } else if (payload.isScreenSharing === false && !cleaned["channelId"]) {
+      cleaned["channelId"] = "general";
+    }
+  }
+
   for (const key of Object.keys(payload)) {
     if (key.startsWith("_")) continue; // Skip internal flags like _isOptimistic
     if (allowed) {
@@ -402,6 +411,15 @@ if (broadcastBus) {
       } else if (action === "insert" || action === "upsert") {
         const docId = data?.[actualPk] || data?.id || data?.uid || id;
         if (docId) {
+          if (colName === "voice_users") {
+            const isSharing =
+              data.isScreenSharing === true ||
+              data.channelId === "screenshare" ||
+              data.channelId === "screenshare:audio";
+            data.isScreenSharing = isSharing;
+            data.isScreenAudioOn =
+              data.isScreenAudioOn === true || data.channelId === "screenshare:audio";
+          }
           colMap.set(docId, data);
           notifyListeners(colName);
         }
@@ -409,7 +427,17 @@ if (broadcastBus) {
         const docId = id || data?.[actualPk];
         if (docId) {
           const existing = colMap.get(docId) || {};
-          colMap.set(docId, { ...existing, ...data });
+          const merged = { ...existing, ...data };
+          if (colName === "voice_users") {
+            const isSharing =
+              merged.isScreenSharing === true ||
+              merged.channelId === "screenshare" ||
+              merged.channelId === "screenshare:audio";
+            merged.isScreenSharing = isSharing;
+            merged.isScreenAudioOn =
+              merged.isScreenAudioOn === true || merged.channelId === "screenshare:audio";
+          }
+          colMap.set(docId, merged);
           notifyListeners(colName);
         }
       } else if (action === "delete") {
@@ -733,6 +761,15 @@ async function fetchCollectionFromSupabase(colName: string): Promise<void> {
             }
             if (row.lastSeen) {
               row.lastSeen = toTimestampMs(row.lastSeen);
+            }
+            if (colName === "voice_users") {
+              const isSharing =
+                row.isScreenSharing === true ||
+                row.channelId === "screenshare" ||
+                row.channelId === "screenshare:audio";
+              row.isScreenSharing = isSharing;
+              row.isScreenAudioOn =
+                row.isScreenAudioOn === true || row.channelId === "screenshare:audio";
             }
             const existing = colMap.get(rowId);
             colMap.set(rowId, { ...existing, ...row });

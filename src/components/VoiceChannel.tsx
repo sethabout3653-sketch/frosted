@@ -194,6 +194,7 @@ export default function VoiceChannel({
   const dummyScreenTrackRef = useRef<MediaStreamTrack | null>(null);
   const isScreenSharingRef = useRef<boolean>(false);
   const isScreenAudioOnRef = useRef<boolean>(false);
+  const remoteScreenSharersRef = useRef<{ [uid: string]: { hasAudio?: boolean } }>({});
 
   // Senders for dynamic track replacement
   const cameraSendersRef = useRef<{ [uid: string]: RTCRtpSender }>({});
@@ -287,14 +288,18 @@ export default function VoiceChannel({
       };
     }
     const remoteSharer = activeParticipants.find(
-      (p) => p.isScreenSharing === true || !!remoteScreenStreamsRef.current[p.uid]
+      (p) =>
+        p.isScreenSharing === true ||
+        !!remoteScreenSharersRef.current[p.uid] ||
+        (!!remoteScreenStreamsRef.current[p.uid] &&
+          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled))
     );
     if (remoteSharer) {
       return {
         uid: remoteSharer.uid,
         username: remoteSharer.username,
         isLocal: false,
-        hasAudio: !!remoteSharer.isScreenAudioOn,
+        hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
       };
     }
     return null;
@@ -1283,12 +1288,18 @@ export default function VoiceChannel({
             iceCandidateQueuesRef.current[partnerUid].push(candidateData);
           }
         } else if (signal.type === "screenshare_started") {
+          let signalData: any = {};
+          try {
+            signalData = JSON.parse(signal.sdp || "{}");
+          } catch (e) {}
+          remoteScreenSharersRef.current[partnerUid] = { hasAudio: !!signalData.hasAudio };
           const pc = peersRef.current[partnerUid];
           if (pc) {
             syncPeerTracks(partnerUid, pc);
           }
           setTrackTrigger((v) => v + 1);
         } else if (signal.type === "screenshare_stopped") {
+          delete remoteScreenSharersRef.current[partnerUid];
           if (remoteScreenStreamsRef.current[partnerUid]) {
             delete remoteScreenStreamsRef.current[partnerUid];
           }
@@ -1442,7 +1453,8 @@ export default function VoiceChannel({
 
             // Synchronize screen streams for all active users
             users.forEach((u) => {
-              if (!u.isScreenSharing) {
+              const isSharing = !!u.isScreenSharing || !!remoteScreenSharersRef.current[u.uid];
+              if (!isSharing) {
                 if (remoteScreenStreamsRef.current[u.uid]) {
                   delete remoteScreenStreamsRef.current[u.uid];
                 }

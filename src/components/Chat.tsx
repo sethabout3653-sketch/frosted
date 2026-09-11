@@ -112,6 +112,8 @@ export default function Chat({
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);
   const profileRef = useRef(profile);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const notificationTimeoutRef = useRef<any>(null);
 
   // Real-time listener for voice users
   useEffect(() => {
@@ -171,15 +173,40 @@ export default function Chat({
       (snapshot) => {
         if (snapshot.empty) return;
         const newest = snapshot.docs[0];
-        const msg = { id: newest.id, ...newest.data() } as ChatMessage;
+        const msgId = newest.id;
+        const rawData = newest.data() as any;
+        const msg = { id: msgId, ...rawData } as ChatMessage;
 
-        // Skip notifying on initial mount/page load
+        // Skip notifying on initial mount/page load, and track initial latest message
         if (initialLoad) {
           initialLoad = false;
+          seenMessageIdsRef.current.add(msgId);
           return;
         }
 
-        if (msg.timestamp < sessionStartRef.current) return;
+        // Avoid duplicate alerts for the same message ID
+        if (seenMessageIdsRef.current.has(msgId)) {
+          return;
+        }
+        seenMessageIdsRef.current.add(msgId);
+
+        // Convert and check message timestamp age
+        const msgTime = toTimestampMs(msg.timestamp);
+        const now = Date.now();
+        const ageMs = now - msgTime;
+
+        // Only trigger notification & sound if message was "just sent" (within the last 15 seconds)
+        // If it was sent a long time ago, do not do notification or sound
+        const isJustSent = msgTime > 0 && ageMs >= -5000 && ageMs <= 15000;
+        if (!isJustSent) {
+          return;
+        }
+
+        // Also ensure message wasn't created before this session started
+        if (msgTime < sessionStartRef.current - 5000) {
+          return;
+        }
+
         const currentProfile = profileRef.current;
         const isMe =
           currentProfile &&
@@ -188,13 +215,22 @@ export default function Chat({
               msg.photoURL === currentProfile.photoURL));
 
         if (!isMe) {
-          messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
-          messageSoundRef.current.currentTime = 0;
-          messageSoundRef.current.volume = 0.8;
-          messageSoundRef.current.play().catch(() => {});
+          try {
+            messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
+            messageSoundRef.current.currentTime = 0;
+            messageSoundRef.current.volume = 0.8;
+            messageSoundRef.current.play().catch(() => {});
+          } catch (e) {}
+
           if (!isOpenRef.current) {
+            if (notificationTimeoutRef.current) {
+              clearTimeout(notificationTimeoutRef.current);
+            }
             setNotification(msg);
-            setTimeout(() => setNotification(null), 4000);
+            notificationTimeoutRef.current = setTimeout(() => {
+              setNotification(null);
+              notificationTimeoutRef.current = null;
+            }, 4000);
           }
         }
       },
@@ -203,7 +239,12 @@ export default function Chat({
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (notificationTimeoutRef.current) {
+        clearTimeout(notificationTimeoutRef.current);
+      }
+    };
   }, []);
 
   const handleProfileComplete = async (p: {
