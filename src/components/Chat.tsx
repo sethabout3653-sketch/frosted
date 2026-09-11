@@ -92,16 +92,13 @@ export default function Chat({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out any voice participant whose heartbeat is older than 8 seconds, strictly excluding anonymous users
+  // Filter out anonymous users and sort the active list
   const voiceUsers = rawVoiceUsers
     .filter((u) => {
       if (!u || !u.uid) return false;
       const uname = (u.username || "").trim();
       if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") return false;
-      if (profile && u.uid === profile.uid) return true;
-      const ts = toTimestampMs(u.timestamp || u.lastSeen);
-      if (ts <= 0) return false;
-      return currentTime - ts < 8000;
+      return true;
     })
     .sort((a, b) => {
       if (!a || !b) return 0;

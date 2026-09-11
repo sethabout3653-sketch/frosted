@@ -266,9 +266,7 @@ export default function VoiceChannel({
         if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
           return true;
         }
-        const ts = toTimestampMs(p.timestamp || (p as any).lastSeen);
-        if (ts <= 0) return false;
-        return currentTime - ts < 8000;
+        return true;
       })
       .sort((a, b) => {
         if (!a || !b) return 0;
