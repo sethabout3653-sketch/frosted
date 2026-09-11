@@ -436,7 +436,7 @@ export default function VoiceChannel({
       list.push({ uid: profile.uid, username: `${profile.username} (Screen)`, isLocal: true, type: "screen" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) {
+      if (p.isScreenSharing === true) {
         list.push({ uid: p.uid, username: `${p.username} (Screen)`, isLocal: false, type: "screen" });
       }
     });
@@ -444,7 +444,7 @@ export default function VoiceChannel({
       list.push({ uid: profile.uid, username: `${profile.username} (Camera)`, isLocal: true, type: "camera" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isVideoOn || remoteVideoRefs.current[p.uid]?.srcObject) {
+      if (p.isVideoOn === true) {
         list.push({ uid: p.uid, username: `${p.username} (Camera)`, isLocal: false, type: "camera" });
       }
     });
@@ -452,47 +452,23 @@ export default function VoiceChannel({
   }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants, trackTrigger]);
 
   // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
-  // while keeping noise suppression & AGC disabled so ANY sound (music, instruments, soundboards, whispers) is fully allowed
+  // Acquire studio microphone stream with 200% boosted gain
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,  // Hardware & OS Acoustic Echo Cancellation: eliminates speaker feedback echo
-          noiseSuppression: false, // Disables browser noise gate so ANY sound (music, instruments, soundboards) passes through
-          autoGainControl: false,  // Disables volume pumping/ducking so dynamics are preserved
-          channelCount: { ideal: 2 },
-          sampleRate: { ideal: 48000 },
-          // High-fidelity Chromium audio flags
-          googEchoCancellation: true,
-          googEchoCancellation2: true,
-          googDAEchoCancellation: true,
-          googNoiseSuppression: false,
-          googHighpassFilter: false,
-          googTypingNoiseDetection: false,
-          googAutoGainControl: false,
-          googAudioMirroring: false,
-        } as MediaTrackConstraints,
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true,
+        },
         video: false,
       });
     } catch (err) {
-      console.warn("High fidelity mic constraints failed, using fallback:", err);
-      try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
-          },
-          video: false,
-        });
-      } catch (err2) {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-          },
-          video: false,
-        });
-      }
+      console.warn("Standard mic constraints failed, using fallback:", err);
+      return await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
     }
   }, []);
 
@@ -540,7 +516,8 @@ export default function VoiceChannel({
         mixedDestinationRef.current = mixedDest;
 
         const micGain = ctx.createGain();
-        micGain.gain.value = isMutedRef.current ? 0 : 1.0;
+        // Boost microphone gain to 200% (2.0x multiplier)
+        micGain.gain.value = isMutedRef.current ? 0 : 2.0;
         gainNodeRef.current = micGain;
 
         source.connect(micGain);
@@ -1779,7 +1756,7 @@ export default function VoiceChannel({
     }
 
     if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = nextMuted ? 0 : 1.0;
+      gainNodeRef.current.gain.value = nextMuted ? 0 : 2.0;
     }
 
     try {
@@ -2977,10 +2954,7 @@ export default function VoiceChannel({
                         }
                         if (remoteStream && el.srcObject !== remoteStream) {
                           el.srcObject = remoteStream;
-                        }
-                        el.play().catch(() => {});
-                        if (el.readyState >= 1 || el.videoWidth > 0) {
-                          setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                          el.play().catch(() => {});
                         }
                       }
                     }}
@@ -2988,13 +2962,13 @@ export default function VoiceChannel({
                     playsInline
                     muted
                     onLoadedData={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
                     }}
                     onPlaying={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
                     }}
                     onCanPlay={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
                     }}
                     className="w-full h-full object-cover"
                   />
@@ -3057,7 +3031,7 @@ export default function VoiceChannel({
 
               <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
-                {(p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) && (
+                {p.isScreenSharing === true && (
                   <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
                     <MonitorUp size={9} />
                     <span>LIVE</span>
