@@ -872,7 +872,9 @@ export function onSnapshot(
   // 4. Start true WebSockets native realtime sync
   ensureRealtimeSubscription(colName);
 
-  // 5. Very slow background HTTP heartbeat (30s) just for ultra-resiliency if WebSocket briefly drops
+  // 5. Adaptive HTTP micro-poller (1.2s when tab focused, 3.5s when backgrounded)
+  // This acts as a bulletproof fallback for Supabase projects that haven't manually enabled Realtime in their dashboard.
+  const getPollInterval = () => (document.hidden ? 3500 : 1200);
   let timer: any = null;
   const scheduleNextPoll = () => {
     timer = setTimeout(async () => {
@@ -880,7 +882,7 @@ export function onSnapshot(
       if (activeListeners.has(listener)) {
         scheduleNextPoll();
       }
-    }, 30000); // 30 second resiliency poll, letting native Realtime handle the fast lane
+    }, getPollInterval());
   };
   scheduleNextPoll();
 
