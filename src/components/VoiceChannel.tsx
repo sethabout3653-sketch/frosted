@@ -921,14 +921,17 @@ export default function VoiceChannel({
     if (audioTransceivers.length > 0) {
       const aTrack = audioTransceivers[0].receiver.track;
       if (aTrack) {
-        if (!remoteStreamsRef.current[partnerUid]) {
-          remoteStreamsRef.current[partnerUid] = new MediaStream();
+        let rStream = remoteStreamsRef.current[partnerUid];
+        if (!rStream || !rStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
+          const newStream = new MediaStream([aTrack]);
+          // Keep video tracks if they exist
+          if (rStream) {
+            rStream.getVideoTracks().forEach(v => newStream.addTrack(v));
+          }
+          rStream = newStream;
+          remoteStreamsRef.current[partnerUid] = rStream;
         }
-        const rStream = remoteStreamsRef.current[partnerUid];
-        if (!rStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
-          rStream.getAudioTracks().forEach((t) => rStream.removeTrack(t));
-          rStream.addTrack(aTrack);
-        }
+        
         const audioEl = remoteAudioRefs.current[partnerUid];
         if (audioEl) {
           if (audioEl.srcObject !== rStream) {
@@ -944,17 +947,21 @@ export default function VoiceChannel({
     if (videoTransceivers.length >= 1) {
       const camTrack = videoTransceivers[0].receiver.track;
       if (camTrack) {
-        if (!remoteStreamsRef.current[partnerUid]) {
-          remoteStreamsRef.current[partnerUid] = new MediaStream();
+        let rStream = remoteStreamsRef.current[partnerUid];
+        if (!rStream || !rStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
+          rStream = new MediaStream([camTrack]);
+          // Keep audio tracks if they exist
+          if (remoteStreamsRef.current[partnerUid]) {
+             remoteStreamsRef.current[partnerUid].getAudioTracks().forEach(a => rStream.addTrack(a));
+          }
+          remoteStreamsRef.current[partnerUid] = rStream;
         }
-        const rStream = remoteStreamsRef.current[partnerUid];
-        if (!rStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
-          rStream.getVideoTracks().forEach((t) => rStream.removeTrack(t));
-          rStream.addTrack(camTrack);
-        }
+        
         const camEl = remoteVideoRefs.current[partnerUid];
         if (camEl) {
-          camEl.srcObject = rStream;
+          if (camEl.srcObject !== rStream) {
+            camEl.srcObject = rStream;
+          }
           camEl.play().catch(() => {});
         }
         camTrack.onunmute = () => {
@@ -978,17 +985,18 @@ export default function VoiceChannel({
 
     if (scrTrack) {
       scrTrack.enabled = true;
-      if (!remoteScreenStreamsRef.current[partnerUid]) {
-        remoteScreenStreamsRef.current[partnerUid] = new MediaStream();
+      let scrStream = remoteScreenStreamsRef.current[partnerUid];
+      if (!scrStream || !scrStream.getVideoTracks().some((t) => t.id === scrTrack!.id)) {
+        // Create a completely new MediaStream to ensure the <video> element detects the change
+        scrStream = new MediaStream([scrTrack]);
+        remoteScreenStreamsRef.current[partnerUid] = scrStream;
       }
-      const scrStream = remoteScreenStreamsRef.current[partnerUid];
-      if (!scrStream.getVideoTracks().some((t) => t.id === scrTrack!.id)) {
-        scrStream.getVideoTracks().forEach((t) => scrStream.removeTrack(t));
-        scrStream.addTrack(scrTrack);
-      }
+      
       const screenEl = remoteScreenVideoRefs.current[partnerUid];
       if (screenEl) {
-        screenEl.srcObject = scrStream;
+        if (screenEl.srcObject !== scrStream) {
+          screenEl.srcObject = scrStream;
+        }
         screenEl.play().catch(() => {});
       }
       scrTrack.onunmute = () => {
@@ -1073,13 +1081,14 @@ export default function VoiceChannel({
       // Handle remote incoming tracks (audio, camera, and screen share)
       pc.ontrack = (event) => {
         if (event.track.kind === "audio") {
-          if (!remoteStreamsRef.current[partnerUid]) {
-            remoteStreamsRef.current[partnerUid] = new MediaStream();
-          }
-          const rStream = remoteStreamsRef.current[partnerUid];
-          if (!rStream.getTracks().some((track) => track.id === event.track.id)) {
-            rStream.getAudioTracks().forEach((track) => rStream.removeTrack(track));
-            rStream.addTrack(event.track);
+          let rStream = remoteStreamsRef.current[partnerUid];
+          if (!rStream || !rStream.getTracks().some((track) => track.id === event.track.id)) {
+            const newStream = new MediaStream([event.track]);
+            if (rStream) {
+              rStream.getVideoTracks().forEach(v => newStream.addTrack(v));
+            }
+            rStream = newStream;
+            remoteStreamsRef.current[partnerUid] = rStream;
           }
 
           // Attach to remote audio player
@@ -1398,8 +1407,8 @@ export default function VoiceChannel({
               }
 
               const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-              // Immediately prune dead/abandoned participants older than 12 seconds
-              if (ts > 0 && now - ts > 12000) {
+              // Immediately prune dead/abandoned participants older than 120 seconds
+              if (ts > 0 && now - ts > 120000) {
                 if (u.uid === profile.uid) {
                   deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
                 }
@@ -1796,7 +1805,18 @@ export default function VoiceChannel({
     setIsScreenAudioOn(false);
     isScreenAudioOnRef.current = false;
 
-    // 1. Swap back to dummy screen track across all peers
+    // 1. Update Firestore immediately to prevent phantom "LIVE" states if WebRTC throws
+    await updateDoc(doc(db, "voice_users", profile.uid), {
+      isScreenSharing: false,
+      isScreenAudioOn: false,
+      timestamp: Date.now(),
+    }).catch(() => {});
+    await updateDoc(doc(db, "presence", profile.uid), {
+      isScreenSharing: false,
+      lastSeen: Date.now(),
+    }).catch(() => {});
+
+    // 2. Swap back to dummy screen track across all peers
     const dummyTrack = getOrCreateDummyScreenTrack();
     await Promise.all(
       Object.keys(peersRef.current).map(async (pUid) => {
@@ -1877,17 +1897,6 @@ export default function VoiceChannel({
     }
 
     setTrackTrigger((v) => v + 1);
-
-    // 4. Update Firestore
-    await updateDoc(doc(db, "voice_users", profile.uid), {
-      isScreenSharing: false,
-      isScreenAudioOn: false,
-      timestamp: Date.now(),
-    }).catch(() => {});
-    await updateDoc(doc(db, "presence", profile.uid), {
-      isScreenSharing: false,
-      lastSeen: Date.now(),
-    }).catch(() => {});
   }, [fullscreenType, fullscreenUid, getOrCreateDummyScreenTrack, profile.uid, sendSignal]);
 
   // Start Screen Share with Audio Support

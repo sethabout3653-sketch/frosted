@@ -134,7 +134,7 @@ export default function Chat({
             return;
           }
           const ts = toTimestampMs(data.timestamp || data.lastSeen);
-          if (ts > 0 && now - ts > 12000) {
+          if (ts > 0 && now - ts > 120000) { // Safely absorb up to 2 minutes of clock drift
             // Only clean up our own stale document to prevent clock sync race conditions across peers
             if (data.uid === profile?.uid) {
               deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
