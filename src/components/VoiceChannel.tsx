@@ -59,6 +59,7 @@ interface Participant extends ChatProfile {
   isVideoLoading?: boolean;
   isScreenSharing?: boolean;
   isScreenAudioOn?: boolean;
+  channelId?: string;
 }
 
 const ICE_SERVERS: RTCConfiguration = {
@@ -1398,119 +1399,161 @@ export default function VoiceChannel({
 
         hasJoinedVoiceRef.current = true;
 
-        // Real-time listener for voice participants
-        const unsubUsers = onSnapshot(
+        let latestVoiceDocs: any[] = [];
+        let latestPresenceDocs: any[] = [];
+
+        const updateAllParticipants = () => {
+          if (!isMountedRef.current) return;
+          const userMap = new Map<string, Participant>();
+          const now = Date.now();
+
+          // 1. Process voice_users collection
+          latestVoiceDocs.forEach((d) => {
+            const u = d.data() as Participant;
+            const uName = (u?.username || "").trim();
+            if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+              return;
+            }
+            const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
+            if (ts > 0 && now - ts <= 120000) {
+              userMap.set(u.uid, { ...u, timestamp: ts });
+            }
+          });
+
+          // 2. Process presence collection for any user marked inVoice
+          latestPresenceDocs.forEach((d) => {
+            const pData = d.data();
+            const uName = (pData?.username || "").trim();
+            if (!pData?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+              return;
+            }
+            if (pData.inVoice) {
+              const ts = toTimestampMs(pData.lastSeen || pData.timestamp);
+              if (ts > 0 && now - ts <= 45000) {
+                const existing = userMap.get(pData.uid);
+                userMap.set(pData.uid, {
+                  uid: pData.uid,
+                  username: uName,
+                  photoURL: pData.photoURL || existing?.photoURL || "",
+                  channelId: existing?.channelId || "general",
+                  isMuted: pData.isMuted !== undefined ? pData.isMuted : existing?.isMuted ?? false,
+                  isVideoOn: pData.isVideoOn !== undefined ? pData.isVideoOn : existing?.isVideoOn ?? false,
+                  isVideoLoading: existing?.isVideoLoading ?? false,
+                  isScreenSharing: pData.isScreenSharing !== undefined ? pData.isScreenSharing : existing?.isScreenSharing ?? false,
+                  isScreenAudioOn: pData.isScreenAudioOn !== undefined ? pData.isScreenAudioOn : existing?.isScreenAudioOn ?? false,
+                  timestamp: Math.max(ts, existing?.timestamp || 0),
+                });
+              }
+            }
+          });
+
+          const users: Participant[] = [];
+          const activeUids = new Set<string>();
+
+          userMap.forEach((u) => {
+            activeUids.add(u.uid);
+            if (u.uid !== profile.uid) {
+              users.push(u);
+              const pc = peersRef.current[u.uid];
+              const isDead =
+                !pc ||
+                pc.connectionState === "closed" ||
+                pc.connectionState === "failed" ||
+                pc.iceConnectionState === "failed";
+
+              const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
+              const failCount = callFailCountRef.current[u.uid] || 0;
+              const backoffTime = failCount > 3 ? 12000 : 2500;
+
+              const shouldInitiate =
+                (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
+                (profile.uid > u.uid && now - lastAttempt > (backoffTime + 2500));
+
+              if (shouldInitiate && isDead && localStreamRef.current) {
+                lastCallAttemptRef.current[u.uid] = now;
+                initiateCall(u.uid, localStreamRef.current);
+              }
+            }
+          });
+
+          // Synchronize screen streams for all active users
+          users.forEach((u) => {
+            const isSharing = !!u.isScreenSharing || !!remoteScreenSharersRef.current[u.uid];
+            if (!isSharing) {
+              if (remoteScreenStreamsRef.current[u.uid]) {
+                delete remoteScreenStreamsRef.current[u.uid];
+              }
+              if (remoteScreenVideoRefs.current[u.uid]) {
+                remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
+              }
+            } else {
+              const pc = peersRef.current[u.uid];
+              if (pc) {
+                syncPeerTracks(u.uid, pc);
+              }
+            }
+          });
+
+          // Clean up peers who disconnected
+          Object.keys(peersRef.current).forEach((peerUid) => {
+            if (!activeUids.has(peerUid)) {
+              try {
+                peersRef.current[peerUid].close();
+              } catch (e) {}
+              delete peersRef.current[peerUid];
+              delete iceCandidateQueuesRef.current[peerUid];
+              delete cameraSendersRef.current[peerUid];
+              delete screenSendersRef.current[peerUid];
+              delete audioSendersRef.current[peerUid];
+              delete lastCallAttemptRef.current[peerUid];
+              delete callFailCountRef.current[peerUid];
+              if (remoteStreamsRef.current[peerUid]) {
+                delete remoteStreamsRef.current[peerUid];
+              }
+              if (remoteScreenStreamsRef.current[peerUid]) {
+                delete remoteScreenStreamsRef.current[peerUid];
+              }
+            }
+          });
+
+          users.sort((a, b) => {
+            if (!a || !b) return 0;
+            const nameCompare = (a.username || "").localeCompare(b.username || "");
+            if (nameCompare !== 0) return nameCompare;
+            return (a.uid || "").localeCompare(b.uid || "");
+          });
+
+          setParticipants(users);
+        };
+
+        // Real-time listener for voice_users
+        const unsubVoiceUsers = onSnapshot(
           collection(db, "voice_users"),
           (snapshot) => {
-            if (!isMountedRef.current) return;
-            const users: Participant[] = [];
-            const activeUids = new Set<string>();
-            const now = Date.now();
-
-            snapshot.forEach((d) => {
-              const u = d.data() as Participant;
-              const uName = (u?.username || "").trim();
-
-              // Strictly purge any anonymous or empty voice participant documents to prevent phantom users & lag storms
-              if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
-                if (u?.uid === profile.uid) {
-                  deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
-                }
-                return;
-              }
-
-              const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-              // Immediately prune dead/abandoned participants older than 120 seconds
-              if (ts > 0 && now - ts > 120000) {
-                if (u.uid === profile.uid) {
-                  deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
-                }
-                return;
-              }
-
-              activeUids.add(u.uid);
-              if (u.uid !== profile.uid) {
-                users.push(u);
-                const pc = peersRef.current[u.uid];
-                const isDead =
-                  !pc ||
-                  pc.connectionState === "closed" ||
-                  pc.connectionState === "failed" ||
-                  pc.iceConnectionState === "failed";
-
-                const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
-                const failCount = callFailCountRef.current[u.uid] || 0;
-                const backoffTime = failCount > 3 ? 15000 : 3000;
-
-                const shouldInitiate =
-                  (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
-                  (profile.uid > u.uid && now - lastAttempt > (backoffTime + 3000));
-
-                if (
-                  shouldInitiate &&
-                  isDead &&
-                  localStreamRef.current
-                ) {
-                  lastCallAttemptRef.current[u.uid] = now;
-                  initiateCall(u.uid, localStreamRef.current);
-                }
-              }
-            });
-
-            // Synchronize screen streams for all active users
-            users.forEach((u) => {
-              const isSharing = !!u.isScreenSharing || !!remoteScreenSharersRef.current[u.uid];
-              if (!isSharing) {
-                if (remoteScreenStreamsRef.current[u.uid]) {
-                  delete remoteScreenStreamsRef.current[u.uid];
-                }
-                if (remoteScreenVideoRefs.current[u.uid]) {
-                  remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
-                }
-              } else {
-                const pc = peersRef.current[u.uid];
-                if (pc) {
-                  syncPeerTracks(u.uid, pc);
-                }
-              }
-            });
-
-            // Instantly clean up peer connection and audio/video for anyone who left
-            Object.keys(peersRef.current).forEach((peerUid) => {
-              if (!activeUids.has(peerUid)) {
-                try {
-                  peersRef.current[peerUid].close();
-                } catch (e) {}
-                delete peersRef.current[peerUid];
-                delete iceCandidateQueuesRef.current[peerUid];
-                delete cameraSendersRef.current[peerUid];
-                delete screenSendersRef.current[peerUid];
-                delete audioSendersRef.current[peerUid];
-                delete lastCallAttemptRef.current[peerUid];
-                delete callFailCountRef.current[peerUid];
-                if (remoteStreamsRef.current[peerUid]) {
-                  delete remoteStreamsRef.current[peerUid];
-                }
-                if (remoteScreenStreamsRef.current[peerUid]) {
-                  delete remoteScreenStreamsRef.current[peerUid];
-                }
-              }
-            });
-
-            users.sort((a, b) => {
-              if (!a || !b) return 0;
-              const nameCompare = (a.username || "").localeCompare(b.username || "");
-              if (nameCompare !== 0) return nameCompare;
-              return (a.uid || "").localeCompare(b.uid || "");
-            });
-
-            setParticipants(users);
+            latestVoiceDocs = snapshot.docs;
+            updateAllParticipants();
           },
           (err) => {
             console.warn("voice_users listener error in VoiceChannel:", err);
           }
         );
-        unsubscribeUsers = unsubUsers;
+
+        // Real-time listener for presence
+        const unsubPresenceUsers = onSnapshot(
+          collection(db, "presence"),
+          (snapshot) => {
+            latestPresenceDocs = snapshot.docs;
+            updateAllParticipants();
+          },
+          (err) => {
+            console.warn("presence listener error in VoiceChannel:", err);
+          }
+        );
+
+        unsubscribeUsers = () => {
+          unsubVoiceUsers();
+          unsubPresenceUsers();
+        };
 
         // 1. Instant Real-time listener via Supabase Realtime Broadcast
         unsubscribeBroadcast = subscribeBroadcastSignals(profile.uid, async (signalData: any) => {
@@ -1529,7 +1572,7 @@ export default function VoiceChannel({
         // 2. Real-time listener for WebRTC signals directed to current user via database
         const qSignals = query(
           collection(db, "signals"),
-          where("targetUid", "==", profile.uid)
+          where("targetUid", "in", [profile.uid, "all"])
         );
 
         const unsubSignals = onSnapshot(
@@ -1542,7 +1585,7 @@ export default function VoiceChannel({
                 ...signalDoc.data(),
               } as VoiceSignal;
               deleteDoc(doc(db, "signals", signal.id)).catch(() => {});
-              if (localStreamRef.current && isMountedRef.current) {
+              if (localStreamRef.current && isMountedRef.current && signal.uid !== profile.uid) {
                 await handleSignal(signal, localStreamRef.current);
               }
             });
@@ -1579,6 +1622,8 @@ export default function VoiceChannel({
           status: "online",
           inVoice: true,
           isMuted: isMutedRef.current,
+          isVideoOn: isVideoOnRef.current,
+          isScreenSharing: isScreenSharingRef.current,
         }).catch(() => {});
       } catch (e) {}
     }, 2000);
@@ -1596,6 +1641,8 @@ export default function VoiceChannel({
       updateDoc(doc(db, "presence", profile.uid), {
         inVoice: false,
         isMuted: false,
+        isScreenSharing: false,
+        isVideoOn: false,
       }).catch(() => {});
 
       if (unsubscribeBroadcast) unsubscribeBroadcast();

@@ -637,7 +637,7 @@ export function subscribeBroadcastSignals(
   };
   signalListeners.add(handler);
 
-  // Ultra-fast HTTP signal poller (800ms interval) to receive signals even if SSE drops
+  // Ultra-fast HTTP signal poller (300ms interval) to receive signals instantly across all devices
   let isPolling = false;
   let lastPollTs = Date.now() - 10000;
 
@@ -662,14 +662,14 @@ export function subscribeBroadcastSignals(
         }
       }
 
-      // 2. Poll Supabase fallback
+      // 2. Poll Supabase database fallback
       const now = Date.now();
       const { data, error } = await supabase
         .from("signals")
         .select("*")
         .or(`targetUid.eq.${myUid},targetUid.eq.all`)
-        .gt("timestamp", now - 15000)
-        .limit(20);
+        .gt("timestamp", now - 20000)
+        .limit(30);
 
       if (!error && Array.isArray(data) && data.length > 0) {
         const handledIds: string[] = [];
@@ -693,7 +693,9 @@ export function subscribeBroadcastSignals(
     }
   };
 
-  const timer = setInterval(pollRemoteSignals, 800);
+  const timer = setInterval(pollRemoteSignals, 300);
+  // Also poll immediately on mount
+  pollRemoteSignals();
 
   return () => {
     clearInterval(timer);

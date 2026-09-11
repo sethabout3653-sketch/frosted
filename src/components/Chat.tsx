@@ -116,40 +116,82 @@ export default function Chat({
   const initialSnapshotProcessedRef = useRef<boolean>(false);
   const notificationTimeoutRef = useRef<any>(null);
 
-  // Real-time listener for voice users
+  // Real-time listener for voice users combining voice_users and presence collections
   useEffect(() => {
-    const unsubscribe = onSnapshot(
+    let latestVoiceDocs: any[] = [];
+    let latestPresenceDocs: any[] = [];
+
+    const mergeAndSetVoiceUsers = () => {
+      const now = Date.now();
+      const userMap = new Map<string, any>();
+
+      // 1. Ingest from voice_users collection
+      latestVoiceDocs.forEach((d) => {
+        const data = d.data();
+        const uname = (data?.username || "").trim();
+        if (!data?.uid || !uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
+          return;
+        }
+        const ts = toTimestampMs(data.timestamp || data.lastSeen);
+        if (ts > 0 && now - ts <= 120000) {
+          userMap.set(data.uid, { ...data, timestamp: ts });
+        }
+      });
+
+      // 2. Ingest from presence collection (users who have inVoice: true)
+      latestPresenceDocs.forEach((d) => {
+        const data = d.data();
+        const uname = (data?.username || "").trim();
+        if (!data?.uid || !uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
+          return;
+        }
+        if (data.inVoice) {
+          const ts = toTimestampMs(data.lastSeen || data.timestamp);
+          if (ts > 0 && now - ts <= 60000) {
+            const existing = userMap.get(data.uid);
+            userMap.set(data.uid, {
+              uid: data.uid,
+              username: uname,
+              photoURL: data.photoURL || existing?.photoURL || "",
+              isMuted: data.isMuted !== undefined ? data.isMuted : existing?.isMuted ?? false,
+              isVideoOn: data.isVideoOn !== undefined ? data.isVideoOn : existing?.isVideoOn ?? false,
+              isScreenSharing: data.isScreenSharing !== undefined ? data.isScreenSharing : existing?.isScreenSharing ?? false,
+              isScreenAudioOn: data.isScreenAudioOn !== undefined ? data.isScreenAudioOn : existing?.isScreenAudioOn ?? false,
+              timestamp: Math.max(ts, existing?.timestamp || 0),
+            });
+          }
+        }
+      });
+
+      setRawVoiceUsers(Array.from(userMap.values()));
+    };
+
+    const unsubVoiceUsers = onSnapshot(
       collection(db, "voice_users"),
       (snapshot) => {
-        const validUsers: any[] = [];
-        const now = Date.now();
-        snapshot.docs.forEach((d) => {
-          const data = d.data();
-          const uname = (data?.username || "").trim();
-          if (!data?.uid || !uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
-            // Only clean up our own invalid document
-            if (data?.uid === profile?.uid) {
-              deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
-            }
-            return;
-          }
-          const ts = toTimestampMs(data.timestamp || data.lastSeen);
-          if (ts > 0 && now - ts > 120000) { // Safely absorb up to 2 minutes of clock drift
-            // Only clean up our own stale document to prevent clock sync race conditions across peers
-            if (data.uid === profile?.uid) {
-              deleteDoc(doc(db, "voice_users", d.id)).catch(() => {});
-            }
-          } else {
-            validUsers.push(data);
-          }
-        });
-        setRawVoiceUsers(validUsers);
+        latestVoiceDocs = snapshot.docs;
+        mergeAndSetVoiceUsers();
       },
       (error) => {
         console.warn("Chat voice_users listener error:", error);
       }
     );
-    return () => unsubscribe();
+
+    const unsubPresence = onSnapshot(
+      collection(db, "presence"),
+      (snapshot) => {
+        latestPresenceDocs = snapshot.docs;
+        mergeAndSetVoiceUsers();
+      },
+      (error) => {
+        console.warn("Chat presence listener error:", error);
+      }
+    );
+
+    return () => {
+      unsubVoiceUsers();
+      unsubPresence();
+    };
   }, [profile?.uid]);
 
   useEffect(() => {
