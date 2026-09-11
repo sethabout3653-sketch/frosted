@@ -291,19 +291,17 @@ export default function VoiceChannel({
     }
     const remoteSharer = activeParticipants.find(
       (p) =>
-        p.isScreenSharing === true ||
-        p.channelId === "screenshare" ||
-        p.channelId === "screenshare:audio" ||
-        !!remoteScreenSharersRef.current[p.uid] ||
-        (!!remoteScreenStreamsRef.current[p.uid] &&
-          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled))
+        p.isScreenSharing === true &&
+        (!!remoteScreenSharersRef.current[p.uid] ||
+          (!!remoteScreenStreamsRef.current[p.uid] &&
+            remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled)))
     );
     if (remoteSharer) {
       return {
         uid: remoteSharer.uid,
         username: remoteSharer.username,
         isLocal: false,
-        hasAudio: !!remoteSharer.isScreenAudioOn || remoteSharer.channelId === "screenshare:audio" || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
+        hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
       };
     }
     return null;
@@ -317,6 +315,16 @@ export default function VoiceChannel({
   const fullscreenControlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Auto-reset fullscreen mode if active screen share ends
+  useEffect(() => {
+    if (fullscreenType === "screen") {
+      if (!activeScreenShare || (fullscreenUid && activeScreenShare.uid !== fullscreenUid)) {
+        setFullscreenUid(null);
+        setFullscreenType("camera");
+      }
+    }
+  }, [activeScreenShare, fullscreenType, fullscreenUid]);
 
   const exitFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -938,25 +946,21 @@ export default function VoiceChannel({
         }
         remoteStreamsRef.current[partnerUid] = rStream;
         
-        let audioEl = remoteAudioRefs.current[partnerUid];
-        if (!audioEl) {
-          audioEl = new Audio();
-          audioEl.autoplay = true;
-          (audioEl as any).playsInline = true;
-          remoteAudioRefs.current[partnerUid] = audioEl;
-        }
-        if (audioEl.srcObject !== rStream) {
-          audioEl.srcObject = rStream;
-        }
-        audioEl.play().catch(() => {});
-        aTrack.onunmute = () => {
-          if (audioEl) {
-            if (audioEl.srcObject !== rStream) {
-              audioEl.srcObject = rStream;
-            }
-            audioEl.play().catch(() => {});
+        const audioEl = remoteAudioRefs.current[partnerUid];
+        if (audioEl) {
+          if (audioEl.srcObject !== rStream) {
+            audioEl.srcObject = rStream;
           }
-          setTrackTrigger((v) => v + 1);
+          audioEl.play().catch(() => {});
+        }
+        aTrack.onunmute = () => {
+          const el = remoteAudioRefs.current[partnerUid];
+          if (el) {
+            if (el.srcObject !== rStream) {
+              el.srcObject = rStream;
+            }
+            el.play().catch(() => {});
+          }
         };
       }
     }
@@ -1107,25 +1111,21 @@ export default function VoiceChannel({
           }
           remoteStreamsRef.current[partnerUid] = rStream;
 
-          // Attach to remote audio player (create if doesn't exist)
-          let audioEl = remoteAudioRefs.current[partnerUid];
-          if (!audioEl) {
-            audioEl = new Audio();
-            audioEl.autoplay = true;
-            (audioEl as any).playsInline = true;
-            remoteAudioRefs.current[partnerUid] = audioEl;
+          const audioEl = remoteAudioRefs.current[partnerUid];
+          if (audioEl) {
+            if (audioEl.srcObject !== rStream) {
+              audioEl.srcObject = rStream;
+            }
+            audioEl.play().catch(() => {});
           }
-          if (audioEl.srcObject !== rStream) {
-            audioEl.srcObject = rStream;
-          }
-          audioEl.play().catch(() => {});
 
           event.track.onunmute = () => {
-            if (audioEl) {
-              if (audioEl.srcObject !== rStream) {
-                audioEl.srcObject = rStream;
+            const el = remoteAudioRefs.current[partnerUid];
+            if (el) {
+              if (el.srcObject !== rStream) {
+                el.srcObject = rStream;
               }
-              audioEl.play().catch(() => {});
+              el.play().catch(() => {});
             }
           };
 
