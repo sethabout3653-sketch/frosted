@@ -484,86 +484,8 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// Native WebSockets Real-time Engine for Render Hosting (Zero External Proxies)
+// Vercel & Serverless Compatible REST + BroadcastChannel Engine (Zero WebSockets)
 // ---------------------------------------------------------
-let wsClient: WebSocket | null = null;
-let wsReconnectTimer: any = null;
-
-function initWebSocket() {
-  if (typeof window === "undefined" || typeof WebSocket === "undefined") return;
-  if (wsClient && (wsClient.readyState === WebSocket.CONNECTING || wsClient.readyState === WebSocket.OPEN)) {
-    return;
-  }
-
-  try {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-    wsClient = new WebSocket(wsUrl);
-
-    wsClient.onopen = () => {
-      if (wsReconnectTimer) {
-        clearTimeout(wsReconnectTimer);
-        wsReconnectTimer = null;
-      }
-    };
-
-    wsClient.onmessage = (e) => {
-      if (!e.data) return;
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "init" && msg.data) {
-          Object.entries(msg.data).forEach(([cName, docs]: [string, any]) => {
-            const colMap = getColMap(cName);
-            if (docs && typeof docs === "object") {
-              Object.entries(docs).forEach(([docId, docData]) => {
-                colMap.set(docId, docData);
-              });
-              notifyListeners(cName);
-            }
-          });
-        } else if (msg.type === "db_mutation") {
-          const { colName, action, data, id, pk } = msg.payload || {};
-          handleIncomingDbMutation(colName || msg.collection, action || msg.op, data || msg.data, id || msg.id, pk);
-        } else if (msg.type === "webrtc_signal") {
-          handleIncomingWebRTCSignal(msg.payload);
-        }
-      } catch (err) {}
-    };
-
-    wsClient.onclose = () => {
-      scheduleWsReconnect();
-    };
-
-    wsClient.onerror = () => {
-      try { wsClient?.close(); } catch (e) {}
-    };
-  } catch (err) {
-    scheduleWsReconnect();
-  }
-}
-
-function scheduleWsReconnect() {
-  if (wsReconnectTimer) return;
-  wsReconnectTimer = setTimeout(() => {
-    wsReconnectTimer = null;
-    initWebSocket();
-  }, 2000);
-}
-
-if (typeof window !== "undefined") {
-  initWebSocket();
-}
-
-function sendWsMessage(msg: any): boolean {
-  if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-    try {
-      wsClient.send(JSON.stringify(msg));
-      return true;
-    } catch (e) {}
-  }
-  return false;
-}
 
 function broadcastMutation(
   colName: string,
@@ -571,7 +493,7 @@ function broadcastMutation(
   data: any,
   id?: string
 ) {
-  // 1. Cross-tab local broadcast
+  // Cross-tab local broadcast (0ms instant sync across browser tabs)
   if (broadcastBus) {
     try {
       broadcastBus.postMessage({
@@ -587,36 +509,9 @@ function broadcastMutation(
       });
     } catch (e) {}
   }
-
-  // 2. Native WebSocket transmission to server
-  sendWsMessage({
-    type: "db_mutation",
-    payload: {
-      colName,
-      collection: colName,
-      action,
-      op: action,
-      data,
-      id,
-      pk: getPk(colName),
-      timestamp: Date.now(),
-    },
-  });
 }
 
 async function serverWrite(op: string, colName: string, id: string, data: any) {
-  sendWsMessage({
-    type: "db_mutation",
-    payload: {
-      colName,
-      collection: colName,
-      action: op,
-      op,
-      data,
-      id,
-      timestamp: Date.now(),
-    },
-  });
   try {
     await fetch("/api/cassandra/write", {
       method: "POST",
@@ -627,10 +522,6 @@ async function serverWrite(op: string, colName: string, id: string, data: any) {
 }
 
 async function serverSendSignal(signal: any) {
-  sendWsMessage({
-    type: "webrtc_signal",
-    payload: signal,
-  });
   try {
     await fetch("/api/webrtc/signal", {
       method: "POST",
@@ -665,13 +556,7 @@ export function sendBroadcastSignal(payload: {
     } catch (e) {}
   }
 
-  // 2. Instant WebSocket push
-  sendWsMessage({
-    type: "webrtc_signal",
-    payload: fullSignal,
-  });
-
-  // 3. Fallback server push
+  // 2. HTTP REST server push (Vercel serverless compatible)
   serverSendSignal(fullSignal);
 }
 

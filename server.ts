@@ -3,8 +3,6 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
-import { createServer as createHttpServer } from "http";
-import { WebSocketServer, WebSocket } from "ws";
 
 async function startServer() {
   const app = express();
@@ -866,114 +864,9 @@ async function startServer() {
     });
   });
 
-  // Create HTTP Server & WebSocket Server for Render & high-speed real-time messaging
-  const server = createHttpServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
-  const wsClients = new Set<WebSocket>();
-
-  // WebSocket broadcast helper
-  const broadcastWsMessage = (dataObj: any) => {
-    const jsonStr = JSON.stringify(dataObj);
-    wsClients.forEach((wsClient) => {
-      if (wsClient.readyState === WebSocket.OPEN) {
-        try {
-          wsClient.send(jsonStr);
-        } catch (e) {}
-      }
-    });
-  };
-
-  wss.on("connection", (ws) => {
-    wsClients.add(ws);
-
-    // Immediately send full data snapshot to new client
-    try {
-      ws.send(
-        JSON.stringify({
-          type: "init",
-          data: cassandraData,
-          timestamp: Date.now(),
-        })
-      );
-    } catch (e) {}
-
-    ws.on("message", (messageRaw) => {
-      try {
-        const msg = JSON.parse(messageRaw.toString());
-        if (!msg) return;
-
-        if (msg.type === "db_mutation" || msg.type === "change" || msg.op) {
-          const col = msg.collection || msg.payload?.colName || msg.payload?.collection;
-          const id = msg.id || msg.payload?.id;
-          const op = msg.op || msg.payload?.action || "set";
-          const data = msg.data || msg.payload?.data;
-
-          if (col && id) {
-            if (!cassandraData[col]) cassandraData[col] = {};
-
-            if (op === "delete" || op === "delete_all") {
-              if (op === "delete_all") {
-                cassandraData[col] = {};
-              } else {
-                delete cassandraData[col][id];
-              }
-            } else if (op === "update") {
-              cassandraData[col][id] = {
-                ...(cassandraData[col][id] || {}),
-                ...data,
-                id,
-              };
-            } else {
-              cassandraData[col][id] = { ...data, id };
-            }
-
-            saveCassandraStore();
-          }
-
-          // Broadcast mutation to all connected WebSocket clients
-          broadcastWsMessage({
-            type: "db_mutation",
-            payload: {
-              colName: col,
-              collection: col,
-              action: op,
-              op,
-              data,
-              id,
-              timestamp: Date.now(),
-            },
-          });
-        } else if (msg.type === "webrtc_signal") {
-          const sig = msg.payload || msg;
-          recentWebRTCSignals.push(sig);
-          const cutoff = Date.now() - 30000;
-          if (recentWebRTCSignals.length > 500) {
-            recentWebRTCSignals = recentWebRTCSignals.filter((s) => s.timestamp > cutoff);
-          }
-
-          broadcastWsMessage({
-            type: "webrtc_signal",
-            payload: sig,
-            timestamp: Date.now(),
-          });
-        }
-      } catch (err) {
-        console.warn("WebSocket incoming message parse error:", err);
-      }
-    });
-
-    ws.on("close", () => {
-      wsClients.delete(ws);
-    });
-
-    ws.on("error", () => {
-      wsClients.delete(ws);
-    });
-  });
-
   // Health check endpoint
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", mode: process.env.NODE_ENV, ws: "enabled" });
+    res.json({ status: "ok", mode: process.env.NODE_ENV });
   });
 
   // Vite integration and static asset serving
@@ -995,8 +888,8 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT} with WebSockets enabled on /ws`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
