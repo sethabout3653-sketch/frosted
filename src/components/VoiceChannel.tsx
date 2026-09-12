@@ -1564,7 +1564,7 @@ export default function VoiceChannel({
             }
             let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
             if (ts <= 0) ts = now;
-            if (now - ts <= 7000) {
+            if (now - ts <= 15000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1579,7 +1579,7 @@ export default function VoiceChannel({
             if (pData.inVoice) {
               let ts = toTimestampMs(pData.lastSeen || pData.timestamp);
               if (ts <= 0) ts = now;
-              if (now - ts <= 7000) {
+              if (now - ts <= 15000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,
@@ -1772,7 +1772,7 @@ export default function VoiceChannel({
 
     initVoice();
 
-    // Fast 1.2-second heartbeat to ensure other peers know this client is active
+    // 4.5-second heartbeat interval to minimize Firestore write units while keeping presence active
     const heartbeatInterval = setInterval(async () => {
       if (!isMountedRef.current) return;
       try {
@@ -1796,7 +1796,7 @@ export default function VoiceChannel({
           isScreenSharing: isScreenSharingRef.current,
         }).catch(() => {});
       } catch (e) {}
-    }, 1200);
+    }, 4500);
 
     return () => {
       isMountedRef.current = false;
