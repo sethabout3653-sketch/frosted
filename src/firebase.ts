@@ -245,7 +245,11 @@ export async function sendBroadcastSignal(signal: any) {
     ...signal,
     timestamp: Date.now(),
   };
-  
+  Object.keys(payload).forEach(key => {
+    if (payload[key] === undefined) {
+      delete payload[key];
+    }
+  });
   // 1. Instant zero-quota local tab broadcast
   if (localBus) {
     try {

@@ -564,8 +564,8 @@ export default function VoiceChannel({
         animFrameRef.current = requestAnimationFrame(updateLevel);
 
         if (mixedDest && mixedDest.stream && mixedDest.stream.getAudioTracks().length > 0) {
-          localStreamRef.current = mixedDest.stream;
-          return mixedDest.stream;
+          localStreamRef.current = sourceStream;
+        return sourceStream;
         }
 
         return sourceStream;
@@ -591,6 +591,20 @@ export default function VoiceChannel({
         ctx.fillStyle = "#0a0a0a";
         ctx.fillRect(0, 0, 16, 16);
       }
+      
+      const draw = () => {
+        if (!dummyCanvasRef.current) return;
+        const context = dummyCanvasRef.current.getContext("2d");
+        if (context) {
+          context.fillStyle = "#0a0a0a";
+          context.fillRect(0, 0, 16, 16);
+          context.fillStyle = `rgba(20, 20, 20, ${Math.random()})`;
+          context.fillRect(0, 0, 2, 2);
+        }
+        requestAnimationFrame(draw);
+      };
+      draw();
+      
       dummyCanvasRef.current = canvas;
     }
     const canvasStream = canvas.captureStream(5);
@@ -614,6 +628,20 @@ export default function VoiceChannel({
         ctx.fillStyle = "#030303";
         ctx.fillRect(0, 0, 16, 16);
       }
+      
+      const drawScreen = () => {
+        if (!dummyScreenCanvasRef.current) return;
+        const context = dummyScreenCanvasRef.current.getContext("2d");
+        if (context) {
+          context.fillStyle = "#030303";
+          context.fillRect(0, 0, 16, 16);
+          context.fillStyle = `rgba(15, 15, 15, ${Math.random()})`;
+          context.fillRect(0, 0, 2, 2);
+        }
+        requestAnimationFrame(drawScreen);
+      };
+      drawScreen();
+
       dummyScreenCanvasRef.current = canvas;
     }
     const canvasStream = canvas.captureStream(5);
@@ -1078,20 +1106,24 @@ export default function VoiceChannel({
 
       // 2. Add camera track (transceiver 1) with dedicated camera stream
       const realVideoTrack = videoStreamRef.current?.getVideoTracks()[0];
-      const cameraTrack = realVideoTrack && realVideoTrack.readyState === "live"
-        ? realVideoTrack
-        : getOrCreateDummyVideoTrack();
-      const cameraStream = videoStreamRef.current || new MediaStream([cameraTrack]);
-      const cameraSender = pc.addTrack(cameraTrack, cameraStream);
+      const cameraStream = videoStreamRef.current || new MediaStream();
+      let cameraSender;
+      if (realVideoTrack && realVideoTrack.readyState === "live") {
+        cameraSender = pc.addTrack(realVideoTrack, cameraStream);
+      } else {
+        cameraSender = pc.addTransceiver("video", { direction: "sendrecv", streams: [cameraStream] }).sender;
+      }
       cameraSendersRef.current[partnerUid] = cameraSender;
 
       // 3. Add screen share track (transceiver 2) with dedicated screen stream
       const realScreenTrack = screenStreamRef.current?.getVideoTracks()[0];
-      const screenTrack = realScreenTrack && realScreenTrack.readyState === "live"
-        ? realScreenTrack
-        : getOrCreateDummyScreenTrack();
-      const screenStream = screenStreamRef.current || new MediaStream([screenTrack]);
-      const screenSender = pc.addTrack(screenTrack, screenStream);
+      const screenStream = screenStreamRef.current || new MediaStream();
+      let screenSender;
+      if (realScreenTrack && realScreenTrack.readyState === "live") {
+        screenSender = pc.addTrack(realScreenTrack, screenStream);
+      } else {
+        screenSender = pc.addTransceiver("video", { direction: "sendrecv", streams: [screenStream] }).sender;
+      }
       screenSendersRef.current[partnerUid] = screenSender;
 
       // Ensure transceivers are configured to bidirectional sendrecv
@@ -1888,9 +1920,8 @@ export default function VoiceChannel({
         // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 1280, min: 640 },
-            height: { ideal: 720, min: 480 },
-            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
           audio: false,
         });
