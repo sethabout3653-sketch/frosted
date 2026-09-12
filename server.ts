@@ -3,70 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
-import Database from "better-sqlite3";
-import { WebSocketServer, WebSocket } from "ws";
-import { createServer as createHttpServer } from "http";
-
-let sqliteDb: any = null;
-
-function initSqliteDatabase() {
-  let dbDir = path.join(process.cwd(), "data");
-  let dbFile = path.join(dbDir, "chat.db");
-  try {
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
-    }
-    sqliteDb = new Database(dbFile);
-  } catch (err) {
-    console.warn("Failed to create chat.db in workspace data dir, falling back to /tmp/chat.db");
-    dbFile = "/tmp/chat.db";
-    sqliteDb = new Database(dbFile);
-  }
-
-  try {
-    sqliteDb.pragma("journal_mode = WAL");
-  } catch (e) {}
-
-  sqliteDb.exec(`
-    CREATE TABLE IF NOT EXISTS channels (
-      id TEXT PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      channel_id TEXT NOT NULL,
-      username TEXT NOT NULL,
-      user_id TEXT,
-      text TEXT,
-      attachment_url TEXT,
-      attachment_type TEXT,
-      attachment_name TEXT,
-      attachment_size INTEGER,
-      avatar_color TEXT,
-      timestamp INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      avatar_color TEXT,
-      status TEXT,
-      last_seen INTEGER NOT NULL
-    );
-  `);
-
-  const defaultChannels = ["general", "lounge", "announcements", "gaming", "music", "dev"];
-  const insertChanStmt = sqliteDb.prepare("INSERT OR IGNORE INTO channels (id, name, created_at) VALUES (?, ?, ?)");
-  const now = Date.now();
-  defaultChannels.forEach((ch) => {
-    insertChanStmt.run(ch, ch, now);
-  });
-}
 
 async function startServer() {
-  initSqliteDatabase();
   const app = express();
   const PORT = 3000;
 
@@ -338,9 +276,6 @@ async function startServer() {
     next();
   });
 
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
   // Persistent registry of uploaded file metadata (original name, mime, size, ext)
   const fileMetadataPath = path.join(uploadsDir, "file_metadata.json");
   let fileMetadataStore: Record<string, { originalName: string; mimeType: string; size: number; ext: string }> = {};
@@ -532,35 +467,6 @@ async function startServer() {
     }
   });
 
-  // Server-Side Input Sanitization helper to prevent XSS
-  function sanitizeInput(str: string): string {
-    if (!str || typeof str !== "string") return "";
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#x27;")
-      .replace(/\//g, "&#x2F;");
-  }
-
-  // Rate Limiting map for Chat Message creation (Max 5 messages per 3 seconds per IP)
-  const chatRateLimitMap = new Map<string, { count: number; resetTime: number }>();
-  
-  function isRateLimited(ip: string): boolean {
-    const now = Date.now();
-    const entry = chatRateLimitMap.get(ip);
-    if (!entry || now > entry.resetTime) {
-      chatRateLimitMap.set(ip, { count: 1, resetTime: now + 3000 });
-      return false;
-    }
-    entry.count += 1;
-    if (entry.count > 5) {
-      return true;
-    }
-    return false;
-  }
-
   // JSON and URL parsing middleware with generous limit for large attachments
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
@@ -663,7 +569,7 @@ async function startServer() {
     res.write(
       `data: ${JSON.stringify({
         type: "connected",
-        provider: "Custom Native Realtime Database",
+        provider: "Apache Cassandra / ScyllaDB Engine",
         quota: "Unlimited (0 / \u221E)",
         serverTime: Date.now(),
       })}\n\n`
@@ -703,7 +609,7 @@ async function startServer() {
       }
 
       const sigObj = {
-        id: req.body?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
+        id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
         uid,
         targetUid,
         type,
@@ -748,7 +654,7 @@ async function startServer() {
     }
     res.json({
       status: "online",
-      provider: "Custom Native Realtime Database",
+      provider: "Apache Cassandra / ScyllaDB",
       quota: "Unlimited (0 / \u221E)",
       collections: Object.keys(cassandraData),
       data: cassandraData,
@@ -763,26 +669,6 @@ async function startServer() {
         return res.status(400).json({ error: "Missing collection or id" });
       }
 
-      // Check rate limiting for chat message writes
-      if (col === "chat_messages" || col === "messages") {
-        const clientIp = (req.headers["x-forwarded-for"] as string) || req.ip || "unknown";
-        if (isRateLimited(clientIp)) {
-          return res.status(429).json({ error: "Rate limit exceeded. Please wait a moment before sending more messages." });
-        }
-      }
-
-      // Sanitize input text & string fields to prevent XSS
-      let sanitizedData = data;
-      if (data && typeof data === "object") {
-        sanitizedData = { ...data };
-        if (typeof sanitizedData.text === "string") {
-          sanitizedData.text = sanitizeInput(sanitizedData.text);
-        }
-        if (typeof sanitizedData.username === "string") {
-          sanitizedData.username = sanitizeInput(sanitizedData.username);
-        }
-      }
-
       if (!cassandraData[col]) {
         cassandraData[col] = {};
       }
@@ -792,11 +678,11 @@ async function startServer() {
       } else if (op === "update") {
         cassandraData[col][id] = {
           ...(cassandraData[col][id] || {}),
-          ...sanitizedData,
+          ...data,
           id,
         };
       } else {
-        cassandraData[col][id] = { ...sanitizedData, id };
+        cassandraData[col][id] = { ...data, id };
       }
 
       saveCassandraStore();
@@ -806,7 +692,7 @@ async function startServer() {
         collection: col,
         id,
         op: op || "set",
-        data: sanitizedData,
+        data,
       };
 
       cassandraChangeHistory.push(changeRecord);
@@ -815,7 +701,7 @@ async function startServer() {
       }
 
       // Broadcast to all SSE listeners in real time
-      broadcastCassandraChange(op || "set", col, id, sanitizedData);
+      broadcastCassandraChange(op || "set", col, id, data);
 
       res.json({ success: true, timestamp: changeRecord.timestamp });
     } catch (err: any) {
@@ -838,7 +724,7 @@ async function startServer() {
   app.get("/api/cassandra/status", (req, res) => {
     res.json({
       status: "online",
-      provider: "Custom Native Realtime Database",
+      provider: "Apache Cassandra / ScyllaDB Engine",
       quota: "Unlimited (0 / \u221E)",
       transport: "Server-Sent Events (SSE) - No WebSockets, Vercel Compatible",
       activeClients: sseClients.size,
@@ -978,308 +864,254 @@ async function startServer() {
     });
   });
 
-  // SQLite REST API & Diagnostic Endpoints
-  app.get("/api/sqlite/messages", (req, res) => {
+  // API Proxy Route: Create session
+  app.post("/api/lumin-session", async (req, res) => {
     try {
-      const chan = (req.query.channel as string) || "general";
-      const limit = parseInt(req.query.limit as string, 10) || 100;
-      const stmt = sqliteDb.prepare("SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT ?");
-      const rows = stmt.all(chan, limit);
-      res.json({ success: true, channel: chan, messages: rows });
+      const response = await fetch("https://a.luminsdk.com/api/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        res.status(response.status).json({ error: "Lumin session creation failed" });
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/sqlite/stats", (req, res) => {
+  // API Proxy Route: Fetch game list
+  app.get("/api/lumin-games", async (req, res) => {
     try {
-      const msgCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM messages").get().count;
-      const chanCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM channels").get().count;
-      const userCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM users").get().count;
-      res.json({
-        status: "online",
-        database: "SQLite 3 (WAL mode)",
-        wsConnections: activeWsClients.size,
-        stats: {
-          totalMessages: msgCount,
-          totalChannels: chanCount,
-          totalUsers: userCount,
+      const sessionHeader = req.headers["x-session"] as string || "";
+      const response = await fetch("https://a.luminsdk.com/api/v1/games?limit=5000", {
+        headers: { "X-Session": sessionHeader },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        res.status(response.status).json({ error: "Lumin games fetch failed" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Proxy Route: Resolve game details & direct URL (using wildcard to support slashes in game IDs)
+  app.get("/api/lumin-game-url/*", async (req, res) => {
+    try {
+      const gameId = req.params[0];
+      const sessionHeader = (req.headers["x-session"] as string) || "";
+      const response = await fetch(`https://a.luminsdk.com/api/v1/games/${gameId}`, {
+        headers: { "X-Session": sessionHeader },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        res.status(response.status).json({ error: "Lumin game details fetch failed" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Proxy Route: Stream and Cache game icons/covers (using wildcard to support slashes in tokens)
+  app.get("/api/lumin-icon/*", async (req, res) => {
+    try {
+      const token = req.params[0];
+      const response = await fetch(`https://a.luminsdk.com/api/v1/icon/${token}`);
+      if (response.ok && response.body) {
+        res.setHeader("Content-Type", response.headers.get("Content-Type") || "image/png");
+        res.setHeader("Cache-Control", "public, max-age=86400"); // Cache locally for 1 day
+        const arrayBuffer = await response.arrayBuffer();
+        res.send(Buffer.from(arrayBuffer));
+      } else {
+        res.status(response.status || 404).end();
+      }
+    } catch (err) {
+      res.status(500).end();
+    }
+  });
+
+  // API Proxy Route: Game Frame with Auto-Fit Responsive Engine
+  app.get("/api/game-frame", async (req, res) => {
+    try {
+      const rawUrl = req.query.url as string;
+      if (!rawUrl) return res.status(400).send("Missing url parameter");
+      let target: URL;
+      try { target = new URL(rawUrl); } catch { return res.status(400).send("Invalid game URL"); }
+      const allowedHosts = ["myinstants.com", "www.myinstants.com", "raw.githubusercontent.com", "rawcdn.githack.com", "cdn.jsdelivr.net"];
+      if (target.protocol !== "https:" || !allowedHosts.includes(target.hostname)) {
+        return res.status(403).send("Game host is not allowed");
+      }
+
+      const response = await fetch(target, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
       });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
 
-  // WebSocket Server setup (ws protocol over HTTP upgrade)
-  const wss = new WebSocketServer({ noServer: true });
-
-  interface ConnectedClient {
-    ws: WebSocket;
-    userId: string;
-    username: string;
-    channel: string;
-    avatarColor?: string;
-  }
-
-  const activeWsClients = new Map<WebSocket, ConnectedClient>();
-
-  function getOnlineUsersList() {
-    const onlineMap = new Map<string, { userId: string; username: string; avatarColor?: string; channel: string }>();
-    for (const client of activeWsClients.values()) {
-      if (client.username) {
-        onlineMap.set(client.userId || client.username, {
-          userId: client.userId || client.username,
-          username: client.username,
-          avatarColor: client.avatarColor,
-          channel: client.channel || "general",
-        });
+      if (!response.ok) {
+        res.setHeader("Content-Type", response.headers.get("content-type") || "text/html; charset=utf-8");
+        return res.status(response.status).send(await response.text());
       }
-    }
-    return Array.from(onlineMap.values());
-  }
 
-  function broadcastWs(data: any, channelFilter?: string) {
-    const json = JSON.stringify(data);
-    for (const [clientWs, clientMeta] of activeWsClients.entries()) {
-      if (clientWs.readyState === WebSocket.OPEN) {
-        if (!channelFilter || clientMeta.channel === channelFilter) {
-          clientWs.send(json);
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/html")) {
+        // If not HTML, redirect directly to asset
+        return res.redirect(rawUrl);
+      }
+
+      let html = await response.text();
+
+      // Ensure <base> tag exists pointing to the origin directory of the file so relative paths resolve cleanly
+      if (!/<base\s/i.test(html)) {
+        const lastSlashIndex = rawUrl.lastIndexOf("/");
+        const baseDir = lastSlashIndex > 0 ? rawUrl.substring(0, lastSlashIndex + 1) : rawUrl;
+        if (/<head[^>]*>/i.test(html)) {
+          html = html.replace(/<head[^>]*>/i, `$&<base href="${baseDir}">`);
+        } else {
+          html = `<base href="${baseDir}">` + html;
         }
       }
-    }
+
+      // Auto-fit responsive injection for canvas, Unity containers, and loading elements
+      const fitInjection = `
+<style id="frosted-game-fit-engine">
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+    background: #000000 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
   }
-
-  wss.on("connection", (ws: WebSocket) => {
-    const clientId = "usr_" + Math.random().toString(36).substring(2, 9);
-    activeWsClients.set(ws, {
-      ws,
-      userId: clientId,
-      username: "Guest_" + clientId.substring(4, 8),
-      channel: "general",
-    });
-
+  #loading-text {
+    position: fixed !important;
+    top: 14px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    color: #ffffff !important;
+    background: rgba(18, 18, 18, 0.88) !important;
+    padding: 6px 18px !important;
+    border-radius: 9999px !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    z-index: 999999 !important;
+    pointer-events: none !important;
+    margin: 0 !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+  #unity-container, .unity-desktop, #gameContainer, #canvas-container, #game-container, #c2canvasdiv, .emscripten_border, #player, #root {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transform: none !important;
+  }
+  canvas, #unity-canvas, #canvas, .emscripten {
+    display: block !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    object-fit: contain !important;
+    margin: auto !important;
+  }
+  #unity-loading-bar {
+    position: absolute !important;
+    left: 50% !important;
+    top: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    z-index: 99999 !important;
+  }
+</style>
+<script id="frosted-game-fit-script">
+(function() {
+  function fitElements() {
     try {
-      const channelsStmt = sqliteDb.prepare("SELECT name FROM channels ORDER BY created_at ASC");
-      const channels = channelsStmt.all().map((c: any) => c.name);
-
-      const messagesStmt = sqliteDb.prepare("SELECT * FROM messages ORDER BY timestamp ASC LIMIT 200");
-      const rawMessages = messagesStmt.all();
-
-      const messages = rawMessages.map((m: any) => ({
-        id: m.id,
-        channelId: m.channel_id,
-        username: m.username,
-        userId: m.user_id,
-        text: m.text,
-        attachmentUrl: m.attachment_url,
-        attachmentType: m.attachment_type,
-        attachmentName: m.attachment_name,
-        attachmentSize: m.attachment_size,
-        avatarColor: m.avatar_color,
-        timestamp: m.timestamp,
-      }));
-
-      ws.send(
-        JSON.stringify({
-          type: "INIT_STATE",
-          userId: clientId,
-          channels,
-          messages,
-          onlineUsers: getOnlineUsersList(),
-        })
-      );
-    } catch (err: any) {
-      console.error("Error sending initial WS state from SQLite:", err);
-    }
-
-    ws.on("message", (messageRaw: string) => {
-      try {
-        const payload = JSON.parse(messageRaw.toString());
-        const client = activeWsClients.get(ws);
-        if (!client) return;
-
-        switch (payload.type) {
-          case "JOIN_CHANNEL": {
-            client.channel = payload.channel || "general";
-            if (payload.username) client.username = payload.username;
-            if (payload.avatarColor) client.avatarColor = payload.avatarColor;
-            if (payload.userId) client.userId = payload.userId;
-
-            const channelMsgStmt = sqliteDb.prepare("SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT 100");
-            const channelMsgs = channelMsgStmt.all(client.channel).map((m: any) => ({
-              id: m.id,
-              channelId: m.channel_id,
-              username: m.username,
-              userId: m.user_id,
-              text: m.text,
-              attachmentUrl: m.attachment_url,
-              attachmentType: m.attachment_type,
-              attachmentName: m.attachment_name,
-              attachmentSize: m.attachment_size,
-              avatarColor: m.avatar_color,
-              timestamp: m.timestamp,
-            }));
-
-            ws.send(
-              JSON.stringify({
-                type: "CHANNEL_HISTORY",
-                channel: client.channel,
-                messages: channelMsgs,
-              })
-            );
-
-            broadcastWs({ type: "ONLINE_USERS", users: getOnlineUsersList() });
-            break;
-          }
-
-          case "SEND_MESSAGE": {
-            const { id, channelId, username, userId, text, attachmentUrl, attachmentType, attachmentName, attachmentSize, avatarColor, timestamp } = payload.message || {};
-            const msgId = id || ("msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7));
-            const msgChan = channelId || client.channel || "general";
-            const msgTime = timestamp || Date.now();
-            const cleanText = sanitizeInput(text || "");
-            const cleanUser = sanitizeInput(username || client.username || "Guest");
-
-            const insertStmt = sqliteDb.prepare(`
-              INSERT INTO messages (id, channel_id, username, user_id, text, attachment_url, attachment_type, attachment_name, attachment_size, avatar_color, timestamp)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `);
-            insertStmt.run(msgId, msgChan, cleanUser, userId || client.userId, cleanText, attachmentUrl || null, attachmentType || null, attachmentName || null, attachmentSize || null, avatarColor || null, msgTime);
-
-            if (!cassandraData["chat_messages"]) cassandraData["chat_messages"] = {};
-            cassandraData["chat_messages"][msgId] = {
-              id: msgId,
-              channelId: msgChan,
-              username: cleanUser,
-              userId: userId || client.userId,
-              text: cleanText,
-              attachmentUrl: attachmentUrl || null,
-              attachmentType: attachmentType || null,
-              attachmentName: attachmentName || null,
-              attachmentSize: attachmentSize || null,
-              avatarColor: avatarColor || null,
-              timestamp: msgTime,
-            };
-            saveCassandraStore();
-
-            const formattedMsg = {
-              id: msgId,
-              channelId: msgChan,
-              username: cleanUser,
-              userId: userId || client.userId,
-              text: cleanText,
-              attachmentUrl: attachmentUrl || null,
-              attachmentType: attachmentType || null,
-              attachmentName: attachmentName || null,
-              attachmentSize: attachmentSize || null,
-              avatarColor: avatarColor || null,
-              timestamp: msgTime,
-            };
-
-            broadcastWs({
-              type: "NEW_MESSAGE",
-              message: formattedMsg,
-            });
-            break;
-          }
-
-          case "CREATE_CHANNEL": {
-            const rawName = (payload.name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
-            if (rawName) {
-              const chanStmt = sqliteDb.prepare("INSERT OR IGNORE INTO channels (id, name, created_at) VALUES (?, ?, ?)");
-              chanStmt.run(rawName, rawName, Date.now());
-
-              const allChansStmt = sqliteDb.prepare("SELECT name FROM channels ORDER BY created_at ASC");
-              const allChans = allChansStmt.all().map((c: any) => c.name);
-
-              broadcastWs({
-                type: "CHANNELS_UPDATED",
-                channels: allChans,
-              });
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      var canvases = document.querySelectorAll('canvas');
+      for (var i = 0; i < canvases.length; i++) {
+        var c = canvases[i];
+        if (c) {
+          var cw = c.width || c.clientWidth || 0;
+          var ch = c.height || c.clientHeight || 0;
+          if (cw > 0 && ch > 0) {
+            var ratio = cw / ch;
+            var targetW = vw;
+            var targetH = vw / ratio;
+            if (targetH > vh) {
+              targetH = vh;
+              targetW = vh * ratio;
             }
-            break;
+            c.style.setProperty('width', Math.floor(targetW) + 'px', 'important');
+            c.style.setProperty('height', Math.floor(targetH) + 'px', 'important');
+          } else {
+            c.style.setProperty('width', '100%', 'important');
+            c.style.setProperty('height', '100%', 'important');
           }
-
-          case "TYPING": {
-            broadcastWs(
-              {
-                type: "USER_TYPING",
-                username: payload.username || client.username,
-                isTyping: !!payload.isTyping,
-                channel: payload.channel || client.channel,
-              },
-              payload.channel || client.channel
-            );
-            break;
-          }
-
-          case "USER_PRESENCE": {
-            if (payload.username) client.username = payload.username;
-            if (payload.avatarColor) client.avatarColor = payload.avatarColor;
-            if (payload.userId) client.userId = payload.userId;
-
-            const userStmt = sqliteDb.prepare(`
-              INSERT INTO users (id, username, avatar_color, status, last_seen)
-              VALUES (?, ?, ?, 'online', ?)
-              ON CONFLICT(id) DO UPDATE SET
-                username = excluded.username,
-                avatar_color = excluded.avatar_color,
-                status = 'online',
-                last_seen = excluded.last_seen
-            `);
-            userStmt.run(client.userId, client.username, client.avatarColor || "", Date.now());
-
-            broadcastWs({
-              type: "ONLINE_USERS",
-              users: getOnlineUsersList(),
-            });
-            break;
-          }
+          c.style.setProperty('max-width', '100vw', 'important');
+          c.style.setProperty('max-height', '100vh', 'important');
+          c.style.setProperty('object-fit', 'contain', 'important');
+          c.style.setProperty('display', 'block', 'important');
+          c.style.setProperty('margin', 'auto', 'important');
         }
-      } catch (err) {
-        console.error("WebSocket message handling error:", err);
       }
-    });
+    } catch(e) {}
+  }
+  window.addEventListener('resize', fitElements);
+  window.addEventListener('DOMContentLoaded', fitElements);
+  setInterval(fitElements, 500);
+})();
+</script>
+`;
 
-    ws.on("close", () => {
-      const client = activeWsClients.get(ws);
-      activeWsClients.delete(ws);
-      if (client) {
-        try {
-          const userStmt = sqliteDb.prepare("UPDATE users SET status = 'offline', last_seen = ? WHERE id = ?");
-          userStmt.run(Date.now(), client.userId);
-        } catch (e) {}
-        broadcastWs({
-          type: "ONLINE_USERS",
-          users: getOnlineUsersList(),
-        });
+      if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<\/head>/i, `${fitInjection}</head>`);
+      } else {
+        html = `${fitInjection}${html}`;
       }
-    });
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.removeHeader("X-Frame-Options");
+      res.removeHeader("Content-Security-Policy");
+      res.send(html);
+    } catch (err: any) {
+      if (req.query.url) {
+        return res.redirect(req.query.url as string);
+      }
+      res.status(500).send("Game proxy error");
+    }
   });
 
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
-  });
-
-  // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)
-  app.all(["/api/db/data", "/api/db/data/*"], async (req, res) => {
-    try {
-      const { default: handler } = await import("./api/db/data.js").catch(() => import("./api/db/data"));
-      return handler(req, res);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || String(err) });
-    }
-  });
-
-  app.get(["/api/db/stream", "/api/db/stream/*"], async (req, res) => {
-    try {
-      const { default: handler } = await import("./api/db/stream.js").catch(() => import("./api/db/stream"));
-      return handler(req, res);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || String(err) });
-    }
   });
 
   // Vite integration and static asset serving
@@ -1301,21 +1133,8 @@ async function startServer() {
     });
   }
 
-  const httpServer = createHttpServer(app);
-
-  httpServer.on("upgrade", (request, socket, head) => {
-    try {
-      const url = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
-      if (url.pathname === "/ws" || url.pathname === "/ws/") {
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          wss.emit("connection", ws, request);
-        });
-      }
-    } catch (e) {}
-  });
-
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT} with WebSocket & SQLite database active`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
   });
 }
 

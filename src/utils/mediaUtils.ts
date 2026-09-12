@@ -401,14 +401,18 @@ export async function downloadFile(
     }
   }
 
-  // 2. Direct browser download via fetch -> Blob stream
+  // 2. Local uploads & proxy downloads via fetch -> Blob stream
   try {
-    const response = await fetch(url);
+    const targetApiUrl = url.startsWith("/uploads/") || url.startsWith("/api/")
+      ? `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`
+      : url;
+
+    const response = await fetch(targetApiUrl);
     if (!response.ok) throw new Error(`HTTP error ${response.status}`);
     
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("text/html") && !filename.toLowerCase().endsWith(".html") && !filename.toLowerCase().endsWith(".htm")) {
-      throw new Error("Server returned HTML instead of the requested file.");
+      throw new Error("Server returned HTML instead of the requested file (likely a static hosting SPA fallback). The file may no longer exist on this server.");
     }
 
     const blob = await response.blob();
@@ -429,13 +433,20 @@ export async function downloadFile(
     }, 30000);
     return;
   } catch (err: any) {
-    console.warn("Direct blob download failed, attempting direct link download:", err);
+    console.warn("Direct blob download failed, attempting fallback:", err);
     
+    // Prevent downloading HTML if we specifically caught a missing file on static hosting
+    if (err.message && err.message.includes("SPA fallback")) {
+      alert("This file is no longer available on the server (it may have been uploaded to a temporary local environment).");
+      return;
+    }
+
+    // Fallback: direct proxy link trigger
     try {
+      const proxyUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
       const a = document.createElement("a");
-      a.href = url;
+      a.href = proxyUrl;
       a.download = filename;
-      a.target = "_blank";
       a.style.display = "none";
       document.body.appendChild(a);
       a.click();

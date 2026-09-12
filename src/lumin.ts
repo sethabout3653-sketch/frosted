@@ -25,6 +25,24 @@ let globalSessionId: string | null = null;
  * and seamlessly falls back to direct client-side fetch if the proxy is unavailable.
  */
 async function fetchLuminProxyOrDirect(endpoint: string, options: RequestInit = {}): Promise<Response> {
+  try {
+    const proxyUrl = endpoint
+      .replace(`${LUMIN_API_BASE}/api/v1/session`, "/api/lumin-session")
+      .replace(`${LUMIN_API_BASE}/api/v1/games`, "/api/lumin-games")
+      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/games/(.+)`), "/api/lumin-game-url/$1")
+      .replace(new RegExp(`^${LUMIN_API_BASE.replace(/\./g, "\\.")}/api/v1/icon/(.+)`), "/api/lumin-icon/$1");
+
+    if (proxyUrl.startsWith("/api/")) {
+      const res = await fetch(proxyUrl, options);
+      const contentType = res.headers.get("content-type") || "";
+      // If server returned HTML (SPA fallback), do not use it
+      if (res.ok && !contentType.includes("text/html")) {
+        return res;
+      }
+    }
+  } catch (err) {
+    // Fall back to direct fetch on proxy failure or offline status
+  }
   return fetch(endpoint, options);
 }
 

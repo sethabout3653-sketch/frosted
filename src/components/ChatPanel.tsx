@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   db,
+  supabase,
   collection,
   query,
   orderBy,
@@ -17,7 +18,7 @@ import {
   OperationType,
   toTimestampMs,
   compareMessagesChronological,
-} from "../firebase";
+} from "../supabase-adapter";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
@@ -198,127 +199,6 @@ export default function ChatPanel({
     }, 1500);
     return () => clearInterval(checkStale);
   }, []);
-
-  const wsRef = useRef<WebSocket | null>(null);
-  const [wsConnected, setWsConnected] = useState<boolean>(false);
-
-  useEffect(() => {
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-
-    let ws: WebSocket;
-    let reconnectTimeout: any;
-
-    function connect() {
-      try {
-        ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          setWsConnected(true);
-          if (profile) {
-            ws.send(
-              JSON.stringify({
-                type: "JOIN_CHANNEL",
-                channel: activeChannel,
-                username: profile.username,
-                userId: profile.uid,
-                avatarColor: profile.photoURL || "",
-              })
-            );
-            ws.send(
-              JSON.stringify({
-                type: "USER_PRESENCE",
-                username: profile.username,
-                userId: profile.uid,
-                avatarColor: profile.photoURL || "",
-              })
-            );
-          }
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "INIT_STATE" || data.type === "CHANNEL_HISTORY") {
-              if (Array.isArray(data.messages)) {
-                setMessages((prev) => {
-                  const map = new Map<string, ChatMessage>();
-                  data.messages.forEach((m: any) => {
-                    map.set(m.id, {
-                      id: m.id,
-                      channelId: m.channelId || m.channel_id || "general",
-                      uid: m.userId || m.user_id || m.uid || "usr_anon",
-                      username: m.username || "Guest",
-                      photoURL: m.avatarColor || m.photoURL || "",
-                      text: m.text,
-                      attachment: m.attachmentUrl || m.attachment,
-                      attachmentType: m.attachmentType,
-                      attachmentName: m.attachmentName,
-                      attachmentSize: m.attachmentSize,
-                      timestamp: toTimestampMs(m.timestamp),
-                    });
-                  });
-                  return Array.from(map.values()).sort(compareMessagesChronological);
-                });
-                setIsLoadingMessages(false);
-              }
-            } else if (data.type === "NEW_MESSAGE" && data.message) {
-              const m = data.message;
-              const newMsg: ChatMessage = {
-                id: m.id,
-                channelId: m.channelId || "general",
-                uid: m.userId || m.uid || "usr_anon",
-                username: m.username || "Guest",
-                photoURL: m.avatarColor || m.photoURL || "",
-                text: m.text,
-                attachment: m.attachmentUrl || m.attachment,
-                attachmentType: m.attachmentType,
-                attachmentName: m.attachmentName,
-                attachmentSize: m.attachmentSize,
-                timestamp: toTimestampMs(m.timestamp),
-              };
-              setMessages((prev) => {
-                if (prev.some((existing) => existing.id === newMsg.id)) return prev;
-                const updated = [...prev, newMsg].sort(compareMessagesChronological);
-                saveCachedMessages(updated);
-                return updated;
-              });
-              window.setTimeout(() => scrollToBottom("smooth"), 20);
-            } else if (data.type === "USER_TYPING") {
-              if (data.username && data.username !== profile?.username) {
-                setTypingUsers((prev) => {
-                  if (data.isTyping) {
-                    return prev.some((u) => u.username === data.username) ? prev : [...prev, { uid: data.username, username: data.username, timestamp: Date.now() }];
-                  } else {
-                    return prev.filter((u) => u.username !== data.username);
-                  }
-                });
-              }
-            }
-          } catch (e) {}
-        };
-
-        ws.onclose = () => {
-          setWsConnected(false);
-          reconnectTimeout = setTimeout(connect, 3000);
-        };
-
-        ws.onerror = () => {
-          setWsConnected(false);
-        };
-      } catch (e) {
-        setWsConnected(false);
-      }
-    }
-
-    connect();
-
-    return () => {
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (ws) ws.close();
-    };
-  }, [activeChannel, profile]);
 
   // Cleanup local typing state and reset scroll position on active channel change
   useEffect(() => {
@@ -619,6 +499,9 @@ export default function ChatPanel({
     });
     try {
       await deleteDoc(doc(db, "messages", msgId));
+      if (supabase && supabase.from) {
+        await supabase.from("messages").delete().eq("id", msgId);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }
@@ -672,16 +555,6 @@ export default function ChatPanel({
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
-    // Rate Limiting check: max 5 messages per 3 seconds
-    const now = Date.now();
-    sendTimestampsRef.current = sendTimestampsRef.current.filter((t) => now - t < 3000);
-    if (sendTimestampsRef.current.length >= 5) {
-      setRateLimitError("Rate limit reached. Please wait a moment before sending more messages.");
-      setTimeout(() => setRateLimitError(null), 3000);
-      return;
-    }
-    sendTimestampsRef.current.push(now);
-
     // Attach original file name, MIME type, and size to the URL so all other users receive exact name & extension
     if (currentAttachment && currentName && !currentAttachment.startsWith("data:") && !currentAttachment.includes("?name=") && !currentAttachment.includes("&name=")) {
       const sep = currentAttachment.includes("?") ? "&" : "?";
@@ -689,6 +562,8 @@ export default function ChatPanel({
     }
 
     const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
 
     // Optimistically show message immediately on sender's screen (0ms latency)
     const optimisticMsg: ChatMessage = {
@@ -726,30 +601,6 @@ export default function ChatPanel({
     inputRef.current?.focus();
     isUserScrolledUpRef.current = false;
     window.setTimeout(() => scrollToBottom("smooth"), 10);
-
-    // Broadcast message instantly over WebSocket if open
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(
-          JSON.stringify({
-            type: "SEND_MESSAGE",
-            message: {
-              id: msgId,
-              channelId: activeChannel,
-              username: profile.username,
-              userId: profile.uid,
-              avatarColor: profile.photoURL || "",
-              text: currentText || undefined,
-              attachmentUrl: currentAttachment || undefined,
-              attachmentType: currentType || undefined,
-              attachmentName: currentName || undefined,
-              attachmentSize: currentSize || undefined,
-              timestamp: now,
-            },
-          })
-        );
-      } catch (e) {}
-    }
 
     try {
       const msgData: Record<string, any> = {
@@ -887,30 +738,10 @@ export default function ChatPanel({
     }
   };
 
-  const [rateLimitError, setRateLimitError] = useState<string | null>(null);
-  const sendTimestampsRef = useRef<number[]>([]);
-
   const formatTimestamp = (ts: number) => {
     if (!ts) return "";
-    const date = new Date(ts);
-    const now = new Date();
-    const isToday =
-      date.getDate() === now.getDate() &&
-      date.getMonth() === now.getMonth() &&
-      date.getFullYear() === now.getFullYear();
-
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    const isYesterday =
-      date.getDate() === yesterday.getDate() &&
-      date.getMonth() === yesterday.getMonth() &&
-      date.getFullYear() === yesterday.getFullYear();
-
-    const timeStr = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
-    if (isToday) return `Today at ${timeStr}`;
-    if (isYesterday) return `Yesterday at ${timeStr}`;
-    return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} at ${timeStr}`;
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   const channelMessages = useMemo(() => {
@@ -1009,10 +840,6 @@ export default function ChatPanel({
             </span>
             <span className="text-xs text-neutral-500 font-normal hidden sm:inline ml-1">
               main room
-            </span>
-            <span className="ml-2 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-800/80 text-[10px] font-semibold text-emerald-300 flex items-center gap-1.5 shadow-sm">
-              <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
-              {wsConnected ? "WebSocket & SQLite DB Active" : "Connecting WebSocket..."}
             </span>
           </div>
 
@@ -1316,12 +1143,6 @@ export default function ChatPanel({
 
         {/* Bottom Message Input Bar matching Image 2 */}
         <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
-          {rateLimitError && (
-            <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-950/80 border border-red-800/80 text-xs text-red-300 font-semibold animate-in fade-in flex items-center justify-between">
-              <span>{rateLimitError}</span>
-              <button onClick={() => setRateLimitError(null)} className="text-red-400 hover:text-white">✕</button>
-            </div>
-          )}
           {typingUsers.length > 0 && (
             <div className="flex items-center gap-2 text-xs text-neutral-400 mb-2 pl-2 animate-in fade-in duration-200">
               <div className="flex items-center gap-1">
