@@ -1,10 +1,8 @@
-import "dotenv/config";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
-import { Redis } from "@upstash/redis";
 
 async function startServer() {
   const app = express();
@@ -502,51 +500,6 @@ async function startServer() {
     }
   };
 
-  // Upstash Redis Client Configuration
-  let redisClient: Redis | null = null;
-  const getRedis = (): Redis | null => {
-    if (!redisClient) {
-      const url = process.env.UPSTASH_REDIS_REST_URL;
-      const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-      if (url && token) {
-        try {
-          redisClient = new Redis({ url, token });
-          console.log("[Upstash Redis] Client initialized successfully");
-        } catch (e) {
-          console.warn("[Upstash Redis] Failed to initialize client:", e);
-        }
-      }
-    }
-    return redisClient;
-  };
-
-  // Seed / sync state from Upstash Redis on startup
-  (async () => {
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const collections = ["messages", "presence", "voice_users", "typing"];
-        for (const col of collections) {
-          const remoteHash = await redis.hgetall(`col:${col}`).catch(() => null);
-          if (remoteHash && typeof remoteHash === "object") {
-            if (!cassandraData[col]) cassandraData[col] = {};
-            for (const [rowId, rawVal] of Object.entries(remoteHash)) {
-              try {
-                cassandraData[col][rowId] = typeof rawVal === "string" ? JSON.parse(rawVal) : rawVal;
-              } catch {
-                cassandraData[col][rowId] = rawVal;
-              }
-            }
-          }
-        }
-        saveCassandraStore();
-        console.log("[Upstash Redis] Successfully synced state from Upstash Redis");
-      } catch (err) {
-        console.warn("[Upstash Redis] Initial sync error:", err);
-      }
-    }
-  })();
-
   // Connected SSE clients for real-time broadcasts
   const sseClients = new Set<express.Response>();
   let recentWebRTCSignals: Array<{
@@ -616,7 +569,7 @@ async function startServer() {
     res.write(
       `data: ${JSON.stringify({
         type: "connected",
-        provider: "Apache Cassandra / ScyllaDB Engine",
+        provider: "Custom Native Realtime Database",
         quota: "Unlimited (0 / \u221E)",
         serverTime: Date.now(),
       })}\n\n`
@@ -701,7 +654,7 @@ async function startServer() {
     }
     res.json({
       status: "online",
-      provider: "Apache Cassandra / ScyllaDB",
+      provider: "Custom Native Realtime Database",
       quota: "Unlimited (0 / \u221E)",
       collections: Object.keys(cassandraData),
       data: cassandraData,
@@ -747,24 +700,6 @@ async function startServer() {
         cassandraChangeHistory = cassandraChangeHistory.slice(-1000);
       }
 
-      // Persist to Upstash Redis asynchronously
-      const redis = getRedis();
-      if (redis) {
-        if (op === "delete") {
-          redis.hdel(`col:${col}`, id).catch((e) => console.warn("[Upstash Redis] hdel error:", e));
-        } else {
-          const currentDoc = cassandraData[col][id];
-          const payloadStr = typeof currentDoc === "object" ? JSON.stringify(currentDoc) : String(currentDoc);
-          redis.hset(`col:${col}`, { [id]: payloadStr }).catch((e) => console.warn("[Upstash Redis] hset error:", e));
-        }
-        redis.xadd(`stream:${col}`, "*", {
-          op: op || "set",
-          id,
-          data: typeof data === "object" ? JSON.stringify(data) : String(data || ""),
-          timestamp: Date.now().toString(),
-        }).catch(() => {});
-      }
-
       // Broadcast to all SSE listeners in real time
       broadcastCassandraChange(op || "set", col, id, data);
 
@@ -789,7 +724,7 @@ async function startServer() {
   app.get("/api/cassandra/status", (req, res) => {
     res.json({
       status: "online",
-      provider: "Apache Cassandra / ScyllaDB Engine",
+      provider: "Custom Native Realtime Database",
       quota: "Unlimited (0 / \u221E)",
       transport: "Server-Sent Events (SSE) - No WebSockets, Vercel Compatible",
       activeClients: sseClients.size,
