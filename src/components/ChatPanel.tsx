@@ -551,6 +551,16 @@ export default function ChatPanel({
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
+    // Rate Limiting check: max 5 messages per 3 seconds
+    const now = Date.now();
+    sendTimestampsRef.current = sendTimestampsRef.current.filter((t) => now - t < 3000);
+    if (sendTimestampsRef.current.length >= 5) {
+      setRateLimitError("Rate limit reached. Please wait a moment before sending more messages.");
+      setTimeout(() => setRateLimitError(null), 3000);
+      return;
+    }
+    sendTimestampsRef.current.push(now);
+
     // Attach original file name, MIME type, and size to the URL so all other users receive exact name & extension
     if (currentAttachment && currentName && !currentAttachment.startsWith("data:") && !currentAttachment.includes("?name=") && !currentAttachment.includes("&name=")) {
       const sep = currentAttachment.includes("?") ? "&" : "?";
@@ -558,8 +568,6 @@ export default function ChatPanel({
     }
 
     const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-    // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-    const now = Date.now();
 
     // Optimistically show message immediately on sender's screen (0ms latency)
     const optimisticMsg: ChatMessage = {
@@ -734,10 +742,30 @@ export default function ChatPanel({
     }
   };
 
+  const [rateLimitError, setRateLimitError] = useState<string | null>(null);
+  const sendTimestampsRef = useRef<number[]>([]);
+
   const formatTimestamp = (ts: number) => {
     if (!ts) return "";
-    const d = new Date(ts);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const date = new Date(ts);
+    const now = new Date();
+    const isToday =
+      date.getDate() === now.getDate() &&
+      date.getMonth() === now.getMonth() &&
+      date.getFullYear() === now.getFullYear();
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday =
+      date.getDate() === yesterday.getDate() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getFullYear() === yesterday.getFullYear();
+
+    const timeStr = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+    if (isToday) return `Today at ${timeStr}`;
+    if (isYesterday) return `Yesterday at ${timeStr}`;
+    return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} at ${timeStr}`;
   };
 
   const channelMessages = useMemo(() => {
@@ -1139,6 +1167,12 @@ export default function ChatPanel({
 
         {/* Bottom Message Input Bar matching Image 2 */}
         <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
+          {rateLimitError && (
+            <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-950/80 border border-red-800/80 text-xs text-red-300 font-semibold animate-in fade-in flex items-center justify-between">
+              <span>{rateLimitError}</span>
+              <button onClick={() => setRateLimitError(null)} className="text-red-400 hover:text-white">✕</button>
+            </div>
+          )}
           {typingUsers.length > 0 && (
             <div className="flex items-center gap-2 text-xs text-neutral-400 mb-2 pl-2 animate-in fade-in duration-200">
               <div className="flex items-center gap-1">

@@ -470,6 +470,35 @@ async function startServer() {
     }
   });
 
+  // Server-Side Input Sanitization helper to prevent XSS
+  function sanitizeInput(str: string): string {
+    if (!str || typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#x27;")
+      .replace(/\//g, "&#x2F;");
+  }
+
+  // Rate Limiting map for Chat Message creation (Max 5 messages per 3 seconds per IP)
+  const chatRateLimitMap = new Map<string, { count: number; resetTime: number }>();
+  
+  function isRateLimited(ip: string): boolean {
+    const now = Date.now();
+    const entry = chatRateLimitMap.get(ip);
+    if (!entry || now > entry.resetTime) {
+      chatRateLimitMap.set(ip, { count: 1, resetTime: now + 3000 });
+      return false;
+    }
+    entry.count += 1;
+    if (entry.count > 5) {
+      return true;
+    }
+    return false;
+  }
+
   // JSON and URL parsing middleware with generous limit for large attachments
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
@@ -672,6 +701,26 @@ async function startServer() {
         return res.status(400).json({ error: "Missing collection or id" });
       }
 
+      // Check rate limiting for chat message writes
+      if (col === "chat_messages" || col === "messages") {
+        const clientIp = (req.headers["x-forwarded-for"] as string) || req.ip || "unknown";
+        if (isRateLimited(clientIp)) {
+          return res.status(429).json({ error: "Rate limit exceeded. Please wait a moment before sending more messages." });
+        }
+      }
+
+      // Sanitize input text & string fields to prevent XSS
+      let sanitizedData = data;
+      if (data && typeof data === "object") {
+        sanitizedData = { ...data };
+        if (typeof sanitizedData.text === "string") {
+          sanitizedData.text = sanitizeInput(sanitizedData.text);
+        }
+        if (typeof sanitizedData.username === "string") {
+          sanitizedData.username = sanitizeInput(sanitizedData.username);
+        }
+      }
+
       if (!cassandraData[col]) {
         cassandraData[col] = {};
       }
@@ -681,11 +730,11 @@ async function startServer() {
       } else if (op === "update") {
         cassandraData[col][id] = {
           ...(cassandraData[col][id] || {}),
-          ...data,
+          ...sanitizedData,
           id,
         };
       } else {
-        cassandraData[col][id] = { ...data, id };
+        cassandraData[col][id] = { ...sanitizedData, id };
       }
 
       saveCassandraStore();
@@ -695,7 +744,7 @@ async function startServer() {
         collection: col,
         id,
         op: op || "set",
-        data,
+        data: sanitizedData,
       };
 
       cassandraChangeHistory.push(changeRecord);
@@ -704,7 +753,7 @@ async function startServer() {
       }
 
       // Broadcast to all SSE listeners in real time
-      broadcastCassandraChange(op || "set", col, id, data);
+      broadcastCassandraChange(op || "set", col, id, sanitizedData);
 
       res.json({ success: true, timestamp: changeRecord.timestamp });
     } catch (err: any) {

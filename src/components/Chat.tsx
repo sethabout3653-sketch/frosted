@@ -63,8 +63,17 @@ export default function Chat({
 
   const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">("chat");
   const [isInVoiceSession, setIsInVoiceSession] = useState(false);
+  const [channels, setChannels] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem("frosted_channels");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return ["general", "lounge", "announcements", "gaming", "music", "dev"];
+  });
   const [activeChannel, setActiveChannel] = useState<string>("general");
   const [channelSearch, setChannelSearch] = useState<string>("");
+  const [isCreatingChannel, setIsCreatingChannel] = useState<boolean>(false);
+  const [newChannelName, setNewChannelName] = useState<string>("");
   const [showMembersSidebar, setShowMembersSidebar] = useState<boolean>(true);
   const [notification, setNotification] = useState<ChatMessage | null>(null);
   const messageSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -446,25 +455,71 @@ export default function Chat({
             <div className="flex-1 overflow-y-auto p-2 space-y-4">
               {/* CHANNELS Section */}
               <div>
-                <div className="flex items-center gap-1 text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
-                  <ChevronDown size={12} />
-                  <span>CHANNELS</span>
-                </div>
-                <div className="space-y-0.5 mt-0.5">
+                <div className="flex items-center justify-between text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
+                  <div className="flex items-center gap-1">
+                    <ChevronDown size={12} />
+                    <span>CHANNELS</span>
+                  </div>
                   <button
-                    onClick={() => {
-                      setActiveTab("chat");
-                      setActiveChannel("general");
-                    }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                      activeTab === "chat" && activeChannel === "general"
-                        ? "bg-neutral-800/90 text-white"
-                        : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
-                    }`}
+                    onClick={() => setIsCreatingChannel((prev) => !prev)}
+                    className="p-1 hover:text-white transition-colors rounded hover:bg-neutral-800"
+                    title="Create New Channel"
                   >
-                    <span className="text-base text-neutral-500 font-bold">#</span>
-                    <span>general</span>
+                    +
                   </button>
+                </div>
+
+                {/* Inline New Channel Input */}
+                {isCreatingChannel && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const clean = newChannelName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+                      if (clean && !channels.includes(clean)) {
+                        const updated = [...channels, clean];
+                        setChannels(updated);
+                        try {
+                          localStorage.setItem("frosted_channels", JSON.stringify(updated));
+                        } catch {}
+                        setActiveChannel(clean);
+                        setActiveTab("chat");
+                      }
+                      setNewChannelName("");
+                      setIsCreatingChannel(false);
+                    }}
+                    className="px-2 py-1 mb-1"
+                  >
+                    <input
+                      type="text"
+                      autoFocus
+                      value={newChannelName}
+                      onChange={(e) => setNewChannelName(e.target.value)}
+                      placeholder="channel-name"
+                      className="w-full bg-neutral-900 border border-neutral-700 text-xs text-white rounded px-2 py-1 focus:outline-none focus:border-white"
+                    />
+                  </form>
+                )}
+
+                <div className="space-y-0.5 mt-0.5">
+                  {channels
+                    .filter((ch) => !channelSearch || ch.toLowerCase().includes(channelSearch.toLowerCase()))
+                    .map((ch) => (
+                      <button
+                        key={ch}
+                        onClick={() => {
+                          setActiveTab("chat");
+                          setActiveChannel(ch);
+                        }}
+                        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                          activeTab === "chat" && activeChannel === ch
+                            ? "bg-neutral-800/90 text-white"
+                            : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
+                        }`}
+                      >
+                        <span className="text-base text-neutral-500 font-bold">#</span>
+                        <span className="truncate">{ch}</span>
+                      </button>
+                    ))}
                 </div>
               </div>
 
