@@ -3,8 +3,70 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
+import Database from "better-sqlite3";
+import { WebSocketServer, WebSocket } from "ws";
+import { createServer as createHttpServer } from "http";
+
+let sqliteDb: any = null;
+
+function initSqliteDatabase() {
+  let dbDir = path.join(process.cwd(), "data");
+  let dbFile = path.join(dbDir, "chat.db");
+  try {
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    sqliteDb = new Database(dbFile);
+  } catch (err) {
+    console.warn("Failed to create chat.db in workspace data dir, falling back to /tmp/chat.db");
+    dbFile = "/tmp/chat.db";
+    sqliteDb = new Database(dbFile);
+  }
+
+  try {
+    sqliteDb.pragma("journal_mode = WAL");
+  } catch (e) {}
+
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS channels (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      user_id TEXT,
+      text TEXT,
+      attachment_url TEXT,
+      attachment_type TEXT,
+      attachment_name TEXT,
+      attachment_size INTEGER,
+      avatar_color TEXT,
+      timestamp INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      avatar_color TEXT,
+      status TEXT,
+      last_seen INTEGER NOT NULL
+    );
+  `);
+
+  const defaultChannels = ["general", "lounge", "announcements", "gaming", "music", "dev"];
+  const insertChanStmt = sqliteDb.prepare("INSERT OR IGNORE INTO channels (id, name, created_at) VALUES (?, ?, ?)");
+  const now = Date.now();
+  defaultChannels.forEach((ch) => {
+    insertChanStmt.run(ch, ch, now);
+  });
+}
 
 async function startServer() {
+  initSqliteDatabase();
   const app = express();
   const PORT = 3000;
 
@@ -916,6 +978,286 @@ async function startServer() {
     });
   });
 
+  // SQLite REST API & Diagnostic Endpoints
+  app.get("/api/sqlite/messages", (req, res) => {
+    try {
+      const chan = (req.query.channel as string) || "general";
+      const limit = parseInt(req.query.limit as string, 10) || 100;
+      const stmt = sqliteDb.prepare("SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT ?");
+      const rows = stmt.all(chan, limit);
+      res.json({ success: true, channel: chan, messages: rows });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/sqlite/stats", (req, res) => {
+    try {
+      const msgCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM messages").get().count;
+      const chanCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM channels").get().count;
+      const userCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM users").get().count;
+      res.json({
+        status: "online",
+        database: "SQLite 3 (WAL mode)",
+        wsConnections: activeWsClients.size,
+        stats: {
+          totalMessages: msgCount,
+          totalChannels: chanCount,
+          totalUsers: userCount,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // WebSocket Server setup (ws protocol over HTTP upgrade)
+  const wss = new WebSocketServer({ noServer: true });
+
+  interface ConnectedClient {
+    ws: WebSocket;
+    userId: string;
+    username: string;
+    channel: string;
+    avatarColor?: string;
+  }
+
+  const activeWsClients = new Map<WebSocket, ConnectedClient>();
+
+  function getOnlineUsersList() {
+    const onlineMap = new Map<string, { userId: string; username: string; avatarColor?: string; channel: string }>();
+    for (const client of activeWsClients.values()) {
+      if (client.username) {
+        onlineMap.set(client.userId || client.username, {
+          userId: client.userId || client.username,
+          username: client.username,
+          avatarColor: client.avatarColor,
+          channel: client.channel || "general",
+        });
+      }
+    }
+    return Array.from(onlineMap.values());
+  }
+
+  function broadcastWs(data: any, channelFilter?: string) {
+    const json = JSON.stringify(data);
+    for (const [clientWs, clientMeta] of activeWsClients.entries()) {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        if (!channelFilter || clientMeta.channel === channelFilter) {
+          clientWs.send(json);
+        }
+      }
+    }
+  }
+
+  wss.on("connection", (ws: WebSocket) => {
+    const clientId = "usr_" + Math.random().toString(36).substring(2, 9);
+    activeWsClients.set(ws, {
+      ws,
+      userId: clientId,
+      username: "Guest_" + clientId.substring(4, 8),
+      channel: "general",
+    });
+
+    try {
+      const channelsStmt = sqliteDb.prepare("SELECT name FROM channels ORDER BY created_at ASC");
+      const channels = channelsStmt.all().map((c: any) => c.name);
+
+      const messagesStmt = sqliteDb.prepare("SELECT * FROM messages ORDER BY timestamp ASC LIMIT 200");
+      const rawMessages = messagesStmt.all();
+
+      const messages = rawMessages.map((m: any) => ({
+        id: m.id,
+        channelId: m.channel_id,
+        username: m.username,
+        userId: m.user_id,
+        text: m.text,
+        attachmentUrl: m.attachment_url,
+        attachmentType: m.attachment_type,
+        attachmentName: m.attachment_name,
+        attachmentSize: m.attachment_size,
+        avatarColor: m.avatar_color,
+        timestamp: m.timestamp,
+      }));
+
+      ws.send(
+        JSON.stringify({
+          type: "INIT_STATE",
+          userId: clientId,
+          channels,
+          messages,
+          onlineUsers: getOnlineUsersList(),
+        })
+      );
+    } catch (err: any) {
+      console.error("Error sending initial WS state from SQLite:", err);
+    }
+
+    ws.on("message", (messageRaw: string) => {
+      try {
+        const payload = JSON.parse(messageRaw.toString());
+        const client = activeWsClients.get(ws);
+        if (!client) return;
+
+        switch (payload.type) {
+          case "JOIN_CHANNEL": {
+            client.channel = payload.channel || "general";
+            if (payload.username) client.username = payload.username;
+            if (payload.avatarColor) client.avatarColor = payload.avatarColor;
+            if (payload.userId) client.userId = payload.userId;
+
+            const channelMsgStmt = sqliteDb.prepare("SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT 100");
+            const channelMsgs = channelMsgStmt.all(client.channel).map((m: any) => ({
+              id: m.id,
+              channelId: m.channel_id,
+              username: m.username,
+              userId: m.user_id,
+              text: m.text,
+              attachmentUrl: m.attachment_url,
+              attachmentType: m.attachment_type,
+              attachmentName: m.attachment_name,
+              attachmentSize: m.attachment_size,
+              avatarColor: m.avatar_color,
+              timestamp: m.timestamp,
+            }));
+
+            ws.send(
+              JSON.stringify({
+                type: "CHANNEL_HISTORY",
+                channel: client.channel,
+                messages: channelMsgs,
+              })
+            );
+
+            broadcastWs({ type: "ONLINE_USERS", users: getOnlineUsersList() });
+            break;
+          }
+
+          case "SEND_MESSAGE": {
+            const { id, channelId, username, userId, text, attachmentUrl, attachmentType, attachmentName, attachmentSize, avatarColor, timestamp } = payload.message || {};
+            const msgId = id || ("msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7));
+            const msgChan = channelId || client.channel || "general";
+            const msgTime = timestamp || Date.now();
+            const cleanText = sanitizeInput(text || "");
+            const cleanUser = sanitizeInput(username || client.username || "Guest");
+
+            const insertStmt = sqliteDb.prepare(`
+              INSERT INTO messages (id, channel_id, username, user_id, text, attachment_url, attachment_type, attachment_name, attachment_size, avatar_color, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            insertStmt.run(msgId, msgChan, cleanUser, userId || client.userId, cleanText, attachmentUrl || null, attachmentType || null, attachmentName || null, attachmentSize || null, avatarColor || null, msgTime);
+
+            if (!cassandraData["chat_messages"]) cassandraData["chat_messages"] = {};
+            cassandraData["chat_messages"][msgId] = {
+              id: msgId,
+              channelId: msgChan,
+              username: cleanUser,
+              userId: userId || client.userId,
+              text: cleanText,
+              attachmentUrl: attachmentUrl || null,
+              attachmentType: attachmentType || null,
+              attachmentName: attachmentName || null,
+              attachmentSize: attachmentSize || null,
+              avatarColor: avatarColor || null,
+              timestamp: msgTime,
+            };
+            saveCassandraStore();
+
+            const formattedMsg = {
+              id: msgId,
+              channelId: msgChan,
+              username: cleanUser,
+              userId: userId || client.userId,
+              text: cleanText,
+              attachmentUrl: attachmentUrl || null,
+              attachmentType: attachmentType || null,
+              attachmentName: attachmentName || null,
+              attachmentSize: attachmentSize || null,
+              avatarColor: avatarColor || null,
+              timestamp: msgTime,
+            };
+
+            broadcastWs({
+              type: "NEW_MESSAGE",
+              message: formattedMsg,
+            });
+            break;
+          }
+
+          case "CREATE_CHANNEL": {
+            const rawName = (payload.name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+            if (rawName) {
+              const chanStmt = sqliteDb.prepare("INSERT OR IGNORE INTO channels (id, name, created_at) VALUES (?, ?, ?)");
+              chanStmt.run(rawName, rawName, Date.now());
+
+              const allChansStmt = sqliteDb.prepare("SELECT name FROM channels ORDER BY created_at ASC");
+              const allChans = allChansStmt.all().map((c: any) => c.name);
+
+              broadcastWs({
+                type: "CHANNELS_UPDATED",
+                channels: allChans,
+              });
+            }
+            break;
+          }
+
+          case "TYPING": {
+            broadcastWs(
+              {
+                type: "USER_TYPING",
+                username: payload.username || client.username,
+                isTyping: !!payload.isTyping,
+                channel: payload.channel || client.channel,
+              },
+              payload.channel || client.channel
+            );
+            break;
+          }
+
+          case "USER_PRESENCE": {
+            if (payload.username) client.username = payload.username;
+            if (payload.avatarColor) client.avatarColor = payload.avatarColor;
+            if (payload.userId) client.userId = payload.userId;
+
+            const userStmt = sqliteDb.prepare(`
+              INSERT INTO users (id, username, avatar_color, status, last_seen)
+              VALUES (?, ?, ?, 'online', ?)
+              ON CONFLICT(id) DO UPDATE SET
+                username = excluded.username,
+                avatar_color = excluded.avatar_color,
+                status = 'online',
+                last_seen = excluded.last_seen
+            `);
+            userStmt.run(client.userId, client.username, client.avatarColor || "", Date.now());
+
+            broadcastWs({
+              type: "ONLINE_USERS",
+              users: getOnlineUsersList(),
+            });
+            break;
+          }
+        }
+      } catch (err) {
+        console.error("WebSocket message handling error:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      const client = activeWsClients.get(ws);
+      activeWsClients.delete(ws);
+      if (client) {
+        try {
+          const userStmt = sqliteDb.prepare("UPDATE users SET status = 'offline', last_seen = ? WHERE id = ?");
+          userStmt.run(Date.now(), client.userId);
+        } catch (e) {}
+        broadcastWs({
+          type: "ONLINE_USERS",
+          users: getOnlineUsersList(),
+        });
+      }
+    });
+  });
+
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
@@ -959,8 +1301,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const httpServer = createHttpServer(app);
+
+  httpServer.on("upgrade", (request, socket, head) => {
+    try {
+      const url = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+      if (url.pathname === "/ws" || url.pathname === "/ws/") {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit("connection", ws, request);
+        });
+      }
+    } catch (e) {}
+  });
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT} with WebSocket & SQLite database active`);
   });
 }
 
