@@ -1,4 +1,5 @@
 import { createClient, RealtimeChannel } from "@supabase/supabase-js";
+import { io } from "socket.io-client";
 
 const supabaseUrl = "https://jtocgfqurrlyyvhfmfsc.supabase.co";
 const supabaseAnonKey = "sb_publishable_o5pFWa88vKImudzqdbVWkw_AyBOzXOj";
@@ -480,7 +481,73 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// Real-time Server SSE Stream Bridge (Syncs all devices/browsers across the internet)
+// Real-time Socket.io WebSockets Engine
+// ---------------------------------------------------------
+let socket: any = null;
+
+export function getSocket() {
+  return socket;
+}
+
+export function initSocketIO() {
+  if (typeof window === "undefined") return null;
+  if (socket) return socket;
+
+  socket = io(window.location.origin, {
+    path: "/api/socket",
+    transports: ["websocket"],
+    reconnection: true,
+    reconnectionDelay: 2000,
+    reconnectionAttempts: Infinity,
+  });
+
+  socket.on("connect", () => {
+    console.log("[Socket.io] Connected to persistent Socket.IO server via Native WebSockets");
+    
+    try {
+      const saved = localStorage.getItem("frosted_chat_profile");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.uid && parsed.username) {
+          socket.emit("presence:register", parsed);
+        }
+      }
+    } catch (e) {}
+
+    socket.emit("sync:request");
+  });
+
+  socket.on("sync:init", (cassandraData: any) => {
+    if (cassandraData && typeof cassandraData === "object") {
+      Object.entries(cassandraData).forEach(([cName, docs]: [string, any]) => {
+        const colMap = getColMap(cName);
+        if (docs && typeof docs === "object") {
+          Object.entries(docs).forEach(([docId, docData]) => {
+            colMap.set(docId, docData);
+          });
+          notifyListeners(cName);
+        }
+      });
+    }
+  });
+
+  socket.on("db:mutation", (msg: { collection: string; op: string; data: any; id: string }) => {
+    handleIncomingDbMutation(msg.collection, msg.op, msg.data, msg.id);
+  });
+
+  socket.on("presence:update", (profile: any) => {
+    // presence tracking update
+  });
+
+  return socket;
+}
+
+if (typeof window !== "undefined") {
+  initSocketIO();
+}
+
+// ---------------------------------------------------------
+// Real-time Server SSE Stream Bridge (Resilient Fallback Sync)
 // ---------------------------------------------------------
 let sseSource: EventSource | null = null;
 let sseReconnectTimer: any = null;
@@ -491,6 +558,13 @@ function initServerSSE() {
     try {
       sseSource.close();
     } catch (e) {}
+  }
+
+  // If Socket.IO is connected, we can skip initializing SSE fallback
+  if (socket && socket.connected) {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = setTimeout(initServerSSE, 10000);
+    return;
   }
 
   try {
@@ -560,13 +634,17 @@ function broadcastMutation(
 }
 
 async function serverWrite(op: string, colName: string, id: string, data: any) {
-  try {
-    await fetch("/api/cassandra/write", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ op, collection: colName, id, data }),
-    });
-  } catch (e) {}
+  if (socket && socket.connected) {
+    socket.emit("db:write", { op, collection: colName, id, data });
+  } else {
+    try {
+      await fetch("/api/cassandra/write", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op, collection: colName, id, data }),
+      });
+    } catch (e) {}
+  }
 }
 
 async function serverSendSignal(signal: any) {

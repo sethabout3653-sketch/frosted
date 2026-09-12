@@ -5,6 +5,7 @@ import fs from "fs";
 import multer from "multer";
 import { createServer as createHttpServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
+import { Server as SocketIOServer } from "socket.io";
 
 async function startServer() {
   const app = express();
@@ -527,6 +528,89 @@ async function startServer() {
     timestamp: number;
   }> = [];
 
+  // ==========================================
+  // Socket.IO Server Setup for Vercel/Native WebSockets Compatibility
+  // ==========================================
+  const io = new SocketIOServer(httpServer, {
+    path: "/api/socket",
+    transports: ["websocket"],
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"]
+    }
+  });
+
+  io.on("connection", (socket) => {
+    // Initial sync
+    socket.on("sync:request", () => {
+      socket.emit("sync:init", cassandraData);
+    });
+
+    // Write mutation
+    socket.on("db:write", (msg: { op: string; collection: string; id: string; data: any }) => {
+      try {
+        const { op, collection: col, id, data } = msg;
+        if (!col || !id) return;
+
+        if (!cassandraData[col]) {
+          cassandraData[col] = {};
+        }
+
+        if (op === "delete") {
+          delete cassandraData[col][id];
+        } else if (op === "update") {
+          cassandraData[col][id] = {
+            ...(cassandraData[col][id] || {}),
+            ...data,
+            id,
+          };
+        } else {
+          cassandraData[col][id] = { ...data, id };
+        }
+
+        saveCassandraStore();
+
+        const changeRecord = {
+          timestamp: Date.now(),
+          collection: col,
+          id,
+          op: op || "set",
+          data,
+        };
+
+        cassandraChangeHistory.push(changeRecord);
+        if (cassandraChangeHistory.length > 1000) {
+          cassandraChangeHistory = cassandraChangeHistory.slice(-1000);
+        }
+
+        // Broadcast mutation to other users via socket
+        socket.broadcast.emit("db:mutation", { collection: col, op: op || "set", id, data });
+
+        // Broadcast to SSE clients too
+        const payload = JSON.stringify({
+          type: "change",
+          op,
+          collection: col,
+          id,
+          data,
+          timestamp: Date.now(),
+        });
+        sseClients.forEach((client) => {
+          try {
+            client.write(`data: ${payload}\n\n`);
+            (client as any).flush?.();
+          } catch (e) {
+            sseClients.delete(client);
+          }
+        });
+      } catch (e) {}
+    });
+
+    socket.on("presence:register", (profile) => {
+      socket.broadcast.emit("presence:update", profile);
+    });
+  });
+
   const broadcastCassandraChange = (
     op: string,
     collection: string,
@@ -541,6 +625,10 @@ async function startServer() {
       data,
       timestamp: Date.now(),
     });
+
+    try {
+      io.emit("db:mutation", { collection, op, id, data });
+    } catch (e) {}
 
     sseClients.forEach((client) => {
       try {
@@ -572,8 +660,25 @@ async function startServer() {
   // ==========================================
   // Vercel Native WebSockets Engine (SAVS Live Relay)
   // ==========================================
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({ noServer: true });
   const wsClients = new Map<WebSocket, { uid?: string; channelId?: string }>();
+
+  httpServer.on("upgrade", (request, socket, head) => {
+    try {
+      const urlObj = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+      const pathname = urlObj.pathname;
+      if (!pathname.startsWith("/api/socket")) {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit("connection", ws, request);
+        });
+      }
+    } catch (err) {
+      // url parse error, default fallback
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    }
+  });
 
   wss.on("connection", (ws) => {
     wsClients.set(ws, {});
