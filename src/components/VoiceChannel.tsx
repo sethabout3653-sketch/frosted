@@ -2582,7 +2582,7 @@ export default function VoiceChannel({
                 <video
                   ref={(el) => {
                     remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
-                    const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                    const stream = remoteCameraStreamsRef.current[activeRemoteWithVideo.uid] || remoteStreamsRef.current[activeRemoteWithVideo.uid];
                     if (el && stream && el.srcObject !== stream) {
                       el.srcObject = stream;
                       el.play().catch(() => {});
@@ -2639,7 +2639,7 @@ export default function VoiceChannel({
                   </div>
                 )}
               </>
-            ) : (
+            ) : isVideoOn ? (
               <>
                 <video
                   ref={(el) => {
@@ -2671,7 +2671,7 @@ export default function VoiceChannel({
                   <Maximize2 size={12} />
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         ) : (
           <div className="p-3 bg-[#111214] flex items-center justify-center gap-2.5">
@@ -2914,6 +2914,7 @@ export default function VoiceChannel({
                 </div>
               )}
 
+              {/* Video Element */}
               {isVideoOn ? (
                 <div className="relative w-full h-full">
                   <video
@@ -2929,7 +2930,6 @@ export default function VoiceChannel({
                     muted
                     className="w-full h-full object-cover transform -scale-x-100"
                   />
-
                   {isCameraLoading && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200">
                       <img
@@ -2939,14 +2939,6 @@ export default function VoiceChannel({
                       />
                     </div>
                   )}
-                </div>
-              ) : isCameraLoading ? (
-                <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
-                  <img
-                    src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                    alt="Loading camera"
-                    className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
-                  />
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-2">
@@ -3105,14 +3097,6 @@ export default function VoiceChannel({
                       />
                     </div>
                   )}
-                </div>
-              ) : p.isVideoLoading ? (
-                <div className="relative w-full h-full bg-[#30343b] flex items-center justify-center animate-in fade-in duration-200">
-                  <img
-                    src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
-                    alt="Loading camera"
-                    className={`${compact ? "w-8 h-8" : "w-12 h-12"} object-contain`}
-                  />
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-2">
