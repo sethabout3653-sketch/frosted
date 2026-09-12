@@ -609,7 +609,7 @@ async function startServer() {
       }
 
       const sigObj = {
-        id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
+        id: req.body?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid,
         targetUid,
         type,

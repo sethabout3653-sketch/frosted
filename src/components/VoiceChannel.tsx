@@ -74,7 +74,7 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun.nextcloud.com:443" },
   ],
   iceCandidatePoolSize: 10,
-  bundlePolicy: "max-bundle",
+  bundlePolicy: "balanced",
   rtcpMuxPolicy: "require",
 };
 
@@ -886,14 +886,18 @@ export default function VoiceChannel({
   const sendSignal = useCallback(
     async (
       targetUid: string,
-      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped" | "camera_started" | "camera_stopped" | "user_joined",
+      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped" | "camera_started" | "camera_stopped" | "camera_loading" | "user_joined" | "user_joined_ack",
       data: string
     ) => {
       const payload = {
+        id: type === "candidate"
+          ? ("sig_cand_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8))
+          : ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid: profile.uid,
         targetUid,
         type,
         sdp: data,
+        candidate: type === "candidate" ? data : undefined,
         timestamp: Date.now(),
       };
       // 1. Instant delivery via Supabase Realtime Broadcast & DB fallback
@@ -1234,12 +1238,15 @@ export default function VoiceChannel({
 
   const handleSignal = useCallback(
     async (signal: VoiceSignal, micStream: MediaStream) => {
-      const sigKey = signal.id || `${signal.uid}_${signal.type}_${signal.timestamp || ""}_${(signal.sdp || "").slice(0, 30)}`;
+      const sigKey = signal.type === "candidate"
+        ? `${signal.uid}_cand_${(signal.sdp || (signal as any).candidate || "").slice(0, 80)}_${signal.id || ""}`
+        : (signal.id || `${signal.uid}_${signal.type}_${signal.timestamp || ""}`);
+
       if (processedSignalsRef.current.has(sigKey)) {
         return;
       }
       processedSignalsRef.current.add(sigKey);
-      if (processedSignalsRef.current.size > 300) {
+      if (processedSignalsRef.current.size > 500) {
         const first = processedSignalsRef.current.values().next().value;
         if (first) processedSignalsRef.current.delete(first);
       }
@@ -1303,17 +1310,25 @@ export default function VoiceChannel({
             }
           }
         } else if (signal.type === "candidate") {
-          const candidateData = JSON.parse(signal.sdp);
-          const pc = peersRef.current[partnerUid];
-          if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== "closed") {
+          const rawCand = signal.sdp || (signal as any).candidate;
+          if (rawCand) {
+            let candidateData: any = null;
             try {
-              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+              candidateData = typeof rawCand === "string" ? JSON.parse(rawCand) : rawCand;
             } catch (e) {}
-          } else {
-            if (!iceCandidateQueuesRef.current[partnerUid]) {
-              iceCandidateQueuesRef.current[partnerUid] = [];
+            if (candidateData) {
+              const pc = peersRef.current[partnerUid];
+              if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== "closed") {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+                } catch (e) {}
+              } else {
+                if (!iceCandidateQueuesRef.current[partnerUid]) {
+                  iceCandidateQueuesRef.current[partnerUid] = [];
+                }
+                iceCandidateQueuesRef.current[partnerUid].push(candidateData);
+              }
             }
-            iceCandidateQueuesRef.current[partnerUid].push(candidateData);
           }
         } else if (signal.type === "screenshare_started") {
           let signalData: any = {};
@@ -1340,6 +1355,11 @@ export default function VoiceChannel({
           if (remoteScreenVideoRefs.current[partnerUid]) {
             remoteScreenVideoRefs.current[partnerUid]!.srcObject = null;
           }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_loading") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoLoading: true, isVideoOn: false } : p))
+          );
           setTrackTrigger((v) => v + 1);
         } else if (signal.type === "camera_started") {
           setParticipants((prev) =>
@@ -1371,11 +1391,24 @@ export default function VoiceChannel({
           }
           setTrackTrigger((v) => v + 1);
         } else if (signal.type === "user_joined") {
+          // Immediately send ACK so the new joiner knows this client is active in the channel
+          sendSignal(partnerUid, "user_joined_ack", "");
           const pc = peersRef.current[partnerUid];
           const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
           if (isDead && localStreamRef.current) {
             lastCallAttemptRef.current[partnerUid] = Date.now();
             initiateCall(partnerUid, localStreamRef.current);
+          } else if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+        } else if ((signal.type as any) === "user_joined_ack") {
+          const pc = peersRef.current[partnerUid];
+          const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
+          if (isDead && localStreamRef.current) {
+            lastCallAttemptRef.current[partnerUid] = Date.now();
+            initiateCall(partnerUid, localStreamRef.current);
+          } else if (pc) {
+            syncPeerTracks(partnerUid, pc);
           }
         }
       } catch (err: any) {
@@ -1510,7 +1543,7 @@ export default function VoiceChannel({
                   channelId: existing?.channelId || "general",
                   isMuted: pData.isMuted !== undefined ? pData.isMuted : existing?.isMuted ?? false,
                   isVideoOn: pData.isVideoOn !== undefined ? pData.isVideoOn : existing?.isVideoOn ?? false,
-                  isVideoLoading: existing?.isVideoLoading ?? false,
+                  isVideoLoading: pData.isVideoLoading !== undefined ? pData.isVideoLoading : existing?.isVideoLoading ?? false,
                   isScreenSharing: pData.isScreenSharing !== undefined ? pData.isScreenSharing : existing?.isScreenSharing ?? false,
                   isScreenAudioOn: pData.isScreenAudioOn !== undefined ? pData.isScreenAudioOn : existing?.isScreenAudioOn ?? false,
                   timestamp: Math.max(ts, existing?.timestamp || 0),
@@ -1537,14 +1570,23 @@ export default function VoiceChannel({
               const failCount = callFailCountRef.current[u.uid] || 0;
               const backoffTime = failCount > 3 ? 5000 : 800;
 
+              const isStalled = pc && (pc.connectionState === "new" || pc.connectionState === "connecting") && (now - lastAttempt > 8000);
+              const isDisconnected = pc && (pc.connectionState === "disconnected" || pc.iceConnectionState === "disconnected") && (now - lastAttempt > 5000);
+              if (isStalled || isDisconnected) {
+                try { pc.close(); } catch (e) {}
+                delete peersRef.current[u.uid];
+              }
+
               const shouldInitiate =
                 lastAttempt === 0 ||
                 (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
                 (profile.uid > u.uid && now - lastAttempt > (backoffTime + 600));
 
-              if (shouldInitiate && isDead && localStreamRef.current) {
+              if (shouldInitiate && (isDead || isStalled || isDisconnected) && localStreamRef.current) {
                 lastCallAttemptRef.current[u.uid] = now;
                 initiateCall(u.uid, localStreamRef.current);
+              } else if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+                syncPeerTracks(u.uid, pc);
               }
             }
           });
@@ -1639,11 +1681,11 @@ export default function VoiceChannel({
         unsubscribeBroadcast = subscribeBroadcastSignals(profile.uid, async (signalData: any) => {
           if (!isMountedRef.current || !localStreamRef.current) return;
           const signal: VoiceSignal = {
-            id: `broadcast_${signalData.uid}_${signalData.type}_${signalData.timestamp || Date.now()}`,
+            id: signalData.id || `sig_${signalData.uid}_${signalData.type}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             uid: signalData.uid,
             targetUid: signalData.targetUid,
             type: signalData.type,
-            sdp: signalData.sdp || "",
+            sdp: signalData.sdp || signalData.candidate || "",
             timestamp: signalData.timestamp || Date.now(),
           };
           await handleSignal(signal, localStreamRef.current);
@@ -1830,6 +1872,19 @@ export default function VoiceChannel({
       if (nextVideoState) {
         setIsCameraLoading(true);
 
+        // Broadcast camera loading immediately to all peers so they see the loading animation
+        sendSignal("all", "camera_loading", "");
+        updateDoc(doc(db, "voice_users", profile.uid), {
+          isVideoLoading: true,
+          isVideoOn: false,
+          timestamp: Date.now(),
+        }).catch(() => {});
+        updateDoc(doc(db, "presence", profile.uid), {
+          isVideoLoading: true,
+          isVideoOn: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
+
         // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -1966,7 +2021,12 @@ export default function VoiceChannel({
         videoStreamRef.current.getTracks().forEach((t) => t.stop());
         videoStreamRef.current = null;
       }
+      sendSignal("all", "camera_stopped", "");
       await updateDoc(doc(db, "voice_users", profile.uid), {
+        isVideoOn: false,
+        isVideoLoading: false,
+      }).catch(() => {});
+      await updateDoc(doc(db, "presence", profile.uid), {
         isVideoOn: false,
         isVideoLoading: false,
       }).catch(() => {});

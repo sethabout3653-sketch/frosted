@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   db,
-  supabase,
   collection,
   query,
   orderBy,
@@ -499,9 +498,6 @@ export default function ChatPanel({
     });
     try {
       await deleteDoc(doc(db, "messages", msgId));
-      if (supabase && supabase.from) {
-        await supabase.from("messages").delete().eq("id", msgId);
-      }
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `messages/${msgId}`);
     }

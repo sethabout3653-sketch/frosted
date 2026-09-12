@@ -1,53 +1,6 @@
-import { createClient, RealtimeChannel } from "@supabase/supabase-js";
-
-const supabaseUrl = "https://jtocgfqurrlyyvhfmfsc.supabase.co";
-const supabaseAnonKey = "sb_publishable_o5pFWa88vKImudzqdbVWkw_AyBOzXOj";
-
-// Monkeypatch RealtimeChannel.prototype.send to explicitly use non-deprecated httpSend()
-// for REST delivery whenever WebSockets are not connected. This prevents the deprecation warning:
-// "Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery."
-if (RealtimeChannel && RealtimeChannel.prototype) {
-  const origSend = RealtimeChannel.prototype.send;
-  RealtimeChannel.prototype.send = async function (args: any, opts: any = {}) {
-    if (
-      args &&
-      args.type === "broadcast" &&
-      typeof (this as any).httpSend === "function" &&
-      (!this.channelAdapter || !this.channelAdapter.canPush())
-    ) {
-      try {
-        const res = await (this as any).httpSend(args.event, args.payload, opts);
-        return res?.success ? "ok" : "error";
-      } catch (e) {
-        return "error";
-      }
-    }
-    return origSend.call(this, args, opts);
-  };
-}
-
-// Suppress any remaining console warnings regarding Realtime send() fallback deprecation
-if (typeof window !== "undefined") {
-  const origConsoleWarn = console.warn;
-  console.warn = function (...args: any[]) {
-    if (
-      typeof args[0] === "string" &&
-      args[0].includes("Realtime send() is automatically falling back to REST API")
-    ) {
-      return;
-    }
-    origConsoleWarn.apply(console, args);
-  };
-}
-
-// Vercel-optimized client with pure HTTP REST (Zero WebSockets)
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-  },
-});
-export const db = supabase;
+// Custom Real-Time Database Client Adapter
+// 100% Self-Contained, Zero External Database Dependencies (No Supabase, No Firebase)
+// Powered by Server-Sent Events (SSE), Local Multi-Tab Broadcast, and Disk-Backed In-Memory Store
 
 export const cassandra = {
   storage: {
@@ -55,7 +8,6 @@ export const cassandra = {
       file: File,
       onProgress?: (p: number) => void
     ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-      // 1. First attempt uploading to server Express endpoint (/api/upload)
       try {
         const formData = new FormData();
         formData.append("file", file);
@@ -100,7 +52,6 @@ export const cassandra = {
             finalUrl = `${finalUrl}${sep}name=${encodeURIComponent(origName)}&type=${encodeURIComponent(origType)}&size=${origSize}`;
           }
           return {
-            ...serverRes,
             url: finalUrl,
             filename: origName,
             mimetype: origType,
@@ -108,34 +59,33 @@ export const cassandra = {
           };
         }
       } catch (err) {
-        console.warn("Server upload endpoint unavailable, falling back to Data URL:", err);
+        console.warn("Server upload failed, falling back to local object URL:", err);
       }
 
-      // 2. Standalone fallback: Encode file as Base64 Data URL
-      return new Promise((resolve, reject) => {
+      // Safe local blob fallback
+      return new Promise((resolve) => {
         const reader = new FileReader();
-
-        reader.onprogress = (e) => {
-          if (e.lengthComputable && onProgress) {
-            onProgress((e.loaded / e.total) * 100);
-          }
-        };
-
         reader.onload = () => {
-          const dataUrl = reader.result as string;
           resolve({
-            url: dataUrl,
+            url: reader.result as string,
             filename: file.name,
             mimetype: file.type || "application/octet-stream",
             size: file.size,
           });
         };
-
-        reader.onerror = () => reject(new Error("Failed to read file as Data URL"));
+        reader.onerror = () => {
+          const blobUrl = URL.createObjectURL(file);
+          resolve({
+            url: blobUrl,
+            filename: file.name,
+            mimetype: file.type || "application/octet-stream",
+            size: file.size,
+          });
+        };
         reader.readAsDataURL(file);
       });
-    }
-  }
+    },
+  },
 };
 
 export function collection(dbInstance: any, name: string) {
@@ -166,73 +116,6 @@ function getPk(colName: string) {
   return (colName === "presence" || colName === "voice_users") ? "uid" : "id";
 }
 
-// ---------------------------------------------------------
-// Strict PostgreSQL Schema Sanitization to eliminate PGRST204 errors
-// ---------------------------------------------------------
-
-const TABLE_COLUMNS: Record<string, Set<string>> = {
-  messages: new Set([
-    "id",
-    "channelId",
-    "uid",
-    "username",
-    "photoURL",
-    "text",
-    "gif",
-    "attachment",
-    "attachmentType",
-    "attachmentName",
-    "attachmentSize",
-    "timestamp",
-    "edited",
-  ]),
-  voice_users: new Set([
-    "uid",
-    "channelId",
-    "username",
-    "photoURL",
-    "isMuted",
-    "isVideoOn",
-    "isVideoLoading",
-    "isScreenSharing",
-    "isScreenAudioOn",
-    "timestamp",
-  ]),
-  presence: new Set([
-    "uid",
-    "username",
-    "photoURL",
-    "status",
-    "lastSeen",
-    "isMuted",
-    "inVoice",
-    "isScreenSharing",
-    "isVideoOn",
-    "isVideoLoading",
-    "isScreenAudioOn",
-    "timestamp",
-  ]),
-  typing: new Set([
-    "id",
-    "uid",
-    "username",
-    "channelId",
-    "timestamp",
-  ]),
-  signals: new Set([
-    "id",
-    "channelId",
-    "uid",
-    "targetUid",
-    "type",
-    "sdp",
-    "candidate",
-    "sdpMid",
-    "sdpMLineIndex",
-    "timestamp",
-  ]),
-};
-
 export function toTimestampMs(val: any): number {
   if (!val) return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -250,51 +133,14 @@ export function toTimestampMs(val: any): number {
 export function compareMessagesChronological(a: any, b: any): number {
   const timeA = toTimestampMs(a?.timestamp);
   const timeB = toTimestampMs(b?.timestamp);
-  if (timeA !== timeB) return timeA - timeB; // Oldest first, newest last
+  if (timeA !== timeB) return timeA - timeB;
   const idA = String(a?.id || a?.uid || "");
   const idB = String(b?.id || b?.uid || "");
   return idA.localeCompare(idB);
 }
 
-function sanitizeForSupabase(colName: string, payload: any): Record<string, any> {
-  if (!payload || typeof payload !== "object") return payload;
-  const allowed = TABLE_COLUMNS[colName];
-  const cleaned: Record<string, any> = {};
-
-  // Normalize channel -> channelId if table expects channelId
-  if (allowed && allowed.has("channelId") && !("channelId" in payload) && "channel" in payload) {
-    cleaned["channelId"] = payload.channel;
-  }
-
-  // Voice users screen sharing bridge (persisted safely into existing channelId column)
-  if (colName === "voice_users") {
-    if (payload.isScreenSharing === true) {
-      cleaned["channelId"] = payload.isScreenAudioOn ? "screenshare:audio" : "screenshare";
-    } else if (payload.isScreenSharing === false && !cleaned["channelId"]) {
-      cleaned["channelId"] = "general";
-    }
-  }
-
-  for (const key of Object.keys(payload)) {
-    if (key.startsWith("_")) continue; // Skip internal flags like _isOptimistic
-    if (allowed) {
-      if (allowed.has(key)) {
-        let val = payload[key];
-        if (key === "timestamp" || key === "lastSeen") {
-          val = toTimestampMs(val);
-        }
-        cleaned[key] = val;
-      }
-    } else {
-      cleaned[key] = payload[key];
-    }
-  }
-  return cleaned;
-}
-
 // ---------------------------------------------------------
-// Ultra-Low Latency In-Memory State & Vercel-Ready Power Sync Engine
-// (Native Web BroadcastChannel + Adaptive HTTP Micro-Polling, ZERO WebSockets)
+// Custom Real-Time In-Memory & Local Cache Store
 // ---------------------------------------------------------
 
 const inMemoryStore = new Map<string, Map<string, any>>();
@@ -342,7 +188,6 @@ function applyQuery(colName: string, constraints: any[] = []): { docs: any[]; em
       items.sort((a, b) => {
         const valA = a?.[c.field];
         const valB = b?.[c.field];
-        // Always sort timestamps numerically with deterministic secondary tie-breaker!
         if (c.field === "timestamp" || c.field === "lastSeen" || typeof valA === "number" || typeof valB === "number") {
           const numA = toTimestampMs(valA);
           const numB = toTimestampMs(valB);
@@ -394,11 +239,11 @@ function notifyListeners(colName: string) {
 }
 
 // ---------------------------------------------------------
-// Native Cross-Tab Web BroadcastChannel & Server SSE Bridge (Zero-delay multi-user sync)
+// Native Cross-Tab Web BroadcastChannel & Server SSE Bridge
 // ---------------------------------------------------------
 const broadcastBus: BroadcastChannel | null =
   typeof window !== "undefined" && typeof window.BroadcastChannel !== "undefined"
-    ? new BroadcastChannel("frosted_power_sync_bus")
+    ? new BroadcastChannel("frosted_realtime_db_bus")
     : null;
 
 const signalListeners = new Set<(signal: any) => void>();
@@ -484,7 +329,7 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// Vercel & Serverless Compatible REST + SSE Engine (Zero WebSockets)
+// Server-Sent Events (SSE) Real-Time Subscription
 // ---------------------------------------------------------
 
 let serverSSE: EventSource | null = null;
@@ -509,12 +354,13 @@ function initServerSSE() {
             Object.entries(msg.data).forEach(([col, docs]: [string, any]) => {
               if (docs && typeof docs === "object") {
                 const map = getColMap(col);
-                if (map.size === 0) {
-                  Object.entries(docs).forEach(([dId, dVal]) => {
-                    map.set(dId, dVal);
-                  });
-                  notifyListeners(col);
-                }
+                Object.entries(docs).forEach(([dId, dVal]) => {
+                  if (dVal && typeof dVal === "object") {
+                    const existing = map.get(dId);
+                    map.set(dId, { ...existing, ...dVal });
+                  }
+                });
+                notifyListeners(col);
               }
             });
           }
@@ -536,7 +382,6 @@ function broadcastMutation(
   data: any,
   id?: string
 ) {
-  // Cross-tab local broadcast (0ms instant sync across browser tabs)
   if (broadcastBus) {
     try {
       broadcastBus.postMessage({
@@ -574,9 +419,8 @@ async function serverSendSignal(signal: any) {
   } catch (e) {}
 }
 
-let voiceSignalsChannel: any = null;
-
 export function sendBroadcastSignal(payload: {
+  id?: string;
   uid: string;
   targetUid: string;
   type: string;
@@ -586,7 +430,7 @@ export function sendBroadcastSignal(payload: {
 }) {
   const fullSignal = {
     ...payload,
-    id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
+    id: payload.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
   };
 
   // 1. Instant local cross-tab broadcast (0ms)
@@ -599,7 +443,7 @@ export function sendBroadcastSignal(payload: {
     } catch (e) {}
   }
 
-  // 2. HTTP REST server push (Vercel serverless compatible)
+  // 2. HTTP REST server push to our own backend
   serverSendSignal(fullSignal);
 }
 
@@ -609,10 +453,19 @@ export function subscribeBroadcastSignals(
 ) {
   const handledForThisListener = new Set<string>();
 
+  const getSigKey = (p: any): string => {
+    if (!p) return "";
+    if (p.type === "candidate") {
+      return `${p.uid}_cand_${p.candidate || p.sdp || ""}_${p.id || ""}`;
+    }
+    return p.id || `${p.uid}_${p.type}_${p.timestamp || ""}`;
+  };
+
   const handler = (payload: any) => {
     if (payload && (payload.targetUid === myUid || payload.targetUid === "all")) {
-      if (payload.uid !== myUid && !handledForThisListener.has(payload.id)) {
-        handledForThisListener.add(payload.id);
+      const key = getSigKey(payload);
+      if (payload.uid !== myUid && key && !handledForThisListener.has(key)) {
+        handledForThisListener.add(key);
         if (handledForThisListener.size > 1000) {
           const first = handledForThisListener.values().next().value;
           if (first) handledForThisListener.delete(first);
@@ -625,7 +478,7 @@ export function subscribeBroadcastSignals(
   };
   signalListeners.add(handler);
 
-  // Ultra-fast HTTP signal poller (300ms interval) to receive signals instantly across all devices
+  // Fast HTTP signal poller to receive signals across isolated devices
   let isPolling = false;
   let lastPollTs = Date.now() - 10000;
 
@@ -633,7 +486,6 @@ export function subscribeBroadcastSignals(
     if (isPolling) return;
     isPolling = true;
     try {
-      // 1. Poll dedicated server signals with 5-second overlap window to prevent dropped signals
       const sinceParam = Math.max(0, lastPollTs - 5000);
       const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}&since=${sinceParam}`).catch(() => null);
       if (res && res.ok) {
@@ -641,8 +493,9 @@ export function subscribeBroadcastSignals(
         if (json && Array.isArray(json.signals)) {
           lastPollTs = json.timestamp || Date.now();
           json.signals.forEach((sig: any) => {
-            if (sig && sig.uid !== myUid && !handledForThisListener.has(sig.id)) {
-              handledForThisListener.add(sig.id);
+            const key = getSigKey(sig);
+            if (sig && sig.uid !== myUid && key && !handledForThisListener.has(key)) {
+              handledForThisListener.add(key);
               if (handledForThisListener.size > 1000) {
                 const first = handledForThisListener.values().next().value;
                 if (first) handledForThisListener.delete(first);
@@ -654,36 +507,6 @@ export function subscribeBroadcastSignals(
           });
         }
       }
-
-      // 2. Poll Supabase database fallback
-      const now = Date.now();
-      const { data, error } = await supabase
-        .from("signals")
-        .select("*")
-        .or(`targetUid.eq.${myUid},targetUid.eq.all`)
-        .gt("timestamp", now - 20000)
-        .limit(30);
-
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const handledIds: string[] = [];
-        for (const sig of data) {
-          if (!sig || sig.uid === myUid) continue;
-          if (!handledForThisListener.has(sig.id)) {
-            handledForThisListener.add(sig.id);
-            if (handledForThisListener.size > 1000) {
-              const first = handledForThisListener.values().next().value;
-              if (first) handledForThisListener.delete(first);
-            }
-            handledIds.push(sig.id);
-            try {
-              onSignal(sig);
-            } catch (e) {}
-          }
-        }
-        if (handledIds.length > 0) {
-          supabase.from("signals").delete().in("id", handledIds).then(undefined, () => {});
-        }
-      }
     } catch (e) {
     } finally {
       isPolling = false;
@@ -691,7 +514,6 @@ export function subscribeBroadcastSignals(
   };
 
   const timer = setInterval(pollRemoteSignals, 300);
-  // Also poll immediately on mount
   pollRemoteSignals();
 
   return () => {
@@ -701,66 +523,8 @@ export function subscribeBroadcastSignals(
 }
 
 // ---------------------------------------------------------
-// Fast DB Operations with optimistic local state & background REST sync
+// Fast DB Operations on Custom In-Memory + Disk Engine
 // ---------------------------------------------------------
-
-const isNetworkOrTimeoutError = (err: any): boolean => {
-  if (!err) return false;
-  const msg = (err.message || err.details || String(err)).toLowerCase();
-  return (
-    msg.includes("timeout") ||
-    msg.includes("upstream request timeout") ||
-    msg.includes("failed to fetch") ||
-    msg.includes("networkerror") ||
-    msg.includes("network request failed") ||
-    msg.includes("load failed") ||
-    msg.includes("offline")
-  );
-};
-
-// Asynchronous background insert without blocking UI
-async function backgroundInsert(colName: string, payload: any) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  try {
-    const { error } = await supabase.from(colName).insert(cleanPayload);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
-}
-
-// Asynchronous background upsert without blocking UI
-async function backgroundUpsert(colName: string, payload: any, pk: string) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  try {
-    const { error } = await supabase.from(colName).upsert(cleanPayload, { onConflict: pk });
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
-}
-
-// Asynchronous background update without blocking UI
-async function backgroundUpdate(colName: string, payload: any, pk: string, id: string) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  if (Object.keys(cleanPayload).length === 0) return;
-  try {
-    const { error } = await supabase.from(colName).update(cleanPayload).eq(pk, id);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
-}
-
-// Asynchronous background delete without blocking UI
-async function backgroundDelete(colName: string, pk: string, id: string) {
-  try {
-    const { error } = await supabase.from(colName).delete().eq(pk, id);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
-}
 
 export async function setDoc(
   docRef: { colName: string; id: string },
@@ -769,9 +533,6 @@ export async function setDoc(
 ) {
   const pk = getPk(docRef.colName);
   const payload = { [pk]: docRef.id, ...data };
-  if (pk !== "id" && "id" in payload) {
-    delete payload.id;
-  }
   if (payload.timestamp) {
     payload.timestamp = toTimestampMs(payload.timestamp);
   }
@@ -785,11 +546,8 @@ export async function setDoc(
   // 2. Native Web BroadcastChannel (instant multi-tab sync)
   broadcastMutation(docRef.colName, "upsert", payload, docRef.id);
 
-  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  // 3. Server write and SSE broadcast to all users
   serverWrite("set", docRef.colName, docRef.id, payload);
-
-  // 4. Non-blocking background database persist via HTTP REST
-  backgroundUpsert(docRef.colName, payload, pk);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
@@ -808,16 +566,11 @@ export async function updateDoc(docRef: { colName: string; id: string }, data: a
   // 2. Instant multi-tab broadcast
   broadcastMutation(docRef.colName, "update", payload, docRef.id);
 
-  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  // 3. Server write and SSE broadcast to all users
   serverWrite("update", docRef.colName, docRef.id, payload);
-
-  // 4. Non-blocking background database persist via HTTP REST
-  backgroundUpdate(docRef.colName, payload, pk, docRef.id);
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  const pk = getPk(docRef.colName);
-
   // 1. Instant optimistic in-memory delete (0ms)
   const colMap = getColMap(docRef.colName);
   colMap.delete(docRef.id);
@@ -826,11 +579,8 @@ export async function deleteDoc(docRef: { colName: string; id: string }) {
   // 2. Instant multi-tab broadcast
   broadcastMutation(docRef.colName, "delete", {}, docRef.id);
 
-  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  // 3. Server delete and SSE broadcast
   serverWrite("delete", docRef.colName, docRef.id, {});
-
-  // 4. Non-blocking background database delete via HTTP REST
-  backgroundDelete(docRef.colName, pk, docRef.id);
 }
 
 export async function addDoc(colName: string, data: any) {
@@ -849,86 +599,76 @@ export async function addDoc(colName: string, data: any) {
   // 2. Instant multi-tab broadcast
   broadcastMutation(colName, "insert", payload, id);
 
-  // 3. Instant server-side push & SSE broadcast to all users across the internet
+  // 3. Server write and SSE broadcast
   serverWrite("set", colName, id, payload);
-
-  // 4. Non-blocking background database persist via HTTP REST
-  backgroundInsert(colName, payload);
 
   return { colName, id };
 }
 
-// Safe fast REST table fetch to hydrate in-memory cache with in-flight deduplication
+// REST collection fetch to hydrate in-memory cache
 const inFlightFetches = new Map<string, Promise<any>>();
 const lastFetchTime = new Map<string, number>();
 
-async function fetchCollectionFromSupabase(colName: string): Promise<void> {
+async function fetchCollectionFromDatabase(colName: string): Promise<void> {
   const inFlight = inFlightFetches.get(colName);
   if (inFlight) return inFlight;
 
   const now = Date.now();
   const lastTime = lastFetchTime.get(colName) || 0;
-  // Debounce to at most once per 400ms
-  if (now - lastTime < 400) return;
+  if (now - lastTime < 300) return;
   lastFetchTime.set(colName, now);
 
   const fetchPromise = (async () => {
     try {
-      let req = supabase.from(colName).select("*");
-      if (colName === "messages") {
-        req = req.order("timestamp", { ascending: false }).limit(100);
-      } else if (colName === "presence" || colName === "voice_users") {
-        req = req.limit(100);
+      const colMap = getColMap(colName);
+      const pk = getPk(colName);
+      const fetchedIds = new Set<string>();
+
+      const serverRes = await fetch(`/api/cassandra/data?collection=${encodeURIComponent(colName)}`).catch(() => null);
+      if (serverRes && serverRes.ok) {
+        const serverDocs = await serverRes.json().catch(() => null);
+        if (serverDocs && typeof serverDocs === "object") {
+          Object.entries(serverDocs).forEach(([rowId, row]: [string, any]) => {
+            if (row && typeof row === "object") {
+              const actualId = row[pk] || row.id || row.uid || rowId;
+              fetchedIds.add(actualId);
+              if (row.timestamp) row.timestamp = toTimestampMs(row.timestamp);
+              if (row.lastSeen) row.lastSeen = toTimestampMs(row.lastSeen);
+              if (colName === "voice_users") {
+                const isSharing =
+                  row.isScreenSharing === true ||
+                  row.channelId === "screenshare" ||
+                  row.channelId === "screenshare:audio";
+                row.isScreenSharing = isSharing;
+                row.isScreenAudioOn =
+                  row.isScreenAudioOn === true || row.channelId === "screenshare:audio";
+              }
+              const existing = colMap.get(actualId);
+              colMap.set(actualId, { ...existing, ...row });
+            }
+          });
+        }
       }
-      const { data, error } = await req;
-      if (!error && Array.isArray(data)) {
-        const colMap = getColMap(colName);
-        const pk = getPk(colName);
-        const fetchedIds = new Set<string>();
 
-        data.forEach((row: any) => {
-          const rowId = row[pk] || row.id || row.uid;
-          if (rowId) {
-            fetchedIds.add(rowId);
-            if (row.timestamp) {
-              row.timestamp = toTimestampMs(row.timestamp);
-            }
-            if (row.lastSeen) {
-              row.lastSeen = toTimestampMs(row.lastSeen);
-            }
-            if (colName === "voice_users") {
-              const isSharing =
-                row.isScreenSharing === true ||
-                row.channelId === "screenshare" ||
-                row.channelId === "screenshare:audio";
-              row.isScreenSharing = isSharing;
-              row.isScreenAudioOn =
-                row.isScreenAudioOn === true || row.channelId === "screenshare:audio";
-            }
-            const existing = colMap.get(rowId);
-            colMap.set(rowId, { ...existing, ...row });
-          }
-        });
-
-        // Reconcile: delete any documents that were deleted from Supabase
+      // Reconcile expired transient records
+      if (fetchedIds.size > 0) {
         const curTime = Date.now();
         for (const [id, item] of colMap.entries()) {
           if (!fetchedIds.has(id)) {
-            // Retain recent optimistic items (< 8 seconds old)
-            const itemAge = curTime - (toTimestampMs(item?.timestamp) || 0);
-            if (!item?._isOptimistic || itemAge > 8000) {
+            const itemTs = toTimestampMs(item?.timestamp || item?.lastSeen) || 0;
+            const itemAge = curTime - itemTs;
+            const maxAge = (colName === "voice_users" || colName === "presence") ? 60000 : 8000;
+            if (!item?._isOptimistic && itemAge > maxAge) {
               colMap.delete(id);
             }
           }
         }
-
-        initialFetchDone.add(colName);
-        notifyListeners(colName);
-      } else if (error && error.code === "PGRST205") {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
       }
+
+      initialFetchDone.add(colName);
+      notifyListeners(colName);
     } catch (err) {
-      console.warn(`[Supabase fetch ${colName}]`, err);
+      console.warn(`[CustomDB fetch ${colName}]`, err);
     } finally {
       inFlightFetches.delete(colName);
     }
@@ -947,7 +687,7 @@ if (typeof window !== "undefined") {
       if (c) cols.add(c);
     });
     cols.forEach((col) => {
-      fetchCollectionFromSupabase(col).catch(() => {});
+      fetchCollectionFromDatabase(col).catch(() => {});
     });
   };
 
@@ -963,54 +703,11 @@ export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   const constraints = queryObj?.constraints || [];
 
-  // Await fetch if initial fetch hasn't completed so getDocs returns real database records
   if (!initialFetchDone.has(colName)) {
-    await fetchCollectionFromSupabase(colName);
+    await fetchCollectionFromDatabase(colName);
   }
 
   return applyQuery(colName, constraints);
-}
-
-const activeChannels = new Map<string, any>();
-
-function ensureRealtimeSubscription(colName: string) {
-  if (typeof window === "undefined") return;
-  if (activeChannels.has(colName)) return;
-
-  const channel = supabase
-    .channel(`public:${colName}`)
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: colName },
-      (payload) => {
-        const pk = getPk(colName);
-        const colMap = getColMap(colName);
-        
-        if (payload.eventType === "DELETE") {
-          const oldRecord = payload.old;
-          const id = oldRecord[pk] || oldRecord.id || oldRecord.uid;
-          if (id) {
-            colMap.delete(id);
-          }
-        } else {
-          // INSERT or UPDATE
-          const newRecord = payload.new;
-          const id = newRecord[pk] || newRecord.id || newRecord.uid;
-          if (id) {
-            // Restore timestamp formats if necessary
-            if (newRecord.timestamp) newRecord.timestamp = toTimestampMs(newRecord.timestamp);
-            if (newRecord.lastSeen) newRecord.lastSeen = toTimestampMs(newRecord.lastSeen);
-            
-            const existing = colMap.get(id);
-            colMap.set(id, { ...existing, ...newRecord });
-          }
-        }
-        notifyListeners(colName);
-      }
-    )
-    .subscribe();
-
-  activeChannels.set(colName, channel);
 }
 
 export function onSnapshot(
@@ -1030,24 +727,20 @@ export function onSnapshot(
   const snap = applyQuery(colName, constraints);
   onNext(snap);
 
-  // 3. Initial fetch from database to seed data
-  fetchCollectionFromSupabase(colName)
+  // 3. Initial fetch from custom database to seed data
+  fetchCollectionFromDatabase(colName)
     .then(() => {
       const updatedSnap = applyQuery(colName, constraints);
       onNext(updatedSnap);
     })
     .catch(() => {});
 
-  // 4. Start true WebSockets native realtime sync
-  ensureRealtimeSubscription(colName);
-
-  // 5. Adaptive HTTP micro-poller (1.2s when tab focused, 3.5s when backgrounded)
-  // This acts as a bulletproof fallback for Supabase projects that haven't manually enabled Realtime in their dashboard.
-  const getPollInterval = () => (document.hidden ? 3500 : 1200);
+  // 4. Background heartbeat poll (1.5s focused, 4s hidden) as backup for SSE
+  const getPollInterval = () => (document.hidden ? 4000 : 1500);
   let timer: any = null;
   const scheduleNextPoll = () => {
     timer = setTimeout(async () => {
-      await fetchCollectionFromSupabase(colName).catch(() => {});
+      await fetchCollectionFromDatabase(colName).catch(() => {});
       if (activeListeners.has(listener)) {
         scheduleNextPoll();
       }
@@ -1058,27 +751,11 @@ export function onSnapshot(
   return () => {
     if (timer) clearTimeout(timer);
     activeListeners.delete(listener);
-    
-    // Cleanup channel if no one is listening to this table anymore
-    let hasOthers = false;
-    activeListeners.forEach(l => {
-      const lCol = typeof l.queryObj === "string" ? l.queryObj : l.queryObj.colName;
-      if (lCol === colName) hasOthers = true;
-    });
-    if (!hasOthers) {
-      const channel = activeChannels.get(colName);
-      if (channel) {
-        supabase.removeChannel(channel);
-        activeChannels.delete(colName);
-      }
-    }
   };
 }
 
 export function handleFirestoreError(error: any, op: string, path: string) {
-  if (!isNetworkOrTimeoutError(error)) {
-    console.warn(`[Supabase] Operation ${op} on ${path}:`, error);
-  }
+  console.warn(`[CustomDB] Operation ${op} on ${path}:`, error);
 }
 
 export enum OperationType {
@@ -1109,3 +786,24 @@ export function writeBatch() {
     },
   };
 }
+
+// Compatibility layer for any components expecting db or supabase
+export const db: any = {
+  name: "CustomRealtimeDB",
+};
+
+export const supabase: any = {
+  from: (colName: string) => ({
+    select: () => ({
+      data: Array.from(getColMap(colName).values()),
+      error: null,
+    }),
+    delete: () => ({
+      eq: (key: string, val: any) => {
+        getColMap(colName).delete(val);
+        serverWrite("delete", colName, val, {});
+        return { error: null };
+      },
+    }),
+  }),
+};
