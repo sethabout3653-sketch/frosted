@@ -13,12 +13,10 @@ import {
   X,
   PhoneOff,
   User as UserIcon,
-  Network,
 } from "lucide-react";
 import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
-import WebTransportDashboard from "./WebTransportDashboard";
 import { ChatProfile, ChatMessage } from "../types";
 import {
   collection,
@@ -63,7 +61,7 @@ export default function Chat({
     return null;
   });
 
-  const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile" | "webtransport">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "voice" | "profile">("chat");
   const [isInVoiceSession, setIsInVoiceSession] = useState(false);
   const [activeChannel, setActiveChannel] = useState<string>("general");
   const [channelSearch, setChannelSearch] = useState<string>("");
@@ -457,30 +455,6 @@ export default function Chat({
                 </div>
               </div>
 
-              {/* PROTOCOLS Section */}
-              <div>
-                <div className="flex items-center gap-1 text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
-                  <ChevronDown size={12} />
-                  <span>PROTOCOLS</span>
-                </div>
-                <div className="space-y-0.5 mt-0.5">
-                  <button
-                    onClick={() => {
-                      setActiveTab("webtransport");
-                    }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                      activeTab === "webtransport"
-                        ? "bg-neutral-800/90 text-white"
-                        : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
-                    }`}
-                    title="WebTransport (HTTP/3 QUIC) Diagnostics"
-                  >
-                    <Network size={14} className={activeTab === "webtransport" ? "text-indigo-400 animate-pulse" : "text-neutral-400"} />
-                    <span>WebTransport (H3)</span>
-                  </button>
-                </div>
-              </div>
-
               {/* VOICE Section */}
               <div>
                 <div className="flex items-center gap-1 text-[10px] font-bold text-neutral-500 tracking-wider uppercase px-2.5 py-1.5">
@@ -633,23 +607,16 @@ export default function Chat({
 
           {/* Column 3 & 4: Main Chat view */}
           <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-black relative">
-            {activeTab === "chat" ? (
-              <ChatPanel
-                profile={profile}
-                activeChannel={activeChannel}
-                onSelectVoice={() => {
-                  setActiveTab("voice");
-                  setIsInVoiceSession(true);
-                }}
-                showMembersSidebar={showMembersSidebar}
-                setShowMembersSidebar={setShowMembersSidebar}
-              />
-            ) : activeTab === "webtransport" ? (
-              <WebTransportDashboard
-                profile={profile}
-                onBack={() => setActiveTab("chat")}
-              />
-            ) : null}
+            <ChatPanel
+              profile={profile}
+              activeChannel={activeChannel}
+              onSelectVoice={() => {
+                setActiveTab("voice");
+                setIsInVoiceSession(true);
+              }}
+              showMembersSidebar={showMembersSidebar}
+              setShowMembersSidebar={setShowMembersSidebar}
+            />
           </div>
         </div>
       )}

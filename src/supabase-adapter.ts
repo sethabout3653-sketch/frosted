@@ -329,6 +329,86 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
+// WebTransport Protocol Engine & Client Integration
+// ---------------------------------------------------------
+let activeWebTransport: any = null;
+let webTransportWriter: any = null;
+
+async function initWebTransport() {
+  if (typeof window === "undefined" || !("WebTransport" in window)) {
+    console.log("[WebTransport] WebTransport constructor not found in browser. Utilizing SSE/HTTPS.");
+    return;
+  }
+
+  try {
+    const protocol = window.location.protocol === "https:" ? "https:" : "https:";
+    const host = window.location.host;
+    const url = `${protocol}//${host}/api/webtransport`;
+
+    console.log("[WebTransport] Initiating handshake at endpoint:", url);
+    const transport = new (window as any).WebTransport(url);
+    await transport.ready;
+    console.log("[WebTransport] QUIC Connection Handshake Successful!");
+    activeWebTransport = transport;
+
+    // Stream listener for incoming events
+    (async () => {
+      try {
+        const reader = transport.datagrams.readable.getReader();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const text = new TextDecoder().decode(value);
+          handleWebTransportIncomingPayload(text);
+        }
+      } catch (e) {}
+    })();
+
+    (async () => {
+      try {
+        const reader = transport.incomingUnidirectionalStreams.getReader();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          readWebTransportStream(value);
+        }
+      } catch (e) {}
+    })();
+
+    const stream = await transport.createUnidirectionalStream();
+    webTransportWriter = stream.writable.getWriter();
+  } catch (err) {
+    console.log("[WebTransport] Active QUIC tunnel blocked or unsupported on route. Reverting to Optimized SSE pipeline.", err);
+  }
+}
+
+async function readWebTransportStream(stream: any) {
+  try {
+    const reader = stream.readable.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+      handleWebTransportIncomingPayload(text);
+    }
+  } catch (e) {}
+}
+
+function handleWebTransportIncomingPayload(text: string) {
+  try {
+    const msg = JSON.parse(text);
+    if (msg.type === "change") {
+      handleIncomingDbMutation(msg.collection, msg.op, msg.data, msg.id);
+    } else if (msg.type === "webrtc_signal") {
+      handleIncomingWebRTCSignal(msg.payload);
+    }
+  } catch (e) {}
+}
+
+initWebTransport();
+
+// ---------------------------------------------------------
 // Server-Sent Events (SSE) Real-Time Subscription
 // ---------------------------------------------------------
 
@@ -400,6 +480,16 @@ function broadcastMutation(
 }
 
 async function serverWrite(op: string, colName: string, id: string, data: any) {
+  if (webTransportWriter) {
+    try {
+      const payload = JSON.stringify({ type: "change", collection: colName, op, id, data });
+      await webTransportWriter.write(new TextEncoder().encode(payload));
+      return;
+    } catch (e) {
+      console.warn("[WebTransport] Write stream failed, falling back to HTTPS POST");
+    }
+  }
+
   try {
     await fetch("/api/cassandra/write", {
       method: "POST",
@@ -410,6 +500,16 @@ async function serverWrite(op: string, colName: string, id: string, data: any) {
 }
 
 async function serverSendSignal(signal: any) {
+  if (webTransportWriter) {
+    try {
+      const payload = JSON.stringify({ type: "webrtc_signal", payload: signal });
+      await webTransportWriter.write(new TextEncoder().encode(payload));
+      return;
+    } catch (e) {
+      console.warn("[WebTransport] Signal stream failed, falling back to HTTPS POST");
+    }
+  }
+
   try {
     await fetch("/api/webrtc/signal", {
       method: "POST",

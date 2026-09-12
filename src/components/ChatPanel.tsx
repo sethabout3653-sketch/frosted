@@ -320,7 +320,7 @@ export default function ChatPanel({
             username: uname,
             photoURL: data.photoURL || "",
             status: data.status || "online",
-            lastSeen: data.lastSeen,
+            lastSeen: toTimestampMs(data.lastSeen),
             isMuted: data.isMuted || false,
             inVoice: data.inVoice || false,
           });
