@@ -723,46 +723,22 @@ const isNetworkOrTimeoutError = (err: any): boolean => {
 
 // Asynchronous background insert without blocking UI
 async function backgroundInsert(colName: string, payload: any) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  try {
-    const { error } = await supabase.from(colName).insert(cleanPayload);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
+  // Safe NO-OP: serverWrite already sends HTTP POST to /api/cassandra/write
 }
 
 // Asynchronous background upsert without blocking UI
 async function backgroundUpsert(colName: string, payload: any, pk: string) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  try {
-    const { error } = await supabase.from(colName).upsert(cleanPayload, { onConflict: pk });
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
+  // Safe NO-OP: serverWrite already sends HTTP POST to /api/cassandra/write
 }
 
 // Asynchronous background update without blocking UI
 async function backgroundUpdate(colName: string, payload: any, pk: string, id: string) {
-  const cleanPayload = sanitizeForSupabase(colName, payload);
-  if (Object.keys(cleanPayload).length === 0) return;
-  try {
-    const { error } = await supabase.from(colName).update(cleanPayload).eq(pk, id);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
+  // Safe NO-OP: serverWrite already sends HTTP POST to /api/cassandra/write
 }
 
 // Asynchronous background delete without blocking UI
 async function backgroundDelete(colName: string, pk: string, id: string) {
-  try {
-    const { error } = await supabase.from(colName).delete().eq(pk, id);
-    if (error && error.code === "PGRST205") {
-      window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
-    }
-  } catch (err) {}
+  // Safe NO-OP: serverWrite already sends HTTP POST to /api/cassandra/write
 }
 
 export async function setDoc(
@@ -877,19 +853,15 @@ async function fetchCollectionFromSupabase(colName: string): Promise<void> {
 
   const fetchPromise = (async () => {
     try {
-      let req = supabase.from(colName).select("*");
-      if (colName === "messages") {
-        req = req.order("timestamp", { ascending: false }).limit(100);
-      } else if (colName === "presence" || colName === "voice_users") {
-        req = req.limit(100);
-      }
-      const { data, error } = await req;
-      if (!error && Array.isArray(data)) {
+      const res = await fetch(`/api/cassandra/data?collection=${colName}`);
+      if (!res.ok) throw new Error("Local server data fetch failed");
+      const data = await res.json();
+      if (data && typeof data === "object") {
         const colMap = getColMap(colName);
         const pk = getPk(colName);
         const fetchedIds = new Set<string>();
 
-        data.forEach((row: any) => {
+        Object.values(data).forEach((row: any) => {
           const rowId = row[pk] || row.id || row.uid;
           if (rowId) {
             fetchedIds.add(rowId);
@@ -913,7 +885,7 @@ async function fetchCollectionFromSupabase(colName: string): Promise<void> {
           }
         });
 
-        // Reconcile: delete any documents that were deleted from Supabase
+        // Reconcile: delete any documents that were deleted from server
         const curTime = Date.now();
         for (const [id, item] of colMap.entries()) {
           if (!fetchedIds.has(id)) {
@@ -927,11 +899,14 @@ async function fetchCollectionFromSupabase(colName: string): Promise<void> {
 
         initialFetchDone.add(colName);
         notifyListeners(colName);
-      } else if (error && error.code === "PGRST205") {
-        window.dispatchEvent(new CustomEvent("supabase_missing_table", { detail: colName }));
       }
-    } catch (err) {
-      console.warn(`[Supabase fetch ${colName}]`, err);
+    } catch (err: any) {
+      // Quietly handle transient network/fetch errors during server restarts to keep the console clean
+      if (err && (err.name === "TypeError" || err.message?.includes("fetch") || err.message?.includes("Network"))) {
+        // Keep it silent or log at a lower level
+      } else {
+        console.warn(`[Local server fetch ${colName}]`, err);
+      }
     } finally {
       inFlightFetches.delete(colName);
     }
@@ -977,43 +952,7 @@ export async function getDocs(queryObj: any) {
 const activeChannels = new Map<string, any>();
 
 function ensureRealtimeSubscription(colName: string) {
-  if (typeof window === "undefined") return;
-  if (activeChannels.has(colName)) return;
-
-  const channel = supabase
-    .channel(`public:${colName}`)
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: colName },
-      (payload) => {
-        const pk = getPk(colName);
-        const colMap = getColMap(colName);
-        
-        if (payload.eventType === "DELETE") {
-          const oldRecord = payload.old;
-          const id = oldRecord[pk] || oldRecord.id || oldRecord.uid;
-          if (id) {
-            colMap.delete(id);
-          }
-        } else {
-          // INSERT or UPDATE
-          const newRecord = payload.new;
-          const id = newRecord[pk] || newRecord.id || newRecord.uid;
-          if (id) {
-            // Restore timestamp formats if necessary
-            if (newRecord.timestamp) newRecord.timestamp = toTimestampMs(newRecord.timestamp);
-            if (newRecord.lastSeen) newRecord.lastSeen = toTimestampMs(newRecord.lastSeen);
-            
-            const existing = colMap.get(id);
-            colMap.set(id, { ...existing, ...newRecord });
-          }
-        }
-        notifyListeners(colName);
-      }
-    )
-    .subscribe();
-
-  activeChannels.set(colName, channel);
+  // Safe NO-OP: our native SSE stream (initServerSSE) handles real-time sync for all collections
 }
 
 export function onSnapshot(
