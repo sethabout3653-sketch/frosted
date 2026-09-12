@@ -20,10 +20,27 @@ const checkSupabaseHealth = async () => {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
-    const { error } = await supabase.from("_health_check").select("count").limit(1).abortSignal(controller.signal);
+    
+    // Select from any table, even if it's empty or doesn't exist, the error status tells us if it's reachable
+    const { error, status } = await supabase.from("presence").select("uid").limit(1).abortSignal(controller.signal);
     clearTimeout(timeoutId);
-    if (error && error.code === "PGRST116") return true; // Table not found but reachable
-    return !error;
+
+    if (!error) return true;
+    
+    // PGRST116: No rows found (healthy)
+    // 42P01: Relation does not exist (reachable/healthy)
+    // PGRST204: Column not found (reachable/healthy)
+    // Status 404: PostgREST responded (reachable)
+    if (
+      error.code === "PGRST116" || 
+      error.code === "42P01" || 
+      error.code === "PGRST204" || 
+      (status && status >= 200 && status < 500)
+    ) {
+      return true;
+    }
+    
+    return false;
   } catch (e) {
     return false;
   }

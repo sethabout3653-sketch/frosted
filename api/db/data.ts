@@ -2,11 +2,36 @@
 // Custom Unrestricted Real-Time Database Engine - Data API
 // Accepts any arbitrary raw JSON document with zero restrictions or schema validation
 
+import fs from "fs";
+import path from "path";
+
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || "";
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 
+// Persistence for non-Redis environments (Local/Cloud Run)
+const STORE_DIR = path.join(process.cwd(), "uploads");
+const STORE_FILE = path.join(STORE_DIR, "realtime_db_store.json");
+
+function loadFromDisk() {
+  try {
+    if (fs.existsSync(STORE_FILE)) {
+      return JSON.parse(fs.readFileSync(STORE_FILE, "utf-8"));
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveToDisk(data: any) {
+  try {
+    if (!fs.existsSync(STORE_DIR)) {
+      fs.mkdirSync(STORE_DIR, { recursive: true });
+    }
+    fs.writeFileSync(STORE_FILE, JSON.stringify(data), "utf-8");
+  } catch (e) {}
+}
+
 // In-memory fallback for environments without Upstash credentials configured
-const memoryStore: Record<string, Record<string, any>> = {};
+const memoryStore: Record<string, Record<string, any>> = loadFromDisk();
 const memorySubscribers: Record<string, Set<(event: any) => void>> = {};
 
 export function notifyLocalSubscribers(path: string, event: any) {
@@ -131,6 +156,7 @@ export default async function handler(req: any, res: any) {
       // Update in-memory store
       if (!memoryStore[targetPath]) memoryStore[targetPath] = {};
       memoryStore[targetPath][docId] = data;
+      saveToDisk(memoryStore);
 
       // Broadcast delta to local SSE listeners
       notifyLocalSubscribers(targetPath, {
@@ -185,6 +211,7 @@ export default async function handler(req: any, res: any) {
 
       if (memoryStore[path]) {
         delete memoryStore[path][id];
+        saveToDisk(memoryStore);
       }
 
       notifyLocalSubscribers(path, {
