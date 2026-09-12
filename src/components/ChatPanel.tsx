@@ -303,7 +303,11 @@ export default function ChatPanel({
 
   // Real-time member presence listener
   useEffect(() => {
-    const q = query(collection(db, "presence"), limit(40));
+    const q = query(
+      collection(db, "presence"),
+      orderBy("lastSeen", "desc"),
+      limit(50)
+    );
     const unsub = onSnapshot(
       q,
       (snapshot) => {

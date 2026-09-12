@@ -685,6 +685,19 @@ async function startServer() {
         cassandraData[col][id] = { ...data, id };
       }
 
+      // Prune stale presence and voice users before broadcasting
+      if (col === "presence" || col === "voice_users") {
+        const now = Date.now();
+        const staleThreshold = 120000; // 2 minutes
+        const colMap = cassandraData[col];
+        Object.entries(colMap).forEach(([rowId, row]) => {
+          const ts = row.lastSeen || row.timestamp || 0;
+          if (now - ts > staleThreshold) {
+            delete colMap[rowId];
+          }
+        });
+      }
+
       saveCassandraStore();
 
       const changeRecord = {

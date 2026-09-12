@@ -269,6 +269,24 @@ function handleIncomingDbMutation(colName: string, action: string, data: any, id
         data.isScreenAudioOn =
           data.isScreenAudioOn === true || data.channelId === "screenshare:audio";
       }
+
+      // Handle P2P Mesh discovery for presence
+      if (colName === "presence") {
+        const myProfileRaw = localStorage.getItem("frosted_chat_profile");
+        if (myProfileRaw) {
+          try {
+            const myProfile = JSON.parse(myProfileRaw);
+            const myUid = myProfile?.uid;
+            if (myUid && docId !== myUid && !p2pConnections.has(docId)) {
+              // Only initiate if myUid < docId to avoid double connection attempts (lexicographical leader)
+              if (myUid < docId) {
+                createP2PConnection(docId, myUid, true);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
       colMap.set(docId, data);
       notifyListeners(colName);
     }
@@ -307,6 +325,64 @@ function handleIncomingWebRTCSignal(payload: any) {
     if (first) seenSignalIds.delete(first);
   }
 
+  // Handle Signaling for P2P Data Channels
+  (async () => {
+    try {
+      const myProfileRaw = localStorage.getItem("frosted_chat_profile");
+      if (!myProfileRaw) return;
+      const myProfile = JSON.parse(myProfileRaw);
+      const myUid = myProfile?.uid;
+      if (!myUid || payload.uid === myUid) return;
+
+      if (payload.targetUid === myUid) {
+        let pc = p2pConnections.get(payload.uid);
+
+        if (payload.type === "offer") {
+          if (!pc) {
+            pc = new RTCPeerConnection({
+              iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+            });
+            p2pConnections.set(payload.uid, pc);
+            pc.onicecandidate = (event) => {
+              if (event.candidate) {
+                sendBroadcastSignal({
+                  uid: myUid,
+                  targetUid: payload.uid,
+                  type: "candidate",
+                  candidate: JSON.stringify(event.candidate),
+                  timestamp: Date.now(),
+                });
+              }
+            };
+            pc.ondatachannel = (event) => {
+              setupDataChannel(event.channel, payload.uid);
+            };
+            pc.onconnectionstatechange = () => {
+              if (pc!.connectionState === "disconnected" || pc!.connectionState === "failed" || pc!.connectionState === "closed") {
+                p2pConnections.delete(payload.uid);
+                p2pDataChannels.delete(payload.uid);
+              }
+            };
+          }
+          await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(payload.sdp)));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          sendBroadcastSignal({
+            uid: myUid,
+            targetUid: payload.uid,
+            type: "answer",
+            sdp: JSON.stringify(answer),
+            timestamp: Date.now(),
+          });
+        } else if (payload.type === "answer" && pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(payload.sdp)));
+        } else if (payload.type === "candidate" && pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(payload.candidate)));
+        }
+      }
+    } catch (e) {}
+  })();
+
   signalListeners.forEach((fn) => {
     try {
       fn(payload);
@@ -329,84 +405,84 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// WebTransport Protocol Engine & Client Integration
+// WebRTC Protocol Engine & Client P2P Mesh
 // ---------------------------------------------------------
-let activeWebTransport: any = null;
-let webTransportWriter: any = null;
+const p2pConnections = new Map<string, RTCPeerConnection>();
+const p2pDataChannels = new Map<string, RTCDataChannel>();
 
-async function initWebTransport() {
-  if (typeof window === "undefined" || !("WebTransport" in window)) {
-    console.log("[WebTransport] WebTransport constructor not found in browser. Utilizing SSE/HTTPS.");
-    return;
-  }
-
-  try {
-    const protocol = window.location.protocol === "https:" ? "https:" : "https:";
-    const host = window.location.host;
-    const url = `${protocol}//${host}/api/webtransport`;
-
-    console.log("[WebTransport] Initiating handshake at endpoint:", url);
-    const transport = new (window as any).WebTransport(url);
-    await transport.ready;
-    console.log("[WebTransport] QUIC Connection Handshake Successful!");
-    activeWebTransport = transport;
-
-    // Stream listener for incoming events
-    (async () => {
-      try {
-        const reader = transport.datagrams.readable.getReader();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const text = new TextDecoder().decode(value);
-          handleWebTransportIncomingPayload(text);
-        }
-      } catch (e) {}
-    })();
-
-    (async () => {
-      try {
-        const reader = transport.incomingUnidirectionalStreams.getReader();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          readWebTransportStream(value);
-        }
-      } catch (e) {}
-    })();
-
-    const stream = await transport.createUnidirectionalStream();
-    webTransportWriter = stream.writable.getWriter();
-  } catch (err) {
-    console.log("[WebTransport] Active QUIC tunnel blocked or unsupported on route. Reverting to Optimized SSE pipeline.", err);
-  }
+async function getOrCreateP2PConnection(targetUid: string): Promise<RTCDataChannel | null> {
+  if (targetUid === "all") return null;
+  const existing = p2pDataChannels.get(targetUid);
+  if (existing && existing.readyState === "open") return existing;
+  return null;
 }
 
-async function readWebTransportStream(stream: any) {
-  try {
-    const reader = stream.readable.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value);
-      handleWebTransportIncomingPayload(text);
-    }
-  } catch (e) {}
-}
-
-function handleWebTransportIncomingPayload(text: string) {
+function handleIncomingP2PPayload(text: string) {
   try {
     const msg = JSON.parse(text);
-    if (msg.type === "change") {
-      handleIncomingDbMutation(msg.collection, msg.op, msg.data, msg.id);
-    } else if (msg.type === "webrtc_signal") {
-      handleIncomingWebRTCSignal(msg.payload);
+    if (msg.type === "db_mutation") {
+      const { colName, action, data, id, pk } = msg.payload || {};
+      handleIncomingDbMutation(colName, action, data, id, pk);
     }
   } catch (e) {}
 }
 
-initWebTransport();
+async function createP2PConnection(targetUid: string, myUid: string, isInitiator: boolean) {
+  if (targetUid === myUid) return;
+  if (p2pConnections.has(targetUid)) return;
+
+  try {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    p2pConnections.set(targetUid, pc);
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendBroadcastSignal({
+          uid: myUid,
+          targetUid,
+          type: "candidate",
+          candidate: JSON.stringify(event.candidate),
+          timestamp: Date.now(),
+        });
+      }
+    };
+
+    if (isInitiator) {
+      const dc = pc.createDataChannel("frosted_p2p_chat");
+      setupDataChannel(dc, targetUid);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendBroadcastSignal({
+        uid: myUid,
+        targetUid,
+        type: "offer",
+        sdp: JSON.stringify(offer),
+        timestamp: Date.now(),
+      });
+    } else {
+      pc.ondatachannel = (event) => {
+        setupDataChannel(event.channel, targetUid);
+      };
+    }
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
+        p2pConnections.delete(targetUid);
+        p2pDataChannels.delete(targetUid);
+      }
+    };
+  } catch (e) {
+    console.warn("[P2P] Failed to create connection:", e);
+  }
+}
+
+function setupDataChannel(dc: RTCDataChannel, targetUid: string) {
+  p2pDataChannels.set(targetUid, dc);
+  dc.onmessage = (e) => handleIncomingP2PPayload(e.data);
+  dc.onclose = () => p2pDataChannels.delete(targetUid);
+}
 
 // ---------------------------------------------------------
 // Server-Sent Events (SSE) Real-Time Subscription
@@ -480,16 +556,23 @@ function broadcastMutation(
 }
 
 async function serverWrite(op: string, colName: string, id: string, data: any) {
-  if (webTransportWriter) {
-    try {
-      const payload = JSON.stringify({ type: "change", collection: colName, op, id, data });
-      await webTransportWriter.write(new TextEncoder().encode(payload));
-      return;
-    } catch (e) {
-      console.warn("[WebTransport] Write stream failed, falling back to HTTPS POST");
-    }
-  }
+  const pk = getPk(colName);
+  const mutationPayload = {
+    type: "db_mutation",
+    payload: { colName, action: op, data, id, pk, timestamp: Date.now() },
+  };
 
+  // 1. Broadcast to all open P2P data channels (Direct P2P delivery)
+  const payloadStr = JSON.stringify(mutationPayload);
+  p2pDataChannels.forEach((dc) => {
+    if (dc.readyState === "open") {
+      try {
+        dc.send(payloadStr);
+      } catch (e) {}
+    }
+  });
+
+  // 2. Reliable Server Fallback (HTTP POST)
   try {
     await fetch("/api/cassandra/write", {
       method: "POST",
@@ -500,16 +583,6 @@ async function serverWrite(op: string, colName: string, id: string, data: any) {
 }
 
 async function serverSendSignal(signal: any) {
-  if (webTransportWriter) {
-    try {
-      const payload = JSON.stringify({ type: "webrtc_signal", payload: signal });
-      await webTransportWriter.write(new TextEncoder().encode(payload));
-      return;
-    } catch (e) {
-      console.warn("[WebTransport] Signal stream failed, falling back to HTTPS POST");
-    }
-  }
-
   try {
     await fetch("/api/webrtc/signal", {
       method: "POST",
@@ -745,6 +818,22 @@ async function fetchCollectionFromDatabase(colName: string): Promise<void> {
               }
               const existing = colMap.get(actualId);
               colMap.set(actualId, { ...existing, ...row });
+
+              // Handle P2P Mesh discovery for presence
+              if (colName === "presence") {
+                const myProfileRaw = localStorage.getItem("frosted_chat_profile");
+                if (myProfileRaw) {
+                  try {
+                    const myProfile = JSON.parse(myProfileRaw);
+                    const myUid = myProfile?.uid;
+                    if (myUid && actualId !== myUid && !p2pConnections.has(actualId)) {
+                      if (myUid < actualId) {
+                        createP2PConnection(actualId, myUid, true);
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
             }
           });
         }
