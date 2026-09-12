@@ -168,7 +168,7 @@ export default function ChatPanel({
       (snapshot) => {
         const list: any[] = [];
         const now = Date.now();
-        snapshot.docs.forEach((d) => {
+        snapshot.docs.forEach((d: any) => {
           const data = d.data();
           if (
             data.uid !== profile.uid &&
@@ -239,10 +239,10 @@ export default function ChatPanel({
   useEffect(() => {
     const unsub = onSnapshot(
       collection(db, "voice_users"),
-      (snapshot) => {
+      (snapshot: any) => {
         setActiveVoiceUsers(
           Object.fromEntries(
-            snapshot.docs.map((d) => [d.id, d.data() as any])
+            snapshot.docs.map((d: any) => [d.id, d.data() as any])
           )
         );
       },
@@ -310,9 +310,9 @@ export default function ChatPanel({
     );
     const unsub = onSnapshot(
       q,
-      (snapshot) => {
+      (snapshot: any) => {
         const users: MemberUser[] = [];
-        snapshot.forEach((docSnap) => {
+        snapshot.forEach((docSnap: any) => {
           const data = docSnap.data() as MemberUser;
           const uname = (data.username || "").trim();
           if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
@@ -363,9 +363,9 @@ export default function ChatPanel({
 
     const unsubscribe = onSnapshot(
       q,
-      (snapshot) => {
+      (snapshot: any) => {
         const newMessages: ChatMessage[] = [];
-        snapshot.forEach((docSnap) => {
+        snapshot.forEach((docSnap: any) => {
           const data = docSnap.data() as any;
           const uname = (data.username || "").trim();
           if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
@@ -1294,7 +1294,7 @@ export default function ChatPanel({
                               <Volume2 size={9} /> In Voice
                             </span>
                           )}
-                          {isInVoice && voiceInfo?.isScreenSharing && (
+                          {isInVoice && (voiceInfo as any)?.isScreenSharing && (
                             <span className="flex items-center gap-0.5 text-[9px] font-extrabold text-emerald-300 bg-emerald-950/90 border border-emerald-700/80 px-1 py-0.2 rounded animate-pulse">
                               <MonitorUp size={9} /> LIVE
                             </span>

@@ -221,7 +221,7 @@ export default function Chat({
         // On the very first snapshot, register all existing messages as seen and never play sound
         if (!initialSnapshotProcessedRef.current) {
           initialSnapshotProcessedRef.current = true;
-          snapshot.docs.forEach((d) => {
+          snapshot.docs.forEach((d: any) => {
             seenMessageIdsRef.current.add(d.id);
           });
           return;
@@ -230,7 +230,7 @@ export default function Chat({
         const currentProfile = profileRef.current;
         const now = Date.now();
 
-        snapshot.docs.forEach((docSnap) => {
+        snapshot.docs.forEach((docSnap: any) => {
           const msgId = docSnap.id;
           if (seenMessageIdsRef.current.has(msgId)) {
             return;
@@ -318,7 +318,7 @@ export default function Chat({
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
         const batch = writeBatch();
-        snapshot.docs.forEach((d) => {
+        snapshot.docs.forEach((d: any) => {
           batch.update(doc(db, "messages", d.id), {
             username: newProfile.username,
             photoURL: newProfile.photoURL,

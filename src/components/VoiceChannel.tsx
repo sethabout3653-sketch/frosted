@@ -1282,7 +1282,7 @@ export default function VoiceChannel({
               await pc.setRemoteDescription(offerDescription);
               await processCandidateQueue(partnerUid, pc);
 
-              if (pc.signalingState === "have-remote-offer") {
+              if ((pc.signalingState as string) === "have-remote-offer") {
                 const answer = await pc.createAnswer();
                 const highQualityAnswer = new RTCSessionDescription({
                   type: answer.type,

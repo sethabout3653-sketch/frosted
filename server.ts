@@ -414,7 +414,7 @@ async function startServer() {
           else if (mime.startsWith("image/")) cat = "image";
 
           const meta = fileMetadataStore[fn] || fileMetadataStore[path.basename(targetPath)];
-          let origName = meta?.originalName;
+          let origName: string | undefined = meta?.originalName;
 
           if (!origName) {
             try {

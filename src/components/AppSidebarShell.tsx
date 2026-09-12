@@ -72,7 +72,7 @@ export function AppSidebarShell() {
   // SSR always renders expanded; the saved preference is restored after mount.
   // Reading localStorage in the initializer makes the client's first render
   // differ from the server markup → hydration mismatch on hard refresh.
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState<boolean>(false)
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mount-time restore of a persisted preference; reading localStorage in the useState initializer causes an SSR hydration mismatch
     if (localStorage.getItem(SIDEBAR_KEY) === 'true') setCollapsed(true)
