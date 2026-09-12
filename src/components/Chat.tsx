@@ -34,7 +34,7 @@ import {
   handleFirestoreError,
   OperationType,
   toTimestampMs,
-} from "../supabase-adapter";
+} from "../firebase";
 
 export default function Chat({
   isOpen,

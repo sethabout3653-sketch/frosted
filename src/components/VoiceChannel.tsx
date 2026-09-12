@@ -41,7 +41,7 @@ import {
   sendBroadcastSignal,
   subscribeBroadcastSignals,
   toTimestampMs,
-} from "../supabase-adapter";
+} from "../firebase";
 import { ChatProfile, VoiceSignal } from "../types";
 import { SmartVoiceDetector } from "../utils/audioVAD";
 import { extractDominantColor } from "../utils/colorExtractor";

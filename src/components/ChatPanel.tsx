@@ -17,7 +17,7 @@ import {
   OperationType,
   toTimestampMs,
   compareMessagesChronological,
-} from "../supabase-adapter";
+} from "../firebase";
 import { ChatMessage, ChatProfile } from "../types";
 import {
   Send,
