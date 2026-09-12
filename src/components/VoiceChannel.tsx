@@ -291,11 +291,7 @@ export default function VoiceChannel({
       };
     }
     const remoteSharer = activeParticipants.find(
-      (p) =>
-        p.isScreenSharing === true &&
-        (!!remoteScreenSharersRef.current[p.uid] ||
-          (!!remoteScreenStreamsRef.current[p.uid] &&
-            remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled)))
+      (p) => p.uid !== profile.uid && p.isScreenSharing === true
     );
     if (remoteSharer) {
       return {
@@ -1973,10 +1969,7 @@ export default function VoiceChannel({
                   await videoSender.setParameters(params).catch(() => {});
                 } catch (e) {}
               }
-              // Force renegotiation to ensure remote peers display the new track
-              if (localStreamRef.current) {
-                initiateCall(pUid, localStreamRef.current);
-              }
+              
               sendSignal(pUid, "camera_started", "");
             }
           })
@@ -2017,12 +2010,8 @@ export default function VoiceChannel({
               if (videoSender) {
                 await videoSender.replaceTrack(null).catch(() => {});
               }
-              if (localStreamRef.current) {
-                initiateCall(pUid, localStreamRef.current);
-              }
-              if (localStreamRef.current) {
-                initiateCall(pUid, localStreamRef.current);
-              }
+              
+              
               sendSignal(pUid, "camera_stopped", "");
             }
           })
@@ -2127,12 +2116,8 @@ export default function VoiceChannel({
               await sender.replaceTrack(null);
             } catch (e) {}
           }
-          if (localStreamRef.current) {
-            initiateCall(pUid, localStreamRef.current);
-          }
-          if (localStreamRef.current) {
-            initiateCall(pUid, localStreamRef.current);
-          }
+          
+          
           sendSignal(pUid, "screenshare_stopped", "");
         }
       })
@@ -2314,9 +2299,7 @@ export default function VoiceChannel({
                 await screenSender.setParameters(params).catch(() => {});
               } catch (e) {}
             }
-            if (localStreamRef.current) {
-              initiateCall(pUid, localStreamRef.current);
-            } else {
+             else {
               try {
                 const newSender = pc.addTrack(screenVideoTrack, displayStream);
                 screenSendersRef.current[pUid] = newSender;
@@ -3113,7 +3096,7 @@ export default function VoiceChannel({
                     className="w-full h-full object-cover"
                   />
 
-                  {p.isVideoLoading && (
+                  {!remoteVideoLoaded[p.uid] && p.isVideoLoading && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200 pointer-events-none">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
