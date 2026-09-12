@@ -487,6 +487,18 @@ async function startServer() {
   try {
     if (fs.existsSync(cassandraStoreFile)) {
       cassandraData = JSON.parse(fs.readFileSync(cassandraStoreFile, "utf-8"));
+      // Purge any residual bot records so only real users exist
+      for (const col of Object.keys(cassandraData)) {
+        for (const id of Object.keys(cassandraData[col] || {})) {
+          if (
+            id.startsWith("bot_") || 
+            id.startsWith("doc_bot_") || 
+            (cassandraData[col][id]?.uid && String(cassandraData[col][id].uid).startsWith("bot_"))
+          ) {
+            delete cassandraData[col][id];
+          }
+        }
+      }
     }
   } catch (e) {
     console.warn("[Cassandra] No prior disk store found, initializing empty store");
