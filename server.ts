@@ -869,6 +869,25 @@ async function startServer() {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
   });
 
+  // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)
+  app.all(["/api/db/data", "/api/db/data/*"], async (req, res) => {
+    try {
+      const { default: handler } = await import("./api/db/data.js").catch(() => import("./api/db/data"));
+      return handler(req, res);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
+  app.get(["/api/db/stream", "/api/db/stream/*"], async (req, res) => {
+    try {
+      const { default: handler } = await import("./api/db/stream.js").catch(() => import("./api/db/stream"));
+      return handler(req, res);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   // Vite integration and static asset serving
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

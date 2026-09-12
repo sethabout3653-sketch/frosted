@@ -484,8 +484,51 @@ if (broadcastBus) {
 }
 
 // ---------------------------------------------------------
-// Vercel & Serverless Compatible REST + BroadcastChannel Engine (Zero WebSockets)
+// Vercel & Serverless Compatible REST + SSE Engine (Zero WebSockets)
 // ---------------------------------------------------------
+
+let serverSSE: EventSource | null = null;
+function initServerSSE() {
+  if (typeof window === "undefined" || !("EventSource" in window)) return;
+  if (serverSSE && serverSSE.readyState !== EventSource.CLOSED) return;
+
+  try {
+    serverSSE = new EventSource("/api/cassandra/stream");
+
+    serverSSE.onmessage = (event) => {
+      if (!event.data || event.data.startsWith(":")) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "change") {
+          const { collection, op, id, data } = msg;
+          handleIncomingDbMutation(collection, op, data, id);
+        } else if (msg.type === "webrtc_signal") {
+          handleIncomingWebRTCSignal(msg.payload);
+        } else if (msg.type === "init") {
+          if (msg.data && typeof msg.data === "object") {
+            Object.entries(msg.data).forEach(([col, docs]: [string, any]) => {
+              if (docs && typeof docs === "object") {
+                const map = getColMap(col);
+                if (map.size === 0) {
+                  Object.entries(docs).forEach(([dId, dVal]) => {
+                    map.set(dId, dVal);
+                  });
+                  notifyListeners(col);
+                }
+              }
+            });
+          }
+        }
+      } catch (e) {}
+    };
+
+    serverSSE.onerror = () => {
+      // EventSource auto-reconnects natively
+    };
+  } catch (e) {}
+}
+
+initServerSSE();
 
 function broadcastMutation(
   colName: string,
@@ -564,11 +607,19 @@ export function subscribeBroadcastSignals(
   myUid: string,
   onSignal: (signal: any) => void
 ) {
+  const handledForThisListener = new Set<string>();
+
   const handler = (payload: any) => {
     if (payload && (payload.targetUid === myUid || payload.targetUid === "all")) {
-      if (payload.uid !== myUid && !seenSignalIds.has(payload.id)) {
-        seenSignalIds.add(payload.id);
-        onSignal(payload);
+      if (payload.uid !== myUid && !handledForThisListener.has(payload.id)) {
+        handledForThisListener.add(payload.id);
+        if (handledForThisListener.size > 1000) {
+          const first = handledForThisListener.values().next().value;
+          if (first) handledForThisListener.delete(first);
+        }
+        try {
+          onSignal(payload);
+        } catch (e) {}
       }
     }
   };
@@ -582,15 +633,20 @@ export function subscribeBroadcastSignals(
     if (isPolling) return;
     isPolling = true;
     try {
-      // 1. Poll dedicated server signals
-      const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}&since=${lastPollTs}`).catch(() => null);
+      // 1. Poll dedicated server signals with 5-second overlap window to prevent dropped signals
+      const sinceParam = Math.max(0, lastPollTs - 5000);
+      const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}&since=${sinceParam}`).catch(() => null);
       if (res && res.ok) {
         const json = await res.json().catch(() => null);
         if (json && Array.isArray(json.signals)) {
           lastPollTs = json.timestamp || Date.now();
           json.signals.forEach((sig: any) => {
-            if (sig && sig.uid !== myUid && !seenSignalIds.has(sig.id)) {
-              seenSignalIds.add(sig.id);
+            if (sig && sig.uid !== myUid && !handledForThisListener.has(sig.id)) {
+              handledForThisListener.add(sig.id);
+              if (handledForThisListener.size > 1000) {
+                const first = handledForThisListener.values().next().value;
+                if (first) handledForThisListener.delete(first);
+              }
               try {
                 onSignal(sig);
               } catch (e) {}
@@ -612,8 +668,12 @@ export function subscribeBroadcastSignals(
         const handledIds: string[] = [];
         for (const sig of data) {
           if (!sig || sig.uid === myUid) continue;
-          if (!seenSignalIds.has(sig.id)) {
-            seenSignalIds.add(sig.id);
+          if (!handledForThisListener.has(sig.id)) {
+            handledForThisListener.add(sig.id);
+            if (handledForThisListener.size > 1000) {
+              const first = handledForThisListener.values().next().value;
+              if (first) handledForThisListener.delete(first);
+            }
             handledIds.push(sig.id);
             try {
               onSignal(sig);

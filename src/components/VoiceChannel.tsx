@@ -214,6 +214,7 @@ export default function VoiceChannel({
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteCameraStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
@@ -417,7 +418,7 @@ export default function VoiceChannel({
       }
     } else {
       const isLocal = fullscreenUid === profile.uid;
-      const stream = isLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
+      const stream = isLocal ? videoStreamRef.current : (remoteCameraStreamsRef.current[fullscreenUid] || remoteStreamsRef.current[fullscreenUid]);
       if (fullscreenVideoRef.current && stream) {
         if (fullscreenVideoRef.current.srcObject !== stream) {
           fullscreenVideoRef.current.srcObject = stream;
@@ -729,6 +730,16 @@ export default function VoiceChannel({
       });
     });
     remoteStreamsRef.current = {};
+    remoteCameraStreamsRef.current = {};
+
+    Object.values(remoteAudioStreamsRef.current).forEach((stream: MediaStream) => {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+    });
+    remoteAudioStreamsRef.current = {};
 
     Object.values(remoteScreenStreamsRef.current).forEach((stream: MediaStream) => {
       stream.getTracks().forEach((t) => {
@@ -784,18 +795,21 @@ export default function VoiceChannel({
   // Synchronize remote media streams with DOM elements
   useEffect(() => {
     participants.forEach((p) => {
-      const stream = remoteStreamsRef.current[p.uid];
-      if (stream) {
+      const audioStream = remoteAudioStreamsRef.current[p.uid];
+      if (audioStream) {
         const audioEl = remoteAudioRefs.current[p.uid];
-        if (audioEl && audioEl.srcObject !== stream) {
-          audioEl.srcObject = stream;
+        if (audioEl && audioEl.srcObject !== audioStream) {
+          audioEl.srcObject = audioStream;
           audioEl.play().catch(() => {});
         }
+      }
 
-        if (p.isVideoOn) {
+      if (p.isVideoOn) {
+        const cameraStream = remoteCameraStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+        if (cameraStream) {
           const videoEl = remoteVideoRefs.current[p.uid];
-          if (videoEl && videoEl.srcObject !== stream) {
-            videoEl.srcObject = stream;
+          if (videoEl && videoEl.srcObject !== cameraStream) {
+            videoEl.srcObject = cameraStream;
             videoEl.play().catch(() => {});
           }
         }
@@ -916,12 +930,11 @@ export default function VoiceChannel({
       const aTrack = audioTransceivers[0].receiver.track;
       if (aTrack) {
         aTrack.enabled = true;
-        let rStream = remoteAudioStreamsRef.current[partnerUid];
-        if (!rStream || !rStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
-          rStream = new MediaStream([aTrack]);
-          remoteAudioStreamsRef.current[partnerUid] = rStream;
+        let aStream = remoteAudioStreamsRef.current[partnerUid];
+        if (!aStream || !aStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
+          aStream = new MediaStream([aTrack]);
+          remoteAudioStreamsRef.current[partnerUid] = aStream;
         }
-        remoteStreamsRef.current[partnerUid] = rStream;
         
         let audioEl = remoteAudioRefs.current[partnerUid];
         if (!audioEl) {
@@ -930,8 +943,8 @@ export default function VoiceChannel({
           (audioEl as any).playsInline = true;
           remoteAudioRefs.current[partnerUid] = audioEl;
         }
-        if (audioEl.srcObject !== rStream) {
-          audioEl.srcObject = rStream;
+        if (audioEl.srcObject !== aStream) {
+          audioEl.srcObject = aStream;
         }
         audioEl.play().catch(() => {});
         aTrack.onunmute = () => {
@@ -942,8 +955,8 @@ export default function VoiceChannel({
             (el as any).playsInline = true;
             remoteAudioRefs.current[partnerUid] = el;
           }
-          if (el.srcObject !== rStream) {
-            el.srcObject = rStream;
+          if (el.srcObject !== aStream) {
+            el.srcObject = aStream;
           }
           el.play().catch(() => {});
         };
@@ -956,24 +969,28 @@ export default function VoiceChannel({
       const camTrack = videoTransceivers[0].receiver.track;
       if (camTrack) {
         camTrack.enabled = true;
-        let rStream = remoteStreamsRef.current[partnerUid];
-        if (!rStream || !rStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
-          rStream = new MediaStream([camTrack]);
-          remoteStreamsRef.current[partnerUid] = rStream;
+        let cStream = remoteCameraStreamsRef.current[partnerUid];
+        if (!cStream || !cStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
+          cStream = new MediaStream([camTrack]);
+          remoteCameraStreamsRef.current[partnerUid] = cStream;
+          remoteStreamsRef.current[partnerUid] = cStream;
         }
         
         const camEl = remoteVideoRefs.current[partnerUid];
         if (camEl) {
-          if (camEl.srcObject !== rStream) {
-            camEl.srcObject = rStream;
+          if (camEl.srcObject !== cStream) {
+            camEl.srcObject = cStream;
           }
           camEl.play().catch(() => {});
         }
         setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
         camTrack.onunmute = () => {
           const el = remoteVideoRefs.current[partnerUid];
-          if (el && remoteStreamsRef.current[partnerUid]) {
-            el.srcObject = remoteStreamsRef.current[partnerUid];
+          const stream = remoteCameraStreamsRef.current[partnerUid] || remoteStreamsRef.current[partnerUid];
+          if (el && stream) {
+            if (el.srcObject !== stream) {
+              el.srcObject = stream;
+            }
             el.play().catch(() => {});
           }
           setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
@@ -1009,7 +1026,9 @@ export default function VoiceChannel({
       scrTrack.onunmute = () => {
         const el = remoteScreenVideoRefs.current[partnerUid];
         if (el && remoteScreenStreamsRef.current[partnerUid]) {
-          el.srcObject = remoteScreenStreamsRef.current[partnerUid];
+          if (el.srcObject !== remoteScreenStreamsRef.current[partnerUid]) {
+            el.srcObject = remoteScreenStreamsRef.current[partnerUid];
+          }
           el.play().catch(() => {});
         }
         setTrackTrigger((v) => v + 1);
@@ -1089,12 +1108,11 @@ export default function VoiceChannel({
       pc.ontrack = (event) => {
         if (event.track.kind === "audio") {
           event.track.enabled = true;
-          let rStream = remoteAudioStreamsRef.current[partnerUid];
-          if (!rStream || !rStream.getAudioTracks().some((track) => track.id === event.track.id)) {
-            rStream = new MediaStream([event.track]);
-            remoteAudioStreamsRef.current[partnerUid] = rStream;
+          let aStream = remoteAudioStreamsRef.current[partnerUid];
+          if (!aStream || !aStream.getAudioTracks().some((track) => track.id === event.track.id)) {
+            aStream = new MediaStream([event.track]);
+            remoteAudioStreamsRef.current[partnerUid] = aStream;
           }
-          remoteStreamsRef.current[partnerUid] = rStream;
 
           let audioEl = remoteAudioRefs.current[partnerUid];
           if (!audioEl) {
@@ -1103,8 +1121,8 @@ export default function VoiceChannel({
             (audioEl as any).playsInline = true;
             remoteAudioRefs.current[partnerUid] = audioEl;
           }
-          if (audioEl.srcObject !== rStream) {
-            audioEl.srcObject = rStream;
+          if (audioEl.srcObject !== aStream) {
+            audioEl.srcObject = aStream;
           }
           audioEl.play().catch(() => {});
 
@@ -1116,8 +1134,8 @@ export default function VoiceChannel({
               (el as any).playsInline = true;
               remoteAudioRefs.current[partnerUid] = el;
             }
-            if (el.srcObject !== rStream) {
-              el.srcObject = rStream;
+            if (el.srcObject !== aStream) {
+              el.srcObject = aStream;
             }
             el.play().catch(() => {});
           };
@@ -1342,6 +1360,9 @@ export default function VoiceChannel({
             delete next[partnerUid];
             return next;
           });
+          if (remoteCameraStreamsRef.current[partnerUid]) {
+            delete remoteCameraStreamsRef.current[partnerUid];
+          }
           if (remoteStreamsRef.current[partnerUid]) {
             delete remoteStreamsRef.current[partnerUid];
           }
@@ -1737,6 +1758,14 @@ export default function VoiceChannel({
           delete cameraSendersRef.current[p.uid];
           delete screenSendersRef.current[p.uid];
           delete audioSendersRef.current[p.uid];
+          if (remoteCameraStreamsRef.current[p.uid]) {
+            remoteCameraStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteCameraStreamsRef.current[p.uid];
+          }
+          if (remoteAudioStreamsRef.current[p.uid]) {
+            remoteAudioStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteAudioStreamsRef.current[p.uid];
+          }
           if (remoteStreamsRef.current[p.uid]) {
             remoteStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
             delete remoteStreamsRef.current[p.uid];
@@ -1771,6 +1800,12 @@ export default function VoiceChannel({
       });
     }
 
+    (Object.values(audioSendersRef.current) as RTCRtpSender[]).forEach((sender) => {
+      if (sender && sender.track) {
+        sender.track.enabled = !nextMuted;
+      }
+    });
+
     if (gainNodeRef.current) {
       gainNodeRef.current.gain.value = nextMuted ? 0 : 2.0;
     }
@@ -1794,42 +1829,32 @@ export default function VoiceChannel({
     try {
       if (nextVideoState) {
         setIsCameraLoading(true);
-        setIsVideoOn(true);
-        isVideoOnRef.current = true;
-
-        // Broadcast to all other participants immediately that camera is loading
-        await updateDoc(doc(db, "voice_users", profile.uid), {
-          isVideoLoading: true,
-          isVideoOn: false,
-        }).catch((err) => console.warn("Error setting isVideoLoading:", err));
 
         // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 480 },
             frameRate: { ideal: 30, max: 30 },
           },
           audio: false,
         });
 
-        if (!isMountedRef.current || !isVideoOnRef.current) {
+        if (!isMountedRef.current) {
           videoStream.getTracks().forEach((track) => {
             track.stop();
             track.enabled = false;
           });
           setIsCameraLoading(false);
-          setIsVideoOn(false);
-          isVideoOnRef.current = false;
-          await updateDoc(doc(db, "voice_users", profile.uid), {
-            isVideoOn: false,
-            isVideoLoading: false,
-          }).catch(() => {});
           return;
         }
 
         const realVideoTrack = videoStream.getVideoTracks()[0];
+        realVideoTrack.enabled = true;
         videoStreamRef.current = videoStream;
+        setIsVideoOn(true);
+        isVideoOnRef.current = true;
+        setIsCameraLoading(false);
 
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = videoStream;
@@ -1843,18 +1868,23 @@ export default function VoiceChannel({
             if (pc && pc.connectionState !== "closed") {
               let videoSender = cameraSendersRef.current[pUid];
               if (!videoSender) {
-                const transceivers = pc.getTransceivers();
-                if (transceivers.length >= 2) {
-                  videoSender = transceivers[1].sender;
-                } else {
-                  videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
-                }
-                if (videoSender) {
+                const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+                if (videoSenders.length > 0) {
+                  videoSender = videoSenders[0];
                   cameraSendersRef.current[pUid] = videoSender;
                 }
               }
               if (videoSender) {
                 await videoSender.replaceTrack(realVideoTrack).catch(() => {});
+                try {
+                  const params = videoSender.getParameters();
+                  if (!params.encodings || params.encodings.length === 0) {
+                    params.encodings = [{}];
+                  }
+                  params.encodings[0].maxBitrate = 1500000;
+                  params.encodings[0].priority = "high";
+                  await videoSender.setParameters(params).catch(() => {});
+                } catch (e) {}
               }
               sendSignal(pUid, "camera_started", "");
             }
@@ -1862,8 +1892,7 @@ export default function VoiceChannel({
         );
         sendSignal("all", "camera_started", "");
 
-        // 3. Mark camera as active and ready in Firestore
-        setIsCameraLoading(false);
+        // 3. Mark camera as active in Firestore and presence
         await updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoOn: true,
           isVideoLoading: false,
@@ -1888,13 +1917,9 @@ export default function VoiceChannel({
             if (pc && pc.connectionState !== "closed") {
               let videoSender = cameraSendersRef.current[pUid];
               if (!videoSender) {
-                const transceivers = pc.getTransceivers();
-                if (transceivers.length >= 2) {
-                  videoSender = transceivers[1].sender;
-                } else {
-                  videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
-                }
-                if (videoSender) {
+                const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+                if (videoSenders.length > 0) {
+                  videoSender = videoSenders[0];
                   cameraSendersRef.current[pUid] = videoSender;
                 }
               }
@@ -2294,9 +2319,9 @@ export default function VoiceChannel({
             key={`audio-playback-${p.uid || "peer"}-${pIdx}`}
             ref={(el) => {
               remoteAudioRefs.current[p.uid] = el;
-              const remoteStream = remoteStreamsRef.current[p.uid];
-              if (el && remoteStream && el.srcObject !== remoteStream) {
-                el.srcObject = remoteStream;
+              const remoteAudioStream = remoteAudioStreamsRef.current[p.uid];
+              if (el && remoteAudioStream && el.srcObject !== remoteAudioStream) {
+                el.srcObject = remoteAudioStream;
                 el.play().catch(() => {});
               }
             }}
@@ -2808,10 +2833,7 @@ export default function VoiceChannel({
                     autoPlay
                     playsInline
                     muted
-                    onLoadedData={() => setIsCameraLoading(false)}
-                    className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
-                      isCameraLoading ? "opacity-0" : "opacity-100"
-                    }`}
+                    className="w-full h-full object-cover transform -scale-x-100"
                   />
 
                   {isCameraLoading && (
@@ -2899,8 +2921,7 @@ export default function VoiceChannel({
             border: "rgba(88, 101, 242, 0.85)",
             ring: "rgba(88, 101, 242, 0.35)",
           };
-          const hasRemoteStream = !!(remoteStreamsRef.current[p.uid] && remoteStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled));
-          const isCameraShowing = !!(p.isVideoOn || hasRemoteStream);
+          const isCameraShowing = !!p.isVideoOn;
 
           return (
             <div
@@ -2959,19 +2980,9 @@ export default function VoiceChannel({
                     ref={(el) => {
                       remoteVideoRefs.current[p.uid] = el;
                       if (el) {
-                        let remoteStream = remoteStreamsRef.current[p.uid];
-                        if (!remoteStream) {
-                          const pc = peersRef.current[p.uid];
-                          if (pc) {
-                            const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track?.kind === "video");
-                            if (videoTransceivers.length > 0 && videoTransceivers[0].receiver.track) {
-                              remoteStream = new MediaStream([videoTransceivers[0].receiver.track]);
-                              remoteStreamsRef.current[p.uid] = remoteStream;
-                            }
-                          }
-                        }
-                        if (remoteStream && el.srcObject !== remoteStream) {
-                          el.srcObject = remoteStream;
+                        const camStream = remoteCameraStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+                        if (camStream && el.srcObject !== camStream) {
+                          el.srcObject = camStream;
                           el.play().catch(() => {});
                         }
                       }
@@ -3531,7 +3542,7 @@ export default function VoiceChannel({
 
       const cameraStream = isFullscreenLocal
         ? videoStreamRef.current
-        : remoteStreamsRef.current[fullscreenUid];
+        : (remoteCameraStreamsRef.current[fullscreenUid] || remoteStreamsRef.current[fullscreenUid]);
 
       return (
         <div
