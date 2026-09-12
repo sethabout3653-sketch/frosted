@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = (import.meta as any).env.VITE_SUPABASE_URL || "";
-const supabaseKey = (import.meta as any).env.VITE_SUPABASE_ANON_KEY || "";
+const rawUrl = (import.meta as any).env.VITE_SUPABASE_URL || "";
+const rawKey = (import.meta as any).env.VITE_SUPABASE_ANON_KEY || "";
+const supabaseUrl = rawUrl.trim() || "https://placeholder.supabase.co";
+const supabaseKey = rawKey.trim() || "placeholder-key";
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -27,7 +29,7 @@ export const cassandra = {
           size: file.size,
         };
       } catch (err) {
-        // Fallback to Blob URL if they didn't create the bucket
+        // Fallback to Blob URL if they didn't create the bucket or if credentials missing
         return new Promise((resolve) => {
           const blobUrl = URL.createObjectURL(file);
           resolve({
@@ -88,24 +90,29 @@ export async function getDocs(queryObj: any) {
     }
   }
   
-  const { data, error } = await q;
-  if (error) {
-    console.error("getDocs error:", error);
+  try {
+    const { data, error } = await q;
+    if (error) {
+      console.warn("getDocs warning/error:", error.message || error);
+      return { docs: [], empty: true, size: 0, forEach: () => {} };
+    }
+    
+    const pk = colName === "presence" || colName === "voice_users" ? "uid" : "id";
+    const docs = (data || []).map((d: any) => ({
+      id: d[pk] || d.id,
+      data: () => d
+    }));
+    
+    return {
+      docs,
+      empty: docs.length === 0,
+      size: docs.length,
+      forEach: (cb: any) => docs.forEach((d: any) => cb(d))
+    };
+  } catch (err) {
+    console.warn("getDocs catch error:", err);
     return { docs: [], empty: true, size: 0, forEach: () => {} };
   }
-  
-  const pk = colName === "presence" || colName === "voice_users" ? "uid" : "id";
-  const docs = (data || []).map((d: any) => ({
-    id: d[pk] || d.id,
-    data: () => d
-  }));
-  
-  return {
-    docs,
-    empty: docs.length === 0,
-    size: docs.length,
-    forEach: (cb: any) => docs.forEach((d: any) => cb(d))
-  };
 }
 
 export function onSnapshot(queryObj: any, callback: (snap: any) => void, errorCallback?: (err: any) => void) {
@@ -116,23 +123,31 @@ export function onSnapshot(queryObj: any, callback: (snap: any) => void, errorCa
   // Initial fetch
   getDocs(queryObj).then(snap => {
     if (isActive) callback(snap);
+  }).catch(err => {
+    if (isActive && errorCallback) errorCallback(err);
   });
   
-  // Realtime subscription
-  const channel = supabase.channel(`public:${colName}`)
+  // Create a unique channel name per listener instance to prevent "cannot add postgres_changes callbacks after subscribe()"
+  const channelId = `realtime_${colName}_${Math.random().toString(36).substring(2, 9)}`;
+  const channel = supabase.channel(channelId)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: colName },
       () => {
-        // Refetch on any change to this table
         if (isActive) {
           getDocs(queryObj).then(snap => {
             if (isActive) callback(snap);
+          }).catch(err => {
+            if (isActive && errorCallback) errorCallback(err);
           });
         }
       }
     )
-    .subscribe();
+    .subscribe((status, err) => {
+      if (err && isActive && errorCallback) {
+        errorCallback(err);
+      }
+    });
     
   return () => {
     isActive = false;
@@ -158,7 +173,6 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   const finalData = { ...data };
   finalData[pk] = docRef.id;
   
-  // upsert
   const { error } = await supabase.from(docRef.colName).upsert(finalData);
   if (error) throw error;
 }
@@ -189,7 +203,7 @@ export enum OperationType {
 }
 
 export function handleFirestoreError(err: any, op?: OperationType, context?: string) {
-  console.error(`Supabase Error (${op} - ${context || 'unknown'}):`, err);
+  console.warn(`Supabase log (${op} - ${context || 'unknown'}):`, err);
 }
 
 export function toTimestampMs(val: any): number {
@@ -236,23 +250,28 @@ export function writeBatch() {
 }
 
 export async function sendBroadcastSignal(signal: any) {
-  await supabase.channel('webrtc_signals').send({
+  const channelId = `webrtc_send_${Math.random().toString(36).substring(2, 9)}`;
+  const channel = supabase.channel(channelId);
+  await channel.subscribe();
+  await channel.send({
     type: 'broadcast',
     event: 'signal',
     payload: signal
   });
+  supabase.removeChannel(channel);
 }
 
 export function subscribeBroadcastSignals(
   uid: string,
   onSignal: (signal: any) => void
 ) {
-  const channel = supabase.channel('webrtc_signals')
+  const channelId = `webrtc_listen_${uid}_${Math.random().toString(36).substring(2, 9)}`;
+  const channel = supabase.channel(channelId)
     .on(
       'broadcast',
       { event: 'signal' },
       (payload) => {
-        const signal = payload.payload;
+        const signal = payload?.payload;
         if (signal && (signal.targetUid === uid || signal.targetUid === 'all') && signal.uid !== uid) {
           onSignal(signal);
         }
