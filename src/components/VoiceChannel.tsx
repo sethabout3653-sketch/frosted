@@ -1415,7 +1415,7 @@ export default function VoiceChannel({
               return;
             }
             const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-            if (ts > 0 && now - ts <= 120000) {
+            if (ts > 0 && now - ts <= 900000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1429,7 +1429,7 @@ export default function VoiceChannel({
             }
             if (pData.inVoice) {
               const ts = toTimestampMs(pData.lastSeen || pData.timestamp);
-              if (ts > 0 && now - ts <= 45000) {
+              if (ts > 0 && now - ts <= 900000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,

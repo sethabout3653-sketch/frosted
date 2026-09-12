@@ -767,11 +767,11 @@ export default function ChatPanel({
   }, [channelMessages, searchQuery]);
 
   // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
-  // within 60 seconds they will not be shown as online.
+  // within 15 minutes they will not be shown as online.
   const activeOnlineUsers = memberUsers
     .filter((u) => {
       if (u.uid === profile.uid) return true;
-      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 900000;
       return isRecent && u.status !== "left";
     })
     .sort((a, b) => {
@@ -786,7 +786,7 @@ export default function ChatPanel({
   const leftUsers = memberUsers
     .filter((u) => {
       if (!u || u.uid === profile.uid) return false;
-      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 900000;
       return u.status === "left" || !isRecent;
     })
     .sort((a, b) => {
