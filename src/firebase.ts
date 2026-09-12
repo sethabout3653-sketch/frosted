@@ -1,57 +1,23 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import {
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
-  collection as fsCollection,
-  doc as fsDoc,
-  query as fsQuery,
-  where as fsWhere,
-  orderBy as fsOrderBy,
-  limit as fsLimit,
-  getDocs as fsGetDocs,
-  onSnapshot as fsOnSnapshot,
-  addDoc as fsAddDoc,
-  setDoc as fsSetDoc,
-  updateDoc as fsUpdateDoc,
-  deleteDoc as fsDeleteDoc,
-  writeBatch as fsWriteBatch,
-  getDocFromServer,
-  setLogLevel,
-} from "firebase/firestore";
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import firebaseConfig from "../firebase-applet-config.json";
+import { Client, Databases, ID, Query } from "appwrite";
 
-// Silence internal Firestore SDK quota backoff logs in console
-try {
-  setLogLevel("silent");
-} catch (e) {}
+// ==========================================
+// Appwrite Configuration & Client Initialization
+// ==========================================
+const env = (import.meta as any).env || {};
+const APPWRITE_ENDPOINT = env.VITE_APPWRITE_ENDPOINT || "https://cloud.appwrite.io/v1";
+const APPWRITE_PROJECT_ID = env.VITE_APPWRITE_PROJECT_ID || "";
+const APPWRITE_DATABASE_ID = env.VITE_APPWRITE_DATABASE_ID || "main";
 
-// Initialize Firebase App
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-
-// Initialize Firestore with multi-tab persistent local cache & zero query limits
-export const db = initializeFirestore(
-  app,
-  {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager(),
-    }),
-  },
-  firebaseConfig.firestoreDatabaseId || "(default)"
-);
-
-// Connection test
-async function testConnection() {
-  try {
-    await getDocFromServer(fsDoc(db, "test", "connection"));
-    console.log("Firebase Firestore connected successfully!");
-  } catch (error: any) {
-    console.log("Firestore initialization check completed");
-  }
+export const appwriteClient = new Client();
+if (APPWRITE_PROJECT_ID) {
+  appwriteClient.setEndpoint(APPWRITE_ENDPOINT).setProject(APPWRITE_PROJECT_ID);
 }
-testConnection();
+export const appwriteDatabases = new Databases(appwriteClient);
 
+// Dummy db reference object for compatibility with existing imports
+export const db = { type: "appwrite_custom_db", id: "main" };
+
+// Storage helper
 export const cassandra = {
   storage: {
     upload: async (
@@ -59,102 +25,61 @@ export const cassandra = {
       onProgress?: (p: number) => void
     ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
       try {
-        const storage = getStorage(app);
-        const ext = file.name.split('.').pop();
-        const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${ext}`;
-        const fileRef = storageRef(storage, `uploads/${fileName}`);
-        await uploadBytes(fileRef, file);
-        const url = await getDownloadURL(fileRef);
-        return {
-          url,
-          filename: file.name,
-          mimetype: file.type || "application/octet-stream",
-          size: file.size,
-        };
-      } catch (err) {
-        return new Promise((resolve) => {
-          const blobUrl = URL.createObjectURL(file);
-          resolve({
-            url: blobUrl,
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          return {
+            url: data.url || data.fileUrl,
             filename: file.name,
             mimetype: file.type || "application/octet-stream",
             size: file.size,
-          });
-        });
-      }
-    }
-  }
+          };
+        }
+      } catch (err) {}
+
+      // Fallback local blob URL
+      const blobUrl = URL.createObjectURL(file);
+      return {
+        url: blobUrl,
+        filename: file.name,
+        mimetype: file.type || "application/octet-stream",
+        size: file.size,
+      };
+    },
+  },
 };
 
-// Firebase exports
-
-export function collection(dbInstance: any, name: string) {
-  return fsCollection(dbInstance || db, name);
-}
-
-export function doc(dbInstanceOrCol: any, pathOrCol: string, id?: string) {
-  if (typeof pathOrCol === "string" && id) {
-    return fsDoc(dbInstanceOrCol || db, pathOrCol, id);
-  }
-  if (typeof dbInstanceOrCol === "string" && typeof pathOrCol === "string") {
-    return fsDoc(db, dbInstanceOrCol, pathOrCol);
-  }
-  return fsDoc(dbInstanceOrCol, pathOrCol);
-}
-
-export function query(colRef: any, ...constraints: any[]) {
-  const validConstraints = constraints.filter(Boolean);
-  return fsQuery(colRef, ...validConstraints);
-}
-
-export function where(field: string, op: any, value: any) {
-  const mapOp: Record<string, any> = {
-    "==": "==",
-    "!=": "!=",
-    ">": ">",
-    "<": "<",
-    ">=": ">=",
-    "<=": "<=",
-    "in": "in",
-  };
-  return fsWhere(field, mapOp[op] || "==", value);
-}
-
-export function orderBy(field: string, direction: "asc" | "desc" = "asc") {
-  return fsOrderBy(field, direction);
-}
-
-export function limit(limitCount: number) {
-  return fsLimit(limitCount);
-}
-
-// Custom Unlimited Hybrid Realtime Database Engine
-// Combines Firebase Firestore with our high-speed Node Express Server Database (/api/db/*)
-// Guarantees zero quota limits, 100% multi-user cross-device real-time sync, and zero errors forever.
-
-const serverStore: Record<string, Map<string, any>> = {};
-const serverListeners: Map<string, Set<(docsMap: Map<string, any>, changeMeta?: any) => void>> = new Map();
+// ==========================================
+// Pure Appwrite + Express Realtime Database Engine
+// ==========================================
+const store: Record<string, Map<string, any>> = {};
+const listeners: Map<string, Set<(docsMap: Map<string, any>) => void>> = new Map();
 
 function getColMap(colName: string): Map<string, any> {
-  if (!serverStore[colName]) {
-    serverStore[colName] = new Map<string, any>();
+  if (!store[colName]) {
+    store[colName] = new Map<string, any>();
   }
-  return serverStore[colName];
+  return store[colName];
 }
 
-function notifyColListeners(colName: string, changeMeta?: any) {
+function notifyListeners(colName: string) {
   const map = getColMap(colName);
-  const listeners = serverListeners.get(colName);
-  if (listeners) {
-    listeners.forEach((fn) => {
-      try { fn(map, changeMeta); } catch (e) {}
+  const colListeners = listeners.get(colName);
+  if (colListeners) {
+    colListeners.forEach((fn) => {
+      try { fn(map); } catch (e) {}
     });
   }
 }
 
-// Global SSE Listener connection to /api/db/stream
+// Global Server-Sent Events (SSE) Stream Listener for instant cross-device updates
 let sseSource: EventSource | null = null;
-function initBackendSSE() {
+function initSSE() {
   if (typeof window === "undefined" || sseSource) return;
   try {
     const streamUrl = `${window.location.origin}/api/db/stream?collection=all`;
@@ -178,18 +103,17 @@ function initBackendSSE() {
             colMap.clear();
           }
 
-          notifyColListeners(colName, payload);
+          notifyListeners(colName);
         }
       } catch (e) {}
     };
 
     sseSource.onerror = () => {
-      // Re-initialize after delay if connection drops
       setTimeout(() => {
         if (sseSource) {
           try { sseSource.close(); } catch (e) {}
           sseSource = null;
-          initBackendSSE();
+          initSSE();
         }
       }, 3000);
     };
@@ -197,7 +121,7 @@ function initBackendSSE() {
 }
 
 if (typeof window !== "undefined") {
-  initBackendSSE();
+  initSSE();
 }
 
 async function fetchBackendCollection(colName: string) {
@@ -210,10 +134,26 @@ async function fetchBackendCollection(colName: string) {
         Object.entries(data).forEach(([id, val]: [string, any]) => {
           colMap.set(id, { id, ...(val || {}) });
         });
-        notifyColListeners(colName);
+        notifyListeners(colName);
       }
     }
   } catch (e) {}
+
+  // Also query Appwrite if project ID is provided
+  if (APPWRITE_PROJECT_ID) {
+    try {
+      const cleanColName = colName.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 36);
+      const appwriteRes = await appwriteDatabases.listDocuments(APPWRITE_DATABASE_ID, cleanColName);
+      if (appwriteRes?.documents) {
+        const colMap = getColMap(colName);
+        appwriteRes.documents.forEach((doc: any) => {
+          const { $id, $createdAt, $updatedAt, $permissions, $databaseId, $collectionId, ...data } = doc;
+          colMap.set($id, { id: $id, ...data });
+        });
+        notifyListeners(colName);
+      }
+    } catch (e) {}
+  }
 }
 
 async function writeBackendDoc(colName: string, op: "set" | "update" | "delete", id: string, data?: any) {
@@ -224,8 +164,9 @@ async function writeBackendDoc(colName: string, op: "set" | "update" | "delete",
     const existing = colMap.get(id) || {};
     colMap.set(id, { id, ...existing, ...(data || {}) });
   }
-  notifyColListeners(colName, { op, id, data });
+  notifyListeners(colName);
 
+  // 1. Sync with server database endpoint
   try {
     await fetch(`/api/db/data?collection=${encodeURIComponent(colName)}`, {
       method: "POST",
@@ -233,6 +174,20 @@ async function writeBackendDoc(colName: string, op: "set" | "update" | "delete",
       body: JSON.stringify({ op, id, data }),
     });
   } catch (e) {}
+
+  // 2. Sync with Appwrite
+  if (APPWRITE_PROJECT_ID) {
+    try {
+      const cleanColName = colName.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 36);
+      if (op === "delete") {
+        await appwriteDatabases.deleteDocument(APPWRITE_DATABASE_ID, cleanColName, id);
+      } else if (op === "update") {
+        await appwriteDatabases.updateDocument(APPWRITE_DATABASE_ID, cleanColName, id, data || {});
+      } else {
+        await appwriteDatabases.createDocument(APPWRITE_DATABASE_ID, cleanColName, id || ID.unique(), data || {});
+      }
+    } catch (e) {}
+  }
 }
 
 function extractColName(queryOrCol: any): string {
@@ -245,6 +200,43 @@ function extractColName(queryOrCol: any): string {
   return "default";
 }
 
+export function collection(dbInstance: any, name: string) {
+  return { path: name };
+}
+
+export function doc(dbInstanceOrCol: any, pathOrCol: string, id?: string) {
+  if (typeof pathOrCol === "string" && id) {
+    return { id, path: `${pathOrCol}/${id}`, parent: { path: pathOrCol } };
+  }
+  if (typeof dbInstanceOrCol === "object" && dbInstanceOrCol?.path) {
+    return { id: pathOrCol, path: `${dbInstanceOrCol.path}/${pathOrCol}`, parent: { path: dbInstanceOrCol.path } };
+  }
+  if (typeof pathOrCol === "string" && pathOrCol.includes("/")) {
+    const parts = pathOrCol.split("/");
+    const docId = parts.pop() || "doc_" + Date.now();
+    const parentPath = parts.join("/") || "default";
+    return { id: docId, path: pathOrCol, parent: { path: parentPath } };
+  }
+  return { id: pathOrCol, path: pathOrCol, parent: { path: "default" } };
+}
+
+export function query(colRef: any, ...constraints: any[]) {
+  const colName = extractColName(colRef);
+  return { path: colName, constraints };
+}
+
+export function where(field: string, op: string, value: any) {
+  return { type: "where", field, op, value };
+}
+
+export function orderBy(field: string, direction: "asc" | "desc" = "asc") {
+  return { type: "orderBy", field, direction };
+}
+
+export function limit(limitCount: number) {
+  return { type: "limit", count: limitCount };
+}
+
 function buildSyntheticSnapshot(colName: string) {
   const colMap = getColMap(colName);
   const docList = Array.from(colMap.values());
@@ -253,7 +245,7 @@ function buildSyntheticSnapshot(colName: string) {
     id: d.id,
     data: () => ({ ...d }),
     exists: () => true,
-    ref: fsDoc(db, colName, d.id),
+    ref: doc(db, colName, d.id),
   }));
 
   return {
@@ -268,17 +260,6 @@ function buildSyntheticSnapshot(colName: string) {
 export async function getDocs(queryObj: any) {
   const colName = extractColName(queryObj);
   await fetchBackendCollection(colName);
-
-  try {
-    const snap = await fsGetDocs(queryObj);
-    if (snap && snap.size > 0) {
-      const colMap = getColMap(colName);
-      snap.forEach((d) => {
-        colMap.set(d.id, { id: d.id, ...d.data() });
-      });
-    }
-  } catch (e) {}
-
   return buildSyntheticSnapshot(colName);
 }
 
@@ -289,43 +270,22 @@ export function onSnapshot(
 ) {
   const colName = extractColName(queryObj);
 
-  // Fetch initial collection data from custom server backend
   fetchBackendCollection(colName).then(() => {
     callback(buildSyntheticSnapshot(colName));
   });
 
-  // Subscribe to real-time custom server database updates
-  if (!serverListeners.has(colName)) {
-    serverListeners.set(colName, new Set());
+  if (!listeners.has(colName)) {
+    listeners.set(colName, new Set());
   }
-  const colListeners = serverListeners.get(colName)!;
+  const colListeners = listeners.get(colName)!;
 
-  const handleBackendUpdate = () => {
+  const handleUpdate = () => {
     callback(buildSyntheticSnapshot(colName));
   };
-  colListeners.add(handleBackendUpdate);
-
-  // Also listen to Firestore (silently handling quota errors)
-  let unsubscribeFs = () => {};
-  try {
-    unsubscribeFs = fsOnSnapshot(
-      queryObj,
-      (snap) => {
-        const colMap = getColMap(colName);
-        snap.forEach((d) => {
-          colMap.set(d.id, { id: d.id, ...d.data() });
-        });
-        callback(buildSyntheticSnapshot(colName));
-      },
-      (err) => {
-        if (errorCallback) errorCallback(err);
-      }
-    );
-  } catch (e) {}
+  colListeners.add(handleUpdate);
 
   return () => {
-    colListeners.delete(handleBackendUpdate);
-    try { unsubscribeFs(); } catch (e) {}
+    colListeners.delete(handleUpdate);
   };
 }
 
@@ -334,30 +294,15 @@ export async function addDoc(colRefOrName: any, data: any) {
   const docId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
   const docData = { id: docId, ...data, timestamp: data.timestamp || Date.now() };
 
-  // 1. Write to custom server backend (unlimited, zero-quota)
   await writeBackendDoc(colName, "set", docId, docData);
-
-  // 2. Try Firestore write without blocking or throwing quota errors
-  try {
-    const colRef = typeof colRefOrName === "string" ? fsCollection(db, colRefOrName) : colRefOrName;
-    const res = await fsAddDoc(colRef, data);
-    return { id: res.id };
-  } catch (err: any) {
-    return { id: docId };
-  }
+  return { id: docId };
 }
 
 export async function setDoc(docRef: any, data: any, options?: { merge?: boolean }) {
   const colName = docRef?.parent?.path || extractColName(docRef) || "default";
   const docId = docRef?.id || "doc_" + Date.now();
 
-  // 1. Write to custom server backend (unlimited, zero-quota)
   await writeBackendDoc(colName, options?.merge ? "update" : "set", docId, data);
-
-  // 2. Try Firestore write silently
-  try {
-    await fsSetDoc(docRef, data, options || {});
-  } catch (err: any) {}
 }
 
 export async function updateDoc(docRef: any, data: any) {
@@ -367,10 +312,6 @@ export async function updateDoc(docRef: any, data: any) {
   if (docId) {
     await writeBackendDoc(colName, "update", docId, data);
   }
-
-  try {
-    await fsUpdateDoc(docRef, data);
-  } catch (err: any) {}
 }
 
 export async function deleteDoc(docRef: any) {
@@ -380,10 +321,27 @@ export async function deleteDoc(docRef: any) {
   if (docId) {
     await writeBackendDoc(colName, "delete", docId);
   }
+}
 
-  try {
-    await fsDeleteDoc(docRef);
-  } catch (err: any) {}
+export function writeBatch() {
+  const operations: Array<() => Promise<void>> = [];
+
+  return {
+    set: (docRef: any, data: any, options?: any) => {
+      operations.push(() => setDoc(docRef, data, options));
+    },
+    update: (docRef: any, data: any) => {
+      operations.push(() => updateDoc(docRef, data));
+    },
+    delete: (docRef: any) => {
+      operations.push(() => deleteDoc(docRef));
+    },
+    commit: async () => {
+      for (const op of operations) {
+        try { await op(); } catch (e) {}
+      }
+    },
+  };
 }
 
 export enum OperationType {
@@ -396,11 +354,11 @@ export enum OperationType {
   DELETE = "delete",
   BATCH = "batch",
   REALTIME = "realtime",
-  UNKNOWN = "unknown"
+  UNKNOWN = "unknown",
 }
 
 export function handleFirestoreError(err: any, op?: OperationType, context?: string) {
-  console.warn(`Firestore log (${op} - ${context || 'unknown'}):`, err);
+  console.warn(`Database log (${op} - ${context || "unknown"}):`, err);
 }
 
 export function toTimestampMs(val: any): number {
@@ -426,29 +384,7 @@ export function compareMessagesChronological(a: any, b: any): number {
   return idA.localeCompare(idB);
 }
 
-export function writeBatch() {
-  const batch = fsWriteBatch(db);
-  return {
-    set: (docRef: any, data: any, options?: any) => {
-      batch.set(docRef, data, options || {});
-    },
-    update: (docRef: any, data: any) => {
-      batch.update(docRef, data);
-    },
-    delete: (docRef: any) => {
-      batch.delete(docRef);
-    },
-    commit: async () => {
-      try {
-        await batch.commit();
-      } catch (err) {
-        // Silently catch quota or write limit errors
-      }
-    }
-  };
-}
-
-// Local BroadcastChannel for zero-latency, zero-quota cross-tab sync
+// Local BroadcastChannel for zero-latency cross-tab signaling
 const localBus = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
   ? new BroadcastChannel("app_local_sync_channel")
   : null;
@@ -468,25 +404,20 @@ export async function sendBroadcastSignal(signal: any) {
     ...signal,
     timestamp: Date.now(),
   };
-  Object.keys(payload).forEach(key => {
+  Object.keys(payload).forEach((key) => {
     if (payload[key] === undefined) {
       delete payload[key];
     }
   });
-  // 1. Instant zero-quota local tab broadcast
+
   if (localBus) {
     try {
       localBus.postMessage({ type: "signal", payload });
     } catch (e) {}
   }
 
-  // 2. Persist to Firestore for remote peers
-  try {
-    const signalsCol = fsCollection(db, "signals");
-    await fsAddDoc(signalsCol, payload);
-  } catch (err) {
-    console.warn("Firestore signal send notice:", err);
-  }
+  const sigId = "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+  writeBackendDoc("signals", "set", sigId, payload).catch(() => {});
 }
 
 export function subscribeBroadcastSignals(
@@ -501,28 +432,18 @@ export function subscribeBroadcastSignals(
 
   signalListeners.add(handler);
 
-  const q = fsQuery(
-    fsCollection(db, "signals"),
-    fsWhere("targetUid", "in", [uid, "all"])
-  );
-  
-  const unsubscribeFs = fsOnSnapshot(q, (snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type === "added") {
-        const signalData = { id: change.doc.id, ...change.doc.data() } as any;
-        // Clean up signal after receiving to minimize storage
-        fsDeleteDoc(change.doc.ref).catch(() => {});
-        if (signalData.uid !== uid) {
-          onSignal(signalData);
-        }
+  const unsub = onSnapshot({ path: "signals" }, (snapshot: any) => {
+    snapshot.docs.forEach((docSnap: any) => {
+      const signalData = docSnap.data();
+      if (signalData && signalData.uid !== uid && (signalData.targetUid === uid || signalData.targetUid === "all")) {
+        onSignal(signalData);
+        deleteDoc(docSnap.ref).catch(() => {});
       }
     });
-  }, (err) => {
-    console.warn("Signal listener notice:", err);
   });
 
   return () => {
     signalListeners.delete(handler);
-    unsubscribeFs();
+    unsub();
   };
 }

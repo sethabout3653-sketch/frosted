@@ -522,39 +522,45 @@ export default function VoiceChannel({
         // Monitor real-time volume levels & speech/sound activity for local user and remote participants
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const updateLevel = () => {
-          if (!isMountedRef.current) return;
+          if (!isMountedRef.current || !analyserRef.current || !audioCtxRef.current || audioCtxRef.current.state === "closed") return;
 
-          // Local microphone: sound & voice detection
-          analyser.getByteFrequencyData(dataArray);
-          const vadRes = localVadRef.current.analyze(dataArray, ctx.sampleRate);
-          setAudioLevel(vadRes.energy);
+          try {
+            // Local microphone: sound & voice detection
+            analyser.getByteFrequencyData(dataArray);
+            const vadRes = localVadRef.current.analyze(dataArray, ctx.sampleRate);
+            setAudioLevel(vadRes.energy);
 
-          if (vadRes.isSpeaking && !isMutedRef.current) {
-            setIsLocalSpeaking(true);
-          } else {
-            setIsLocalSpeaking(false);
-          }
+            if (vadRes.isSpeaking && !isMutedRef.current) {
+              setIsLocalSpeaking(true);
+            } else {
+              setIsLocalSpeaking(false);
+            }
 
-          // Evaluate speech for remote participants using SmartVoiceDetector
-          const remoteMap: { [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } } = remoteAnalysersRef.current;
-          for (const [pUid, rData] of Object.entries(remoteMap)) {
-            if (rData && rData.analyser) {
-              if (!remoteVadMapRef.current[pUid]) {
-                remoteVadMapRef.current[pUid] = new SmartVoiceDetector();
-              }
-              const rArray = new Uint8Array(rData.analyser.frequencyBinCount);
-              rData.analyser.getByteFrequencyData(rArray);
-              const rVad = remoteVadMapRef.current[pUid].analyze(rArray, ctx.sampleRate);
+            // Evaluate speech for remote participants using SmartVoiceDetector
+            const remoteMap: { [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } } = remoteAnalysersRef.current;
+            for (const [pUid, rData] of Object.entries(remoteMap)) {
+              if (rData && rData.analyser) {
+                if (!remoteVadMapRef.current[pUid]) {
+                  remoteVadMapRef.current[pUid] = new SmartVoiceDetector();
+                }
+                const rArray = new Uint8Array(rData.analyser.frequencyBinCount);
+                rData.analyser.getByteFrequencyData(rArray);
+                const rVad = remoteVadMapRef.current[pUid].analyze(rArray, ctx.sampleRate);
 
-              if (rVad.isSpeaking) {
-                setRemoteSpeaking((prev) => (prev[pUid] ? prev : { ...prev, [pUid]: true }));
-              } else {
-                setRemoteSpeaking((prev) => (prev[pUid] ? { ...prev, [pUid]: false } : prev));
+                if (rVad.isSpeaking) {
+                  setRemoteSpeaking((prev) => (prev[pUid] ? prev : { ...prev, [pUid]: true }));
+                } else {
+                  setRemoteSpeaking((prev) => (prev[pUid] ? { ...prev, [pUid]: false } : prev));
+                }
               }
             }
-          }
 
-          animFrameRef.current = requestAnimationFrame(updateLevel);
+            if (isMountedRef.current) {
+              animFrameRef.current = requestAnimationFrame(updateLevel);
+            }
+          } catch (e) {
+            // Teardown safety
+          }
         };
         animFrameRef.current = requestAnimationFrame(updateLevel);
 
@@ -2367,6 +2373,12 @@ export default function VoiceChannel({
   };
 
   const handleLeave = () => {
+    isMountedRef.current = false;
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
     // 1. Immediately delete voice_users document and mark presence as left voice
     deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
     updateDoc(doc(db, "presence", profile.uid), {
