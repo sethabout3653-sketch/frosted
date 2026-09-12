@@ -308,20 +308,26 @@ export async function setDoc(docRef: { colName: string; id: string }, data: any,
       .from(docRef.colName)
       .upsert({ [pk]: docRef.id, ...data }, { onConflict: pk });
     
-    if (!error) return;
-
-    // Handle missing columns (PGRST204) by retrying without the problematic fields
-    if (error.code === "PGRST204") {
-      const sanitized = { ...data };
-      const missingColumn = error.message.match(/'(.+)' column/)?.[1];
-      if (missingColumn && sanitized[missingColumn] !== undefined) {
-        delete sanitized[missingColumn];
-        console.info(`[Supabase] Retrying setDoc without missing column: ${missingColumn}`);
-        return setDoc(docRef, sanitized, _options);
+    if (error) {
+      // Handle missing columns (PGRST204) by retrying without the problematic fields
+      if (error.code === "PGRST204") {
+        const sanitized = { ...data };
+        const missingColumn = error.message.match(/'(.+)' column/)?.[1];
+        if (missingColumn && sanitized[missingColumn] !== undefined) {
+          delete sanitized[missingColumn];
+          console.info(`[Supabase] Retrying setDoc without missing column: ${missingColumn}`);
+          return setDoc(docRef, sanitized, _options);
+        }
       }
+
+      // If it's a network error (Failed to fetch), mark unhealthy and suppress warning
+      if (error.message?.includes("Failed to fetch") || error.message?.includes("NetworkError")) {
+        supabaseIsHealthy = false;
+        return realtimeDb.set(docRef.colName, docRef.id, data);
+      }
+      
+      console.warn("[Supabase] setDoc failed, falling back to local:", error);
     }
-    
-    console.warn("[Supabase] setDoc failed, falling back to local:", error);
   }
   await realtimeDb.set(docRef.colName, docRef.id, data);
 }
@@ -334,20 +340,27 @@ export async function updateDoc(docRef: { colName: string; id: string }, data: a
       .update(data)
       .eq(pk, docRef.id);
     
-    if (!error) return;
-
-    // Handle missing columns (PGRST204)
-    if (error.code === "PGRST204") {
-      const sanitized = { ...data };
-      const missingColumn = error.message.match(/'(.+)' column/)?.[1];
-      if (missingColumn && sanitized[missingColumn] !== undefined) {
-        delete sanitized[missingColumn];
-        console.info(`[Supabase] Retrying updateDoc without missing column: ${missingColumn}`);
-        return updateDoc(docRef, sanitized);
+    if (error) {
+      // Handle missing columns (PGRST204)
+      if (error.code === "PGRST204") {
+        const sanitized = { ...data };
+        const missingColumn = error.message.match(/'(.+)' column/)?.[1];
+        if (missingColumn && sanitized[missingColumn] !== undefined) {
+          delete sanitized[missingColumn];
+          console.info(`[Supabase] Retrying updateDoc without missing column: ${missingColumn}`);
+          return updateDoc(docRef, sanitized);
+        }
       }
-    }
 
-    console.warn("[Supabase] updateDoc failed, falling back to local:", error);
+      // Handle network errors
+      if (error.message?.includes("Failed to fetch") || error.message?.includes("NetworkError")) {
+        supabaseIsHealthy = false;
+        const existing = await realtimeDb.get(docRef.colName, docRef.id);
+        return realtimeDb.set(docRef.colName, docRef.id, { ...(existing || {}), ...data });
+      }
+
+      console.warn("[Supabase] updateDoc failed, falling back to local:", error);
+    }
   }
   const existing = await realtimeDb.get(docRef.colName, docRef.id);
   await realtimeDb.set(docRef.colName, docRef.id, { ...existing, ...data });
