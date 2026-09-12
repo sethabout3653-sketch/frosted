@@ -460,7 +460,8 @@ export default function VoiceChannel({
         audio: {
           echoCancellation: true,
           noiseSuppression: false,
-          autoGainControl: true,
+          autoGainControl: false,
+          channelCount: 2,
         },
         video: false,
       });
@@ -1972,6 +1973,10 @@ export default function VoiceChannel({
                   await videoSender.setParameters(params).catch(() => {});
                 } catch (e) {}
               }
+              // Force renegotiation to ensure remote peers display the new track
+              if (localStreamRef.current) {
+                initiateCall(pUid, localStreamRef.current);
+              }
               sendSignal(pUid, "camera_started", "");
             }
           })
@@ -2010,7 +2015,13 @@ export default function VoiceChannel({
                 }
               }
               if (videoSender) {
-                await videoSender.replaceTrack(dummyTrack).catch(() => {});
+                await videoSender.replaceTrack(null).catch(() => {});
+              }
+              if (localStreamRef.current) {
+                initiateCall(pUid, localStreamRef.current);
+              }
+              if (localStreamRef.current) {
+                initiateCall(pUid, localStreamRef.current);
               }
               sendSignal(pUid, "camera_stopped", "");
             }
@@ -2113,8 +2124,14 @@ export default function VoiceChannel({
           }
           if (sender) {
             try {
-              await sender.replaceTrack(dummyTrack);
+              await sender.replaceTrack(null);
             } catch (e) {}
+          }
+          if (localStreamRef.current) {
+            initiateCall(pUid, localStreamRef.current);
+          }
+          if (localStreamRef.current) {
+            initiateCall(pUid, localStreamRef.current);
           }
           sendSignal(pUid, "screenshare_stopped", "");
         }
@@ -2296,6 +2313,9 @@ export default function VoiceChannel({
                 params.encodings[0].networkPriority = "high";
                 await screenSender.setParameters(params).catch(() => {});
               } catch (e) {}
+            }
+            if (localStreamRef.current) {
+              initiateCall(pUid, localStreamRef.current);
             } else {
               try {
                 const newSender = pc.addTrack(screenVideoTrack, displayStream);
