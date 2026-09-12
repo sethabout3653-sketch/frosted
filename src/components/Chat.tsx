@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   MessageSquare,
   Gamepad2,
@@ -92,22 +92,27 @@ export default function Chat({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter out anonymous users and sort the active list
-  const voiceUsers = rawVoiceUsers
-    .filter((u) => {
-      if (!u || !u.uid) return false;
-      const uname = (u.username || "").trim();
-      if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") return false;
-      return true;
-    })
-    .sort((a, b) => {
-      if (!a || !b) return 0;
+  // Filter out anonymous users and deduplicate by username (keeping most recent)
+  const voiceUsers = useMemo(() => {
+    const userMap = new Map<string, any>();
+    
+    rawVoiceUsers.forEach(u => {
+      if (!u || !u.uid) return;
+      const uname = (u.username || "").trim().toLowerCase();
+      if (!uname || uname === "anonymous" || uname === "guest") return;
+      
+      const existing = userMap.get(uname);
+      if (!existing || (u.timestamp || 0) > (existing.timestamp || 0) || u.uid === profile?.uid) {
+        userMap.set(uname, u);
+      }
+    });
+
+    return Array.from(userMap.values()).sort((a, b) => {
       if (profile && a.uid === profile.uid) return -1;
       if (profile && b.uid === profile.uid) return 1;
-      const nameCompare = (a.username || "").localeCompare(b.username || "");
-      if (nameCompare !== 0) return nameCompare;
-      return (a.uid || "").localeCompare(b.uid || "");
+      return (a.username || "").localeCompare(b.username || "");
     });
+  }, [rawVoiceUsers, profile?.uid]);
 
   const sessionStartRef = useRef(Date.now());
   const isOpenRef = useRef(isOpen);

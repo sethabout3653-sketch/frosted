@@ -330,8 +330,9 @@ export default function ChatPanel({
           });
         });
 
-        // Ensure current profile is present if valid
-        if (profile?.username && profile.username.toLowerCase() !== "anonymous" && !users.some((u) => u.uid === profile.uid)) {
+        // Ensure current profile is present if valid and not already in the list
+        const lowerProfileName = (profile?.username || "").trim().toLowerCase();
+        if (lowerProfileName && lowerProfileName !== "anonymous" && !users.some((u) => (u.username || "").trim().toLowerCase() === lowerProfileName)) {
           users.unshift({
             uid: profile.uid,
             username: profile.username,
@@ -766,35 +767,56 @@ export default function ChatPanel({
     return [...list].sort(compareMessagesChronological);
   }, [channelMessages, searchQuery]);
 
-  // Instant filtering: if a player lost connection or battery and stopped sending heartbeats,
-  // within 60 seconds they will not be shown as online.
-  const activeOnlineUsers = memberUsers
-    .filter((u) => {
-      if (u.uid === profile.uid) return true;
+  // Deduplicate by username (keeping most recent or local user) and filter by activity
+  const activeOnlineUsers = useMemo(() => {
+    const userMap = new Map<string, MemberUser>();
+    
+    memberUsers.forEach(u => {
+      const uname = (u.username || "").trim().toLowerCase();
+      if (!uname) return;
+
+      const isMe = u.uid === profile.uid;
       const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
-      return isRecent && u.status !== "left";
-    })
-    .sort((a, b) => {
-      if (!a || !b) return 0;
-      if (a.uid === profile.uid) return -1;
-      if (b.uid === profile.uid) return 1;
-      const nameCompare = (a.username || "").localeCompare(b.username || "");
-      if (nameCompare !== 0) return nameCompare;
-      return (a.uid || "").localeCompare(b.uid || "");
+      const isValid = isMe || (isRecent && u.status !== "left");
+
+      if (isValid) {
+        const existing = userMap.get(uname);
+        if (!existing || (u.lastSeen || 0) > (existing.lastSeen || 0) || isMe) {
+          userMap.set(uname, u);
+        }
+      }
     });
 
-  const leftUsers = memberUsers
-    .filter((u) => {
-      if (!u || u.uid === profile.uid) return false;
-      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
-      return u.status === "left" || !isRecent;
-    })
-    .sort((a, b) => {
-      if (!a || !b) return 0;
-      const nameCompare = (a.username || "").localeCompare(b.username || "");
-      if (nameCompare !== 0) return nameCompare;
-      return (a.uid || "").localeCompare(b.uid || "");
+    return Array.from(userMap.values()).sort((a, b) => {
+      if (a.uid === profile.uid) return -1;
+      if (b.uid === profile.uid) return 1;
+      return (a.username || "").localeCompare(b.username || "");
     });
+  }, [memberUsers, profile.uid, currentTime]);
+
+  const leftUsers = useMemo(() => {
+    const userMap = new Map<string, MemberUser>();
+    const onlineNames = new Set(activeOnlineUsers.map(u => (u.username || "").trim().toLowerCase()));
+
+    memberUsers.forEach(u => {
+      const uname = (u.username || "").trim().toLowerCase();
+      if (!uname || u.uid === profile.uid || onlineNames.has(uname)) return;
+
+      const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
+      const isLeft = u.status === "left" || !isRecent;
+
+      if (isLeft) {
+        const existing = userMap.get(uname);
+        if (!existing || (u.lastSeen || 0) > (existing.lastSeen || 0)) {
+          userMap.set(uname, u);
+        }
+      }
+    });
+
+    return Array.from(userMap.values()).sort((a, b) => {
+      return (a.username || "").localeCompare(b.username || "");
+    });
+  }, [memberUsers, profile.uid, currentTime, activeOnlineUsers]);
 
   const renderAttachment = (msg: ChatMessage) => {
     if (!msg.attachment) return null;

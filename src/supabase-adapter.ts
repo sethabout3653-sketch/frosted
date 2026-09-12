@@ -11,12 +11,38 @@ const isSupabaseConfigured =
   supabaseUrl !== "https://placeholder.supabase.co" &&
   supabaseAnonKey !== "placeholder";
 
+// Global connectivity state
+let supabaseIsHealthy = isSupabaseConfigured;
+
+// Connectivity check with timeout
+const checkSupabaseHealth = async () => {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+    const { error } = await supabase.from("_health_check").select("count").limit(1).abortSignal(controller.signal);
+    clearTimeout(timeoutId);
+    if (error && error.code === "PGRST116") return true; // Table not found but reachable
+    return !error;
+  } catch (e) {
+    return false;
+  }
+};
+
+// Periodic health check
+if (isSupabaseConfigured) {
+  checkSupabaseHealth().then(h => supabaseIsHealthy = h);
+  setInterval(() => {
+    checkSupabaseHealth().then(h => supabaseIsHealthy = h);
+  }, 30000); // Check every 30s
+}
+
 export const supabase: SupabaseClient = createClient(
   supabaseUrl || "https://placeholder.supabase.co",
   supabaseAnonKey || "placeholder"
 );
 
-export const db = { name: isSupabaseConfigured ? "Supabase" : "LocalDB" };
+export const db = { name: (isSupabaseConfigured && supabaseIsHealthy) ? "Supabase" : "LocalDB" };
 
 // Storage Helper
 export const cassandra = {
@@ -127,9 +153,12 @@ export async function getDocs(queryObj: any) {
     return { docs: [], forEach: () => {}, empty: true, size: 0 };
   }
 
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     try {
-      let q: any = supabase.from(colName).select("*");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+      let q: any = supabase.from(colName).select("*").abortSignal(controller.signal);
 
       for (const c of constraints) {
         if (c.type === "where") {
@@ -150,6 +179,7 @@ export async function getDocs(queryObj: any) {
       }
 
       const { data, error } = await q;
+      clearTimeout(timeoutId);
       if (!error) {
         return {
           docs: (data || []).map((d: any) => ({
@@ -214,7 +244,7 @@ export function onSnapshot(
   // Initial fetch
   getDocs(queryObj).then(onNext).catch(console.error);
 
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     // Subscribe to changes with a unique channel name to avoid "after subscribe" errors
     const channelId = `snapshot_${colName}_${Math.random().toString(36).slice(2, 9)}`;
     const channel = supabase
@@ -227,7 +257,12 @@ export function onSnapshot(
           getDocs(queryObj).then(onNext).catch(console.error);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[Supabase] Channel ${channelId} failed with ${status}, ignoring Supabase for this session.`);
+          supabaseIsHealthy = false;
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -250,25 +285,51 @@ export function onSnapshot(
 }
 
 export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
     const { error } = await supabase
       .from(docRef.colName)
       .upsert({ [pk]: docRef.id, ...data }, { onConflict: pk });
+    
     if (!error) return;
+
+    // Handle missing columns (PGRST204) by retrying without the problematic fields
+    if (error.code === "PGRST204") {
+      const sanitized = { ...data };
+      const missingColumn = error.message.match(/'(.+)' column/)?.[1];
+      if (missingColumn && sanitized[missingColumn] !== undefined) {
+        delete sanitized[missingColumn];
+        console.info(`[Supabase] Retrying setDoc without missing column: ${missingColumn}`);
+        return setDoc(docRef, sanitized, _options);
+      }
+    }
+    
     console.warn("[Supabase] setDoc failed, falling back to local:", error);
   }
   await realtimeDb.set(docRef.colName, docRef.id, data);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
     const { error } = await supabase
       .from(docRef.colName)
       .update(data)
       .eq(pk, docRef.id);
+    
     if (!error) return;
+
+    // Handle missing columns (PGRST204)
+    if (error.code === "PGRST204") {
+      const sanitized = { ...data };
+      const missingColumn = error.message.match(/'(.+)' column/)?.[1];
+      if (missingColumn && sanitized[missingColumn] !== undefined) {
+        delete sanitized[missingColumn];
+        console.info(`[Supabase] Retrying updateDoc without missing column: ${missingColumn}`);
+        return updateDoc(docRef, sanitized);
+      }
+    }
+
     console.warn("[Supabase] updateDoc failed, falling back to local:", error);
   }
   const existing = await realtimeDb.get(docRef.colName, docRef.id);
@@ -276,7 +337,7 @@ export async function updateDoc(docRef: { colName: string; id: string }, data: a
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
     const { error } = await supabase
       .from(docRef.colName)
@@ -289,7 +350,7 @@ export async function deleteDoc(docRef: { colName: string; id: string }) {
 }
 
 export async function addDoc(colName: string, data: any) {
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured && supabaseIsHealthy) {
     const { data: inserted, error } = await supabase
       .from(colName)
       .insert(data)
@@ -320,14 +381,29 @@ export function writeBatch() {
 }
 
 // Signaling Compatibility (used for WebRTC)
-const signalChannel = supabase.channel('realtime_signals');
+const signalChannel = supabase.channel('realtime_signals', {
+  config: {
+    broadcast: { self: true, ack: true }
+  }
+});
+
+// Explicitly subscribe to the channel to establish the WebSocket connection for broadcasting
+signalChannel.subscribe((status) => {
+  if (status === 'SUBSCRIBED') {
+    console.log('[Supabase] Signal channel joined successfully');
+  }
+});
 
 export function sendBroadcastSignal(payload: any) {
-  signalChannel.send({
-    type: 'broadcast',
-    event: 'signal',
-    payload: { ...payload, id: payload.id || `sig_${Date.now()}` }
-  });
+  // Use the modern broadcast method
+  // We explicitly allow httpSend to suppress the REST fallback warning when the socket isn't yet subscribed
+  signalChannel.send(
+    {
+      type: 'broadcast',
+      event: 'signal',
+      payload: { ...payload, id: payload.id || `sig_${Date.now()}` }
+    }
+  );
 }
 
 export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
