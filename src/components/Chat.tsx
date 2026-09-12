@@ -133,7 +133,7 @@ export default function Chat({
           return;
         }
         const ts = toTimestampMs(data.timestamp || data.lastSeen);
-        if (ts > 0 && now - ts <= 900000) {
+        if (ts > 0 && now - ts <= 120000) {
           userMap.set(data.uid, { ...data, timestamp: ts });
         }
       });
@@ -147,7 +147,7 @@ export default function Chat({
         }
         if (data.inVoice) {
           const ts = toTimestampMs(data.lastSeen || data.timestamp);
-          if (ts > 0 && now - ts <= 900000) {
+          if (ts > 0 && now - ts <= 60000) {
             const existing = userMap.get(data.uid);
             userMap.set(data.uid, {
               uid: data.uid,

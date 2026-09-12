@@ -3,13 +3,9 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
-import { createServer as createHttpServer } from "http";
-import { WebSocketServer, WebSocket } from "ws";
-import { Server as SocketIOServer } from "socket.io";
 
 async function startServer() {
   const app = express();
-  const httpServer = createHttpServer(app);
   const PORT = 3000;
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
@@ -491,18 +487,6 @@ async function startServer() {
   try {
     if (fs.existsSync(cassandraStoreFile)) {
       cassandraData = JSON.parse(fs.readFileSync(cassandraStoreFile, "utf-8"));
-      // Purge any residual bot records so only real users exist
-      for (const col of Object.keys(cassandraData)) {
-        for (const id of Object.keys(cassandraData[col] || {})) {
-          if (
-            id.startsWith("bot_") || 
-            id.startsWith("doc_bot_") || 
-            (cassandraData[col][id]?.uid && String(cassandraData[col][id].uid).startsWith("bot_"))
-          ) {
-            delete cassandraData[col][id];
-          }
-        }
-      }
     }
   } catch (e) {
     console.warn("[Cassandra] No prior disk store found, initializing empty store");
@@ -528,89 +512,6 @@ async function startServer() {
     timestamp: number;
   }> = [];
 
-  // ==========================================
-  // Socket.IO Server Setup for Vercel/Native WebSockets Compatibility
-  // ==========================================
-  const io = new SocketIOServer(httpServer, {
-    path: "/api/socket",
-    transports: ["websocket"],
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
-    }
-  });
-
-  io.on("connection", (socket) => {
-    // Initial sync
-    socket.on("sync:request", () => {
-      socket.emit("sync:init", cassandraData);
-    });
-
-    // Write mutation
-    socket.on("db:write", (msg: { op: string; collection: string; id: string; data: any }) => {
-      try {
-        const { op, collection: col, id, data } = msg;
-        if (!col || !id) return;
-
-        if (!cassandraData[col]) {
-          cassandraData[col] = {};
-        }
-
-        if (op === "delete") {
-          delete cassandraData[col][id];
-        } else if (op === "update") {
-          cassandraData[col][id] = {
-            ...(cassandraData[col][id] || {}),
-            ...data,
-            id,
-          };
-        } else {
-          cassandraData[col][id] = { ...data, id };
-        }
-
-        saveCassandraStore();
-
-        const changeRecord = {
-          timestamp: Date.now(),
-          collection: col,
-          id,
-          op: op || "set",
-          data,
-        };
-
-        cassandraChangeHistory.push(changeRecord);
-        if (cassandraChangeHistory.length > 1000) {
-          cassandraChangeHistory = cassandraChangeHistory.slice(-1000);
-        }
-
-        // Broadcast mutation to other users via socket
-        socket.broadcast.emit("db:mutation", { collection: col, op: op || "set", id, data });
-
-        // Broadcast to SSE clients too
-        const payload = JSON.stringify({
-          type: "change",
-          op,
-          collection: col,
-          id,
-          data,
-          timestamp: Date.now(),
-        });
-        sseClients.forEach((client) => {
-          try {
-            client.write(`data: ${payload}\n\n`);
-            (client as any).flush?.();
-          } catch (e) {
-            sseClients.delete(client);
-          }
-        });
-      } catch (e) {}
-    });
-
-    socket.on("presence:register", (profile) => {
-      socket.broadcast.emit("presence:update", profile);
-    });
-  });
-
   const broadcastCassandraChange = (
     op: string,
     collection: string,
@@ -625,10 +526,6 @@ async function startServer() {
       data,
       timestamp: Date.now(),
     });
-
-    try {
-      io.emit("db:mutation", { collection, op, id, data });
-    } catch (e) {}
 
     sseClients.forEach((client) => {
       try {
@@ -656,159 +553,6 @@ async function startServer() {
       }
     });
   };
-
-  // ==========================================
-  // Vercel Native WebSockets Engine (SAVS Live Relay)
-  // ==========================================
-  const wss = new WebSocketServer({ noServer: true });
-  const wsClients = new Map<WebSocket, { uid?: string; channelId?: string }>();
-
-  httpServer.on("upgrade", (request, socket, head) => {
-    try {
-      const urlObj = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
-      const pathname = urlObj.pathname;
-      if (!pathname.startsWith("/api/socket")) {
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          wss.emit("connection", ws, request);
-        });
-      }
-    } catch (err) {
-      // url parse error, default fallback
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
-    }
-  });
-
-  wss.on("connection", (ws) => {
-    wsClients.set(ws, {});
-
-    ws.on("message", (messageData) => {
-      try {
-        const msg = JSON.parse(messageData.toString());
-        if (msg.type === "register") {
-          wsClients.set(ws, { uid: msg.uid, channelId: msg.channelId });
-        } else if (msg.type === "voice" || msg.type === "video") {
-          const senderInfo = wsClients.get(ws);
-          const cid = msg.channelId || senderInfo?.channelId;
-          const senderUid = msg.uid || senderInfo?.uid;
-
-          wsClients.forEach((client, clientWs) => {
-            if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
-              if (client.channelId === cid) {
-                clientWs.send(JSON.stringify({
-                  type: msg.type,
-                  uid: senderUid,
-                  videoType: msg.videoType,
-                  data: msg.data
-                }));
-              }
-            }
-          });
-        }
-      } catch (e) {
-        // Parse error or invalid frame format
-      }
-    });
-
-    ws.on("close", () => {
-      wsClients.delete(ws);
-    });
-
-    ws.on("error", () => {
-      wsClients.delete(ws);
-    });
-  });
-
-  // ==========================================
-  // SAVS (Serverless Audio/Video Sync) Storage & Endpoints
-  // ==========================================
-  const savsVoiceChunks: Record<string, Array<{
-    uid: string;
-    data: string;
-    timestamp: number;
-  }>> = {};
-
-  const savsVideoFrames: Record<string, Record<string, {
-    camera?: { data: string; timestamp: number };
-    screen?: { data: string; timestamp: number };
-  }>> = {};
-
-  // POST /api/voice/upload
-  app.post("/api/voice/upload", (req, res) => {
-    const { uid, channelId, data } = req.body;
-    if (!channelId || !uid || !data) {
-      return res.status(400).json({ error: "Missing parameters" });
-    }
-
-    if (!savsVoiceChunks[channelId]) {
-      savsVoiceChunks[channelId] = [];
-    }
-
-    savsVoiceChunks[channelId].push({
-      uid,
-      data,
-      timestamp: Date.now(),
-    });
-
-    // Prune chunks older than 8 seconds to prevent memory bloating
-    const now = Date.now();
-    savsVoiceChunks[channelId] = savsVoiceChunks[channelId].filter(
-      (c) => now - c.timestamp < 8000
-    );
-
-    res.json({ success: true });
-  });
-
-  // GET /api/voice/download
-  app.get("/api/voice/download", (req, res) => {
-    const { channelId, lastTimestamp } = req.query;
-    if (!channelId) {
-      return res.status(400).json({ error: "Missing channelId" });
-    }
-
-    const cid = channelId as string;
-    const since = parseInt(lastTimestamp as string || "0");
-
-    const chunks = savsVoiceChunks[cid] || [];
-    const filtered = chunks.filter((c) => c.timestamp > since);
-
-    res.json({ chunks: filtered });
-  });
-
-  // POST /api/video/upload
-  app.post("/api/video/upload", (req, res) => {
-    const { uid, channelId, type, data } = req.body;
-    if (!channelId || !uid || !type || !data) {
-      return res.status(400).json({ error: "Missing parameters" });
-    }
-
-    if (!savsVideoFrames[channelId]) {
-      savsVideoFrames[channelId] = {};
-    }
-
-    if (!savsVideoFrames[channelId][uid]) {
-      savsVideoFrames[channelId][uid] = {};
-    }
-
-    savsVideoFrames[channelId][uid][type as "camera" | "screen"] = {
-      data,
-      timestamp: Date.now(),
-    };
-
-    res.json({ success: true });
-  });
-
-  // GET /api/video/download
-  app.get("/api/video/download", (req, res) => {
-    const { channelId } = req.query;
-    if (!channelId) {
-      return res.status(400).json({ error: "Missing channelId" });
-    }
-
-    const cid = channelId as string;
-    res.json({ frames: savsVideoFrames[cid] || {} });
-  });
 
   // 1. Cassandra Realtime SSE Stream
   app.get("/api/cassandra/stream", (req, res) => {
@@ -865,7 +609,7 @@ async function startServer() {
       }
 
       const sigObj = {
-        id: "sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8),
+        id: req.body?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid,
         targetUid,
         type,
@@ -1120,254 +864,28 @@ async function startServer() {
     });
   });
 
-  // API Proxy Route: Create session
-  app.post("/api/lumin-session", async (req, res) => {
-    try {
-      const response = await fetch("https://a.luminsdk.com/api/v1/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        res.json(data);
-      } else {
-        res.status(response.status).json({ error: "Lumin session creation failed" });
-      }
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // API Proxy Route: Fetch game list
-  app.get("/api/lumin-games", async (req, res) => {
-    try {
-      const sessionHeader = req.headers["x-session"] as string || "";
-      const response = await fetch("https://a.luminsdk.com/api/v1/games?limit=5000", {
-        headers: { "X-Session": sessionHeader },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        res.json(data);
-      } else {
-        res.status(response.status).json({ error: "Lumin games fetch failed" });
-      }
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // API Proxy Route: Resolve game details & direct URL (using wildcard to support slashes in game IDs)
-  app.get("/api/lumin-game-url/*", async (req, res) => {
-    try {
-      const gameId = req.params[0];
-      const sessionHeader = (req.headers["x-session"] as string) || "";
-      const response = await fetch(`https://a.luminsdk.com/api/v1/games/${gameId}`, {
-        headers: { "X-Session": sessionHeader },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        res.json(data);
-      } else {
-        res.status(response.status).json({ error: "Lumin game details fetch failed" });
-      }
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // API Proxy Route: Stream and Cache game icons/covers (using wildcard to support slashes in tokens)
-  app.get("/api/lumin-icon/*", async (req, res) => {
-    try {
-      const token = req.params[0];
-      const response = await fetch(`https://a.luminsdk.com/api/v1/icon/${token}`);
-      if (response.ok && response.body) {
-        res.setHeader("Content-Type", response.headers.get("Content-Type") || "image/png");
-        res.setHeader("Cache-Control", "public, max-age=86400"); // Cache locally for 1 day
-        const arrayBuffer = await response.arrayBuffer();
-        res.send(Buffer.from(arrayBuffer));
-      } else {
-        res.status(response.status || 404).end();
-      }
-    } catch (err) {
-      res.status(500).end();
-    }
-  });
-
-  // API Proxy Route: Game Frame with Auto-Fit Responsive Engine
-  app.get("/api/game-frame", async (req, res) => {
-    try {
-      const rawUrl = req.query.url as string;
-      if (!rawUrl) return res.status(400).send("Missing url parameter");
-      let target: URL;
-      try { target = new URL(rawUrl); } catch { return res.status(400).send("Invalid game URL"); }
-      const allowedHosts = ["myinstants.com", "www.myinstants.com", "raw.githubusercontent.com", "rawcdn.githack.com", "cdn.jsdelivr.net"];
-      if (target.protocol !== "https:" || !allowedHosts.includes(target.hostname)) {
-        return res.status(403).send("Game host is not allowed");
-      }
-
-      const response = await fetch(target, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-      });
-
-      if (!response.ok) {
-        res.setHeader("Content-Type", response.headers.get("content-type") || "text/html; charset=utf-8");
-        return res.status(response.status).send(await response.text());
-      }
-
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("text/html")) {
-        // If not HTML, redirect directly to asset
-        return res.redirect(rawUrl);
-      }
-
-      let html = await response.text();
-
-      // Ensure <base> tag exists pointing to the origin directory of the file so relative paths resolve cleanly
-      if (!/<base\s/i.test(html)) {
-        const lastSlashIndex = rawUrl.lastIndexOf("/");
-        const baseDir = lastSlashIndex > 0 ? rawUrl.substring(0, lastSlashIndex + 1) : rawUrl;
-        if (/<head[^>]*>/i.test(html)) {
-          html = html.replace(/<head[^>]*>/i, `$&<base href="${baseDir}">`);
-        } else {
-          html = `<base href="${baseDir}">` + html;
-        }
-      }
-
-      // Auto-fit responsive injection for canvas, Unity containers, and loading elements
-      const fitInjection = `
-<style id="frosted-game-fit-engine">
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    width: 100vw !important;
-    height: 100vh !important;
-    max-width: 100vw !important;
-    max-height: 100vh !important;
-    overflow: hidden !important;
-    background: #000000 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-  }
-  #loading-text {
-    position: fixed !important;
-    top: 14px !important;
-    left: 50% !important;
-    transform: translateX(-50%) !important;
-    font-size: 15px !important;
-    font-weight: 600 !important;
-    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-    color: #ffffff !important;
-    background: rgba(18, 18, 18, 0.88) !important;
-    padding: 6px 18px !important;
-    border-radius: 9999px !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
-    z-index: 999999 !important;
-    pointer-events: none !important;
-    margin: 0 !important;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  #unity-container, .unity-desktop, #gameContainer, #canvas-container, #game-container, #c2canvasdiv, .emscripten_border, #player, #root {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    bottom: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    max-width: 100vw !important;
-    max-height: 100vh !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    transform: none !important;
-  }
-  canvas, #unity-canvas, #canvas, .emscripten {
-    display: block !important;
-    max-width: 100vw !important;
-    max-height: 100vh !important;
-    object-fit: contain !important;
-    margin: auto !important;
-  }
-  #unity-loading-bar {
-    position: absolute !important;
-    left: 50% !important;
-    top: 50% !important;
-    transform: translate(-50%, -50%) !important;
-    z-index: 99999 !important;
-  }
-</style>
-<script id="frosted-game-fit-script">
-(function() {
-  function fitElements() {
-    try {
-      var vw = window.innerWidth;
-      var vh = window.innerHeight;
-      var canvases = document.querySelectorAll('canvas');
-      for (var i = 0; i < canvases.length; i++) {
-        var c = canvases[i];
-        if (c) {
-          var cw = c.width || c.clientWidth || 0;
-          var ch = c.height || c.clientHeight || 0;
-          if (cw > 0 && ch > 0) {
-            var ratio = cw / ch;
-            var targetW = vw;
-            var targetH = vw / ratio;
-            if (targetH > vh) {
-              targetH = vh;
-              targetW = vh * ratio;
-            }
-            c.style.setProperty('width', Math.floor(targetW) + 'px', 'important');
-            c.style.setProperty('height', Math.floor(targetH) + 'px', 'important');
-          } else {
-            c.style.setProperty('width', '100%', 'important');
-            c.style.setProperty('height', '100%', 'important');
-          }
-          c.style.setProperty('max-width', '100vw', 'important');
-          c.style.setProperty('max-height', '100vh', 'important');
-          c.style.setProperty('object-fit', 'contain', 'important');
-          c.style.setProperty('display', 'block', 'important');
-          c.style.setProperty('margin', 'auto', 'important');
-        }
-      }
-    } catch(e) {}
-  }
-  window.addEventListener('resize', fitElements);
-  window.addEventListener('DOMContentLoaded', fitElements);
-  setInterval(fitElements, 500);
-})();
-</script>
-`;
-
-      if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/<\/head>/i, `${fitInjection}</head>`);
-      } else {
-        html = `${fitInjection}${html}`;
-      }
-
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.removeHeader("X-Frame-Options");
-      res.removeHeader("Content-Security-Policy");
-      res.send(html);
-    } catch (err: any) {
-      if (req.query.url) {
-        return res.redirect(req.query.url as string);
-      }
-      res.status(500).send("Game proxy error");
-    }
-  });
-
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
+  });
+
+  // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)
+  app.all(["/api/db/data", "/api/db/data/*"], async (req, res) => {
+    try {
+      const { default: handler } = await import("./api/db/data.js").catch(() => import("./api/db/data"));
+      return handler(req, res);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
+  app.get(["/api/db/stream", "/api/db/stream/*"], async (req, res) => {
+    try {
+      const { default: handler } = await import("./api/db/stream.js").catch(() => import("./api/db/stream"));
+      return handler(req, res);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
   });
 
   // Vite integration and static asset serving
@@ -1389,8 +907,8 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 

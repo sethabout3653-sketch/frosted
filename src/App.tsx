@@ -83,16 +83,6 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [missingTableError, setMissingTableError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handleMissingTable = (e: Event) => {
-      const customEvent = e as CustomEvent;
-      setMissingTableError(customEvent.detail);
-    };
-    window.addEventListener("supabase_missing_table", handleMissingTable);
-    return () => window.removeEventListener("supabase_missing_table", handleMissingTable);
-  }, []);
 
   useEffect(() => {
     // Automatically restore saved tab cloak on initial mount

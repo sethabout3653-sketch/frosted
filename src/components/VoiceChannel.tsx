@@ -74,7 +74,7 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun.nextcloud.com:443" },
   ],
   iceCandidatePoolSize: 10,
-  bundlePolicy: "max-bundle",
+  bundlePolicy: "balanced",
   rtcpMuxPolicy: "require",
 };
 
@@ -214,6 +214,8 @@ export default function VoiceChannel({
   const peersRef = useRef<{ [uid: string]: RTCPeerConnection }>({});
   const iceCandidateQueuesRef = useRef<{ [uid: string]: RTCIceCandidateInit[] }>({});
   const remoteStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteCameraStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
+  const remoteAudioStreamsRef = useRef<{ [uid: string]: MediaStream }>({});
   const remoteAudioRefs = useRef<{ [uid: string]: HTMLAudioElement | null }>({});
   const remoteVideoRefs = useRef<{ [uid: string]: HTMLVideoElement | null }>({});
   const remoteAnalysersRef = useRef<{ [uid: string]: { analyser: AnalyserNode; source: MediaStreamAudioSourceNode } }>({});
@@ -253,388 +255,6 @@ export default function VoiceChannel({
     return () => clearInterval(timer);
   }, []);
 
-  // ==========================================
-  // SAVS (Serverless Audio/Video Sync) Engine for Vercel with Native WebSockets
-  // ==========================================
-  const [remoteFrames, setRemoteFrames] = useState<{ [uid: string]: { camera?: string; screen?: string } }>({});
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const savsPlaybackQueuesRef = useRef<{ [uid: string]: Array<AudioBuffer> }>({});
-  const savsIsPlayingRef = useRef<{ [uid: string]: boolean }>({});
-  const lastAudioTimestampRef = useRef<number>(0);
-  const wsRef = useRef<WebSocket | null>(null);
-
-  const decodeAndQueueAudio = useCallback(async (uid: string, base64Str: string) => {
-    const ctx = audioCtxRef.current;
-    if (!ctx) return;
-
-    try {
-      const binaryString = window.atob(base64Str);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const arrayBuffer = bytes.buffer;
-
-      ctx.decodeAudioData(arrayBuffer, (decodedBuffer) => {
-        if (!savsPlaybackQueuesRef.current[uid]) {
-          savsPlaybackQueuesRef.current[uid] = [];
-        }
-        savsPlaybackQueuesRef.current[uid].push(decodedBuffer);
-
-        if (!savsIsPlayingRef.current[uid]) {
-          playNextSavsChunk(uid);
-        }
-      }, () => {});
-    } catch (e) {}
-  }, []);
-
-  const playNextSavsChunk = useCallback((uid: string) => {
-    const ctx = audioCtxRef.current;
-    const queue = savsPlaybackQueuesRef.current[uid];
-    if (!ctx || !queue || queue.length === 0) {
-      savsIsPlayingRef.current[uid] = false;
-      return;
-    }
-
-    savsIsPlayingRef.current[uid] = true;
-    const buffer = queue.shift();
-    if (!buffer) {
-      savsIsPlayingRef.current[uid] = false;
-      return;
-    }
-
-    try {
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-
-      let rData = remoteAnalysersRef.current[uid];
-      if (!rData) {
-        const rAnalyser = ctx.createAnalyser();
-        rAnalyser.fftSize = 256;
-        rAnalyser.smoothingTimeConstant = 0.2;
-        rData = { analyser: rAnalyser, source: null as any };
-        remoteAnalysersRef.current[uid] = rData;
-      }
-
-      source.connect(rData.analyser);
-      rData.analyser.connect(ctx.destination);
-
-      source.onended = () => {
-        playNextSavsChunk(uid);
-      };
-
-      source.start(0);
-    } catch (e) {
-      savsIsPlayingRef.current[uid] = false;
-    }
-  }, []);
-
-  // Establish live, persistent WebSocket connection
-  useEffect(() => {
-    let active = true;
-    let ws: WebSocket | null = null;
-    let reconnectTimer: any = null;
-
-    const connectWS = () => {
-      if (!active) return;
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}`;
-
-      try {
-        ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          if (!active) {
-            ws?.close();
-            return;
-          }
-          ws?.send(JSON.stringify({
-            type: "register",
-            uid: profile.uid,
-            channelId: "voice_channel_general"
-          }));
-        };
-
-        ws.onmessage = (event) => {
-          if (!active) return;
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.uid === profile.uid) return;
-
-            if (msg.type === "voice" && msg.data) {
-              decodeAndQueueAudio(msg.uid, msg.data);
-            } else if (msg.type === "video") {
-              setRemoteFrames((prev) => {
-                const current = prev[msg.uid] || {};
-                return {
-                  ...prev,
-                  [msg.uid]: {
-                    ...current,
-                    [msg.videoType]: msg.data
-                  }
-                };
-              });
-            }
-          } catch (e) {
-            // Unmarshal error or heartbeat response
-          }
-        };
-
-        ws.onclose = () => {
-          if (!active) return;
-          clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(connectWS, 2000);
-        };
-
-        ws.onerror = () => {
-          ws?.close();
-        };
-      } catch (err) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connectWS, 3000);
-      }
-    };
-
-    connectWS();
-
-    return () => {
-      active = false;
-      clearTimeout(reconnectTimer);
-      if (ws) {
-        try {
-          ws.close();
-        } catch (e) {}
-      }
-    };
-  }, [decodeAndQueueAudio, profile.uid]);
-
-  // Audio Recorder
-  useEffect(() => {
-    if (typeof MediaRecorder === "undefined" || !localStreamRef.current) return;
-
-    if (mediaRecorderRef.current) {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (e) {}
-      mediaRecorderRef.current = null;
-    }
-
-    let chunkId = 0;
-    try {
-      const rec = new MediaRecorder(rawStreamRef.current || localStreamRef.current, {
-        mimeType: "audio/webm;codecs=opus",
-      });
-
-      rec.ondataavailable = async (e) => {
-        if (e.data && e.data.size > 0 && !isMutedRef.current) {
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const base64data = reader.result as string;
-            const base64Str = base64data.split(",")[1];
-            if (base64Str) {
-              const ws = wsRef.current;
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: "voice",
-                  uid: profile.uid,
-                  channelId: "voice_channel_general",
-                  data: base64Str,
-                }));
-              } else {
-                fetch("/api/voice/upload", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    uid: profile.uid,
-                    channelId: "voice_channel_general",
-                    chunkId: chunkId++,
-                    data: base64Str,
-                  }),
-                }).catch(() => {});
-              }
-            }
-          };
-          reader.readAsDataURL(e.data);
-        }
-      };
-
-      rec.start(300);
-      mediaRecorderRef.current = rec;
-    } catch (e) {
-      console.warn("Failed to start SAVS Audio MediaRecorder:", e);
-    }
-
-    return () => {
-      if (mediaRecorderRef.current) {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch (e) {}
-      }
-    };
-  }, [localStreamRef.current]);
-
-  // Camera upload
-  useEffect(() => {
-    if (!isVideoOn) return;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 320;
-    canvas.height = 240;
-    const ctx = canvas.getContext("2d");
-
-    const timer = setInterval(() => {
-      const videoEl = localVideoRef.current;
-      if (videoEl && ctx) {
-        try {
-          ctx.drawImage(videoEl, 0, 0, 320, 240);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
-          const base64Str = dataUrl.split(",")[1];
-          if (base64Str) {
-            const ws = wsRef.current;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: "video",
-                videoType: "camera",
-                uid: profile.uid,
-                channelId: "voice_channel_general",
-                data: base64Str,
-              }));
-            } else {
-              fetch("/api/video/upload", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  uid: profile.uid,
-                  channelId: "voice_channel_general",
-                  type: "camera",
-                  data: base64Str,
-                }),
-              }).catch(() => {});
-            }
-          }
-        } catch (e) {}
-      }
-    }, 400);
-
-    return () => clearInterval(timer);
-  }, [isVideoOn]);
-
-  // Screen upload
-  useEffect(() => {
-    if (!isScreenSharing) return;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 480;
-    const ctx = canvas.getContext("2d");
-
-    const timer = setInterval(() => {
-      const videoEl = localScreenVideoRef.current;
-      if (videoEl && ctx) {
-        try {
-          ctx.drawImage(videoEl, 0, 0, 640, 480);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.4);
-          const base64Str = dataUrl.split(",")[1];
-          if (base64Str) {
-            const ws = wsRef.current;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: "video",
-                videoType: "screen",
-                uid: profile.uid,
-                channelId: "voice_channel_general",
-                data: base64Str,
-              }));
-            } else {
-              fetch("/api/video/upload", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  uid: profile.uid,
-                  channelId: "voice_channel_general",
-                  type: "screen",
-                  data: base64Str,
-                }),
-              }).catch(() => {});
-            }
-          }
-        } catch (e) {}
-      }
-    }, 500);
-
-    return () => clearInterval(timer);
-  }, [isScreenSharing]);
-
-  // Download poll loop
-  useEffect(() => {
-    let active = true;
-
-    const pollMedia = async () => {
-      if (!active) return;
-
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        setTimeout(pollMedia, 1500);
-        return;
-      }
-
-      try {
-        const resAudio = await fetch(
-          `/api/voice/download?channelId=voice_channel_general&lastTimestamp=${lastAudioTimestampRef.current}`
-        );
-        const dataAudio = await resAudio.json();
-        if (dataAudio && dataAudio.chunks && dataAudio.chunks.length > 0) {
-          dataAudio.chunks.forEach((chunk: any) => {
-            if (chunk.uid !== profile.uid) {
-              decodeAndQueueAudio(chunk.uid, chunk.data);
-            }
-            lastAudioTimestampRef.current = Math.max(
-              lastAudioTimestampRef.current,
-              chunk.timestamp
-            );
-          });
-        }
-
-        const resVideo = await fetch(
-          `/api/video/download?channelId=voice_channel_general`
-        );
-        const dataVideo = await resVideo.json();
-        if (dataVideo && dataVideo.frames) {
-          const newFrames: { [uid: string]: { camera?: string; screen?: string } } = {};
-          Object.entries(dataVideo.frames).forEach(([uid, userFrames]: [string, any]) => {
-            if (uid !== profile.uid) {
-              newFrames[uid] = {
-                camera: userFrames.camera?.data,
-                screen: userFrames.screen?.data,
-              };
-            }
-          });
-          setRemoteFrames((prev) => {
-            const merged = { ...prev };
-            Object.entries(newFrames).forEach(([uid, frames]) => {
-              merged[uid] = {
-                ...(merged[uid] || {}),
-                ...frames
-              };
-            });
-            return merged;
-          });
-        }
-      } catch (e) {}
-
-      setTimeout(pollMedia, 500);
-    };
-
-    pollMedia();
-
-    return () => {
-      active = false;
-    };
-  }, [decodeAndQueueAudio, profile.uid]);
-
   // Filter out any invalid, anonymous, or disconnected participant (> 8s without heartbeat), sorted deterministically
   const activeParticipants = useMemo(() => {
     return participants
@@ -672,19 +292,17 @@ export default function VoiceChannel({
     }
     const remoteSharer = activeParticipants.find(
       (p) =>
-        p.isScreenSharing === true ||
-        p.channelId === "screenshare" ||
-        p.channelId === "screenshare:audio" ||
-        !!remoteScreenSharersRef.current[p.uid] ||
-        (!!remoteScreenStreamsRef.current[p.uid] &&
-          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled))
+        p.isScreenSharing === true &&
+        (!!remoteScreenSharersRef.current[p.uid] ||
+          (!!remoteScreenStreamsRef.current[p.uid] &&
+            remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled)))
     );
     if (remoteSharer) {
       return {
         uid: remoteSharer.uid,
         username: remoteSharer.username,
         isLocal: false,
-        hasAudio: !!remoteSharer.isScreenAudioOn || remoteSharer.channelId === "screenshare:audio" || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
+        hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
       };
     }
     return null;
@@ -698,6 +316,16 @@ export default function VoiceChannel({
   const fullscreenControlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Auto-reset fullscreen mode if active screen share ends
+  useEffect(() => {
+    if (fullscreenType === "screen") {
+      if (!activeScreenShare || (fullscreenUid && activeScreenShare.uid !== fullscreenUid)) {
+        setFullscreenUid(null);
+        setFullscreenType("camera");
+      }
+    }
+  }, [activeScreenShare, fullscreenType, fullscreenUid]);
 
   const exitFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -790,7 +418,7 @@ export default function VoiceChannel({
       }
     } else {
       const isLocal = fullscreenUid === profile.uid;
-      const stream = isLocal ? videoStreamRef.current : remoteStreamsRef.current[fullscreenUid];
+      const stream = isLocal ? videoStreamRef.current : (remoteCameraStreamsRef.current[fullscreenUid] || remoteStreamsRef.current[fullscreenUid]);
       if (fullscreenVideoRef.current && stream) {
         if (fullscreenVideoRef.current.srcObject !== stream) {
           fullscreenVideoRef.current.srcObject = stream;
@@ -809,7 +437,7 @@ export default function VoiceChannel({
       list.push({ uid: profile.uid, username: `${profile.username} (Screen)`, isLocal: true, type: "screen" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) {
+      if (p.isScreenSharing === true) {
         list.push({ uid: p.uid, username: `${p.username} (Screen)`, isLocal: false, type: "screen" });
       }
     });
@@ -817,7 +445,7 @@ export default function VoiceChannel({
       list.push({ uid: profile.uid, username: `${profile.username} (Camera)`, isLocal: true, type: "camera" });
     }
     activeParticipants.forEach((p) => {
-      if (p.isVideoOn || remoteVideoRefs.current[p.uid]?.srcObject) {
+      if (p.isVideoOn === true) {
         list.push({ uid: p.uid, username: `${p.username} (Camera)`, isLocal: false, type: "camera" });
       }
     });
@@ -825,47 +453,23 @@ export default function VoiceChannel({
   }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants, trackTrigger]);
 
   // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
-  // while keeping noise suppression & AGC disabled so ANY sound (music, instruments, soundboards, whispers) is fully allowed
+  // Acquire studio microphone stream with 200% boosted gain
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,  // Hardware & OS Acoustic Echo Cancellation: eliminates speaker feedback echo
-          noiseSuppression: false, // Disables browser noise gate so ANY sound (music, instruments, soundboards) passes through
-          autoGainControl: false,  // Disables volume pumping/ducking so dynamics are preserved
-          channelCount: { ideal: 2 },
-          sampleRate: { ideal: 48000 },
-          // High-fidelity Chromium audio flags
-          googEchoCancellation: true,
-          googEchoCancellation2: true,
-          googDAEchoCancellation: true,
-          googNoiseSuppression: false,
-          googHighpassFilter: false,
-          googTypingNoiseDetection: false,
-          googAutoGainControl: false,
-          googAudioMirroring: false,
-        } as MediaTrackConstraints,
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true,
+        },
         video: false,
       });
     } catch (err) {
-      console.warn("High fidelity mic constraints failed, using fallback:", err);
-      try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
-          },
-          video: false,
-        });
-      } catch (err2) {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-          },
-          video: false,
-        });
-      }
+      console.warn("Standard mic constraints failed, using fallback:", err);
+      return await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
     }
   }, []);
 
@@ -913,7 +517,8 @@ export default function VoiceChannel({
         mixedDestinationRef.current = mixedDest;
 
         const micGain = ctx.createGain();
-        micGain.gain.value = isMutedRef.current ? 0 : 1.0;
+        // Boost microphone gain to 200% (2.0x multiplier)
+        micGain.gain.value = isMutedRef.current ? 0 : 2.0;
         gainNodeRef.current = micGain;
 
         source.connect(micGain);
@@ -1125,6 +730,16 @@ export default function VoiceChannel({
       });
     });
     remoteStreamsRef.current = {};
+    remoteCameraStreamsRef.current = {};
+
+    Object.values(remoteAudioStreamsRef.current).forEach((stream: MediaStream) => {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+    });
+    remoteAudioStreamsRef.current = {};
 
     Object.values(remoteScreenStreamsRef.current).forEach((stream: MediaStream) => {
       stream.getTracks().forEach((t) => {
@@ -1180,18 +795,21 @@ export default function VoiceChannel({
   // Synchronize remote media streams with DOM elements
   useEffect(() => {
     participants.forEach((p) => {
-      const stream = remoteStreamsRef.current[p.uid];
-      if (stream) {
+      const audioStream = remoteAudioStreamsRef.current[p.uid];
+      if (audioStream) {
         const audioEl = remoteAudioRefs.current[p.uid];
-        if (audioEl && audioEl.srcObject !== stream) {
-          audioEl.srcObject = stream;
+        if (audioEl && audioEl.srcObject !== audioStream) {
+          audioEl.srcObject = audioStream;
           audioEl.play().catch(() => {});
         }
+      }
 
-        if (p.isVideoOn) {
+      if (p.isVideoOn) {
+        const cameraStream = remoteCameraStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+        if (cameraStream) {
           const videoEl = remoteVideoRefs.current[p.uid];
-          if (videoEl && videoEl.srcObject !== stream) {
-            videoEl.srcObject = stream;
+          if (videoEl && videoEl.srcObject !== cameraStream) {
+            videoEl.srcObject = cameraStream;
             videoEl.play().catch(() => {});
           }
         }
@@ -1268,14 +886,18 @@ export default function VoiceChannel({
   const sendSignal = useCallback(
     async (
       targetUid: string,
-      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped",
+      type: "offer" | "answer" | "candidate" | "screenshare_started" | "screenshare_stopped" | "camera_started" | "camera_stopped" | "camera_loading" | "user_joined" | "user_joined_ack",
       data: string
     ) => {
       const payload = {
+        id: type === "candidate"
+          ? ("sig_cand_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8))
+          : ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid: profile.uid,
         targetUid,
         type,
         sdp: data,
+        candidate: type === "candidate" ? data : undefined,
         timestamp: Date.now(),
       };
       // 1. Instant delivery via Supabase Realtime Broadcast & DB fallback
@@ -1311,24 +933,37 @@ export default function VoiceChannel({
     if (audioTransceivers.length > 0) {
       const aTrack = audioTransceivers[0].receiver.track;
       if (aTrack) {
-        let rStream = remoteStreamsRef.current[partnerUid];
-        if (!rStream || !rStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
-          const newStream = new MediaStream([aTrack]);
-          // Keep video tracks if they exist
-          if (rStream) {
-            rStream.getVideoTracks().forEach(v => newStream.addTrack(v));
-          }
-          rStream = newStream;
-          remoteStreamsRef.current[partnerUid] = rStream;
+        aTrack.enabled = true;
+        let aStream = remoteAudioStreamsRef.current[partnerUid];
+        if (!aStream || !aStream.getAudioTracks().some((t) => t.id === aTrack.id)) {
+          aStream = new MediaStream([aTrack]);
+          remoteAudioStreamsRef.current[partnerUid] = aStream;
         }
         
-        const audioEl = remoteAudioRefs.current[partnerUid];
-        if (audioEl) {
-          if (audioEl.srcObject !== rStream) {
-            audioEl.srcObject = rStream;
-          }
-          audioEl.play().catch(() => {});
+        let audioEl = remoteAudioRefs.current[partnerUid];
+        if (!audioEl) {
+          audioEl = new Audio();
+          audioEl.autoplay = true;
+          (audioEl as any).playsInline = true;
+          remoteAudioRefs.current[partnerUid] = audioEl;
         }
+        if (audioEl.srcObject !== aStream) {
+          audioEl.srcObject = aStream;
+        }
+        audioEl.play().catch(() => {});
+        aTrack.onunmute = () => {
+          let el = remoteAudioRefs.current[partnerUid];
+          if (!el) {
+            el = new Audio();
+            el.autoplay = true;
+            (el as any).playsInline = true;
+            remoteAudioRefs.current[partnerUid] = el;
+          }
+          if (el.srcObject !== aStream) {
+            el.srcObject = aStream;
+          }
+          el.play().catch(() => {});
+        };
       }
     }
 
@@ -1337,29 +972,32 @@ export default function VoiceChannel({
     if (videoTransceivers.length >= 1) {
       const camTrack = videoTransceivers[0].receiver.track;
       if (camTrack) {
-        let rStream = remoteStreamsRef.current[partnerUid];
-        if (!rStream || !rStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
-          rStream = new MediaStream([camTrack]);
-          // Keep audio tracks if they exist
-          if (remoteStreamsRef.current[partnerUid]) {
-             remoteStreamsRef.current[partnerUid].getAudioTracks().forEach(a => rStream.addTrack(a));
-          }
-          remoteStreamsRef.current[partnerUid] = rStream;
+        camTrack.enabled = true;
+        let cStream = remoteCameraStreamsRef.current[partnerUid];
+        if (!cStream || !cStream.getVideoTracks().some((t) => t.id === camTrack.id)) {
+          cStream = new MediaStream([camTrack]);
+          remoteCameraStreamsRef.current[partnerUid] = cStream;
+          remoteStreamsRef.current[partnerUid] = cStream;
         }
         
         const camEl = remoteVideoRefs.current[partnerUid];
         if (camEl) {
-          if (camEl.srcObject !== rStream) {
-            camEl.srcObject = rStream;
+          if (camEl.srcObject !== cStream) {
+            camEl.srcObject = cStream;
           }
           camEl.play().catch(() => {});
         }
+        setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
         camTrack.onunmute = () => {
           const el = remoteVideoRefs.current[partnerUid];
-          if (el && remoteStreamsRef.current[partnerUid]) {
-            el.srcObject = remoteStreamsRef.current[partnerUid];
+          const stream = remoteCameraStreamsRef.current[partnerUid] || remoteStreamsRef.current[partnerUid];
+          if (el && stream) {
+            if (el.srcObject !== stream) {
+              el.srcObject = stream;
+            }
             el.play().catch(() => {});
           }
+          setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
           setTrackTrigger((v) => v + 1);
         };
       }
@@ -1392,7 +1030,9 @@ export default function VoiceChannel({
       scrTrack.onunmute = () => {
         const el = remoteScreenVideoRefs.current[partnerUid];
         if (el && remoteScreenStreamsRef.current[partnerUid]) {
-          el.srcObject = remoteScreenStreamsRef.current[partnerUid];
+          if (el.srcObject !== remoteScreenStreamsRef.current[partnerUid]) {
+            el.srcObject = remoteScreenStreamsRef.current[partnerUid];
+          }
           el.play().catch(() => {});
         }
         setTrackTrigger((v) => v + 1);
@@ -1471,29 +1111,37 @@ export default function VoiceChannel({
       // Handle remote incoming tracks (audio, camera, and screen share)
       pc.ontrack = (event) => {
         if (event.track.kind === "audio") {
-          let rStream = remoteStreamsRef.current[partnerUid];
-          if (!rStream || !rStream.getTracks().some((track) => track.id === event.track.id)) {
-            const newStream = new MediaStream([event.track]);
-            if (rStream) {
-              rStream.getVideoTracks().forEach(v => newStream.addTrack(v));
-            }
-            rStream = newStream;
-            remoteStreamsRef.current[partnerUid] = rStream;
+          event.track.enabled = true;
+          let aStream = remoteAudioStreamsRef.current[partnerUid];
+          if (!aStream || !aStream.getAudioTracks().some((track) => track.id === event.track.id)) {
+            aStream = new MediaStream([event.track]);
+            remoteAudioStreamsRef.current[partnerUid] = aStream;
           }
 
-          // Attach to remote audio player
-          const audioEl = remoteAudioRefs.current[partnerUid];
-          if (audioEl) {
-            if (audioEl.srcObject !== rStream) {
-              audioEl.srcObject = rStream;
-            }
-            audioEl.play().catch(() => {});
+          let audioEl = remoteAudioRefs.current[partnerUid];
+          if (!audioEl) {
+            audioEl = new Audio();
+            audioEl.autoplay = true;
+            (audioEl as any).playsInline = true;
+            remoteAudioRefs.current[partnerUid] = audioEl;
           }
+          if (audioEl.srcObject !== aStream) {
+            audioEl.srcObject = aStream;
+          }
+          audioEl.play().catch(() => {});
 
           event.track.onunmute = () => {
-            if (audioEl) {
-              audioEl.play().catch(() => {});
+            let el = remoteAudioRefs.current[partnerUid];
+            if (!el) {
+              el = new Audio();
+              el.autoplay = true;
+              (el as any).playsInline = true;
+              remoteAudioRefs.current[partnerUid] = el;
             }
+            if (el.srcObject !== aStream) {
+              el.srcObject = aStream;
+            }
+            el.play().catch(() => {});
           };
 
           // Attach remote audio track to analyser for accurate speaking detection
@@ -1529,7 +1177,6 @@ export default function VoiceChannel({
 
       pc.oniceconnectionstatechange = () => {
         if (
-          pc.iceConnectionState === "disconnected" ||
           pc.iceConnectionState === "failed" ||
           pc.iceConnectionState === "closed"
         ) {
@@ -1570,25 +1217,208 @@ export default function VoiceChannel({
 
   const initiateCall = useCallback(
     async (partnerUid: string, micStream: MediaStream) => {
-      // SAVS bypasses WebRTC call initiation
+      try {
+        const pc = createPeerConnection(partnerUid, micStream);
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        const highQualityOffer = new RTCSessionDescription({
+          type: offer.type,
+          sdp: optimizeAudioSdp(offer.sdp || ""),
+        });
+        await pc.setLocalDescription(highQualityOffer);
+        sendSignal(partnerUid, "offer", JSON.stringify(highQualityOffer));
+      } catch (err) {
+        console.warn("Error initiating call to", partnerUid, err);
+      }
     },
-    []
+    [createPeerConnection, sendSignal]
   );
 
   const handleSignal = useCallback(
     async (signal: VoiceSignal, micStream: MediaStream) => {
-      // SAVS bypasses WebRTC signal handling
+      const sigKey = signal.type === "candidate"
+        ? `${signal.uid}_cand_${(signal.sdp || (signal as any).candidate || "").slice(0, 80)}_${signal.id || ""}`
+        : (signal.id || `${signal.uid}_${signal.type}_${signal.timestamp || ""}`);
+
+      if (processedSignalsRef.current.has(sigKey)) {
+        return;
+      }
+      processedSignalsRef.current.add(sigKey);
+      if (processedSignalsRef.current.size > 500) {
+        const first = processedSignalsRef.current.values().next().value;
+        if (first) processedSignalsRef.current.delete(first);
+      }
+
+      if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 15000) {
+        return;
+      }
       const partnerUid = signal.uid;
-      const sigType = signal.type as any;
-      if (sigType === "screenshare_started") {
-        remoteScreenSharersRef.current[partnerUid] = { hasAudio: false };
-        setTrackTrigger((v) => v + 1);
-      } else if (sigType === "screenshare_stopped") {
-        delete remoteScreenSharersRef.current[partnerUid];
-        setTrackTrigger((v) => v + 1);
+
+      try {
+        if (signal.type === "offer") {
+          let pc = peersRef.current[partnerUid];
+          const isDead =
+            !pc || pc.connectionState === "closed" || pc.signalingState === "closed";
+
+          if (isDead) {
+            pc = createPeerConnection(partnerUid, micStream);
+          } else if (pc.signalingState !== "stable") {
+            const isPolite = profile.uid < partnerUid;
+            if (!isPolite && pc.signalingState === "have-local-offer") {
+              return;
+            }
+            try {
+              await pc.setLocalDescription({ type: "rollback" });
+            } catch (e) {
+              // Rollback may not be supported or necessary; continue with current PC
+            }
+          }
+
+          if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
+            try {
+              const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              await pc.setRemoteDescription(offerDescription);
+              await processCandidateQueue(partnerUid, pc);
+
+              if (pc.signalingState === "have-remote-offer") {
+                const answer = await pc.createAnswer();
+                const highQualityAnswer = new RTCSessionDescription({
+                  type: answer.type,
+                  sdp: optimizeAudioSdp(answer.sdp || ""),
+                });
+                await pc.setLocalDescription(highQualityAnswer);
+                sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
+              }
+
+              syncPeerTracks(partnerUid, pc);
+            } catch (e) {
+              // Gracefully ignore state transitions
+            }
+          }
+        } else if (signal.type === "answer") {
+          const pc = peersRef.current[partnerUid];
+          if (pc && pc.signalingState === "have-local-offer") {
+            try {
+              const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              await pc.setRemoteDescription(answerDescription);
+              await processCandidateQueue(partnerUid, pc);
+              syncPeerTracks(partnerUid, pc);
+            } catch (e) {
+              // Gracefully ignore stale/duplicate answer
+            }
+          }
+        } else if (signal.type === "candidate") {
+          const rawCand = signal.sdp || (signal as any).candidate;
+          if (rawCand) {
+            let candidateData: any = null;
+            try {
+              candidateData = typeof rawCand === "string" ? JSON.parse(rawCand) : rawCand;
+            } catch (e) {}
+            if (candidateData) {
+              const pc = peersRef.current[partnerUid];
+              if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== "closed") {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+                } catch (e) {}
+              } else {
+                if (!iceCandidateQueuesRef.current[partnerUid]) {
+                  iceCandidateQueuesRef.current[partnerUid] = [];
+                }
+                iceCandidateQueuesRef.current[partnerUid].push(candidateData);
+              }
+            }
+          }
+        } else if (signal.type === "screenshare_started") {
+          let signalData: any = {};
+          try {
+            signalData = JSON.parse(signal.sdp || "{}");
+          } catch (e) {}
+          remoteScreenSharersRef.current[partnerUid] = { hasAudio: !!signalData.hasAudio };
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: true } : p))
+          );
+          const pc = peersRef.current[partnerUid];
+          if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "screenshare_stopped") {
+          delete remoteScreenSharersRef.current[partnerUid];
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: false } : p))
+          );
+          if (remoteScreenStreamsRef.current[partnerUid]) {
+            delete remoteScreenStreamsRef.current[partnerUid];
+          }
+          if (remoteScreenVideoRefs.current[partnerUid]) {
+            remoteScreenVideoRefs.current[partnerUid]!.srcObject = null;
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_loading") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoLoading: true, isVideoOn: false } : p))
+          );
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_started") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoOn: true, isVideoLoading: false } : p))
+          );
+          setRemoteVideoLoaded((prev) => ({ ...prev, [partnerUid]: true }));
+          const pc = peersRef.current[partnerUid];
+          if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "camera_stopped") {
+          setParticipants((prev) =>
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isVideoOn: false, isVideoLoading: false } : p))
+          );
+          setRemoteVideoLoaded((prev) => {
+            const next = { ...prev };
+            delete next[partnerUid];
+            return next;
+          });
+          if (remoteCameraStreamsRef.current[partnerUid]) {
+            delete remoteCameraStreamsRef.current[partnerUid];
+          }
+          if (remoteStreamsRef.current[partnerUid]) {
+            delete remoteStreamsRef.current[partnerUid];
+          }
+          if (remoteVideoRefs.current[partnerUid]) {
+            remoteVideoRefs.current[partnerUid]!.srcObject = null;
+          }
+          setTrackTrigger((v) => v + 1);
+        } else if (signal.type === "user_joined") {
+          // Immediately send ACK so the new joiner knows this client is active in the channel
+          sendSignal(partnerUid, "user_joined_ack", "");
+          const pc = peersRef.current[partnerUid];
+          const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
+          if (isDead && localStreamRef.current) {
+            lastCallAttemptRef.current[partnerUid] = Date.now();
+            initiateCall(partnerUid, localStreamRef.current);
+          } else if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+        } else if ((signal.type as any) === "user_joined_ack") {
+          const pc = peersRef.current[partnerUid];
+          const isDead = !pc || pc.connectionState === "closed" || pc.connectionState === "failed";
+          if (isDead && localStreamRef.current) {
+            lastCallAttemptRef.current[partnerUid] = Date.now();
+            initiateCall(partnerUid, localStreamRef.current);
+          } else if (pc) {
+            syncPeerTracks(partnerUid, pc);
+          }
+        }
+      } catch (err: any) {
+        const msg = String(err?.message || err || "");
+        if (!msg.includes("Called in wrong state") && !msg.includes("stable")) {
+          console.warn("Signal handling note:", err);
+        }
       }
     },
-    []
+    [createPeerConnection, initiateCall, processCandidateQueue, profile.uid, sendSignal, syncPeerTracks]
   );
 
   // Main lifecycle: acquire microphone and register in voice_users
@@ -1669,6 +1499,9 @@ export default function VoiceChannel({
 
         hasJoinedVoiceRef.current = true;
 
+        // Broadcast join signal immediately so all active peers connect instantly
+        sendSignal("all", "user_joined", "");
+
         let latestVoiceDocs: any[] = [];
         let latestPresenceDocs: any[] = [];
 
@@ -1684,8 +1517,9 @@ export default function VoiceChannel({
             if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
               return;
             }
-            const ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
-            if (ts > 0 && now - ts <= 900000) {
+            let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
+            if (ts <= 0) ts = now;
+            if (now - ts <= 120000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1698,8 +1532,9 @@ export default function VoiceChannel({
               return;
             }
             if (pData.inVoice) {
-              const ts = toTimestampMs(pData.lastSeen || pData.timestamp);
-              if (ts > 0 && now - ts <= 900000) {
+              let ts = toTimestampMs(pData.lastSeen || pData.timestamp);
+              if (ts <= 0) ts = now;
+              if (now - ts <= 120000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,
@@ -1708,7 +1543,7 @@ export default function VoiceChannel({
                   channelId: existing?.channelId || "general",
                   isMuted: pData.isMuted !== undefined ? pData.isMuted : existing?.isMuted ?? false,
                   isVideoOn: pData.isVideoOn !== undefined ? pData.isVideoOn : existing?.isVideoOn ?? false,
-                  isVideoLoading: existing?.isVideoLoading ?? false,
+                  isVideoLoading: pData.isVideoLoading !== undefined ? pData.isVideoLoading : existing?.isVideoLoading ?? false,
                   isScreenSharing: pData.isScreenSharing !== undefined ? pData.isScreenSharing : existing?.isScreenSharing ?? false,
                   isScreenAudioOn: pData.isScreenAudioOn !== undefined ? pData.isScreenAudioOn : existing?.isScreenAudioOn ?? false,
                   timestamp: Math.max(ts, existing?.timestamp || 0),
@@ -1733,20 +1568,30 @@ export default function VoiceChannel({
 
               const lastAttempt = lastCallAttemptRef.current[u.uid] || 0;
               const failCount = callFailCountRef.current[u.uid] || 0;
-              const backoffTime = failCount > 3 ? 12000 : 2500;
+              const backoffTime = failCount > 3 ? 5000 : 800;
+
+              const isStalled = pc && (pc.connectionState === "new" || pc.connectionState === "connecting") && (now - lastAttempt > 8000);
+              const isDisconnected = pc && (pc.connectionState === "disconnected" || pc.iceConnectionState === "disconnected") && (now - lastAttempt > 5000);
+              if (isStalled || isDisconnected) {
+                try { pc.close(); } catch (e) {}
+                delete peersRef.current[u.uid];
+              }
 
               const shouldInitiate =
+                lastAttempt === 0 ||
                 (profile.uid < u.uid && now - lastAttempt > backoffTime) ||
-                (profile.uid > u.uid && now - lastAttempt > (backoffTime + 2500));
+                (profile.uid > u.uid && now - lastAttempt > (backoffTime + 600));
 
-              if (shouldInitiate && isDead && localStreamRef.current) {
+              if (shouldInitiate && (isDead || isStalled || isDisconnected) && localStreamRef.current) {
                 lastCallAttemptRef.current[u.uid] = now;
                 initiateCall(u.uid, localStreamRef.current);
+              } else if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+                syncPeerTracks(u.uid, pc);
               }
             }
           });
 
-          // Synchronize screen streams for all active users
+          // Synchronize screen & camera streams for all active users
           users.forEach((u) => {
             const isSharing = !!u.isScreenSharing || !!remoteScreenSharersRef.current[u.uid];
             if (!isSharing) {
@@ -1757,6 +1602,13 @@ export default function VoiceChannel({
                 remoteScreenVideoRefs.current[u.uid]!.srcObject = null;
               }
             } else {
+              const pc = peersRef.current[u.uid];
+              if (pc) {
+                syncPeerTracks(u.uid, pc);
+              }
+            }
+
+            if (u.isVideoOn) {
               const pc = peersRef.current[u.uid];
               if (pc) {
                 syncPeerTracks(u.uid, pc);
@@ -1829,11 +1681,11 @@ export default function VoiceChannel({
         unsubscribeBroadcast = subscribeBroadcastSignals(profile.uid, async (signalData: any) => {
           if (!isMountedRef.current || !localStreamRef.current) return;
           const signal: VoiceSignal = {
-            id: `broadcast_${signalData.uid}_${signalData.type}_${signalData.timestamp || Date.now()}`,
+            id: signalData.id || `sig_${signalData.uid}_${signalData.type}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             uid: signalData.uid,
             targetUid: signalData.targetUid,
             type: signalData.type,
-            sdp: signalData.sdp || "",
+            sdp: signalData.sdp || signalData.candidate || "",
             timestamp: signalData.timestamp || Date.now(),
           };
           await handleSignal(signal, localStreamRef.current);
@@ -1948,6 +1800,14 @@ export default function VoiceChannel({
           delete cameraSendersRef.current[p.uid];
           delete screenSendersRef.current[p.uid];
           delete audioSendersRef.current[p.uid];
+          if (remoteCameraStreamsRef.current[p.uid]) {
+            remoteCameraStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteCameraStreamsRef.current[p.uid];
+          }
+          if (remoteAudioStreamsRef.current[p.uid]) {
+            remoteAudioStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
+            delete remoteAudioStreamsRef.current[p.uid];
+          }
           if (remoteStreamsRef.current[p.uid]) {
             remoteStreamsRef.current[p.uid].getTracks().forEach((t) => t.stop());
             delete remoteStreamsRef.current[p.uid];
@@ -1982,8 +1842,14 @@ export default function VoiceChannel({
       });
     }
 
+    (Object.values(audioSendersRef.current) as RTCRtpSender[]).forEach((sender) => {
+      if (sender && sender.track) {
+        sender.track.enabled = !nextMuted;
+      }
+    });
+
     if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = nextMuted ? 0 : 1.0;
+      gainNodeRef.current.gain.value = nextMuted ? 0 : 2.0;
     }
 
     try {
@@ -2005,42 +1871,45 @@ export default function VoiceChannel({
     try {
       if (nextVideoState) {
         setIsCameraLoading(true);
-        setIsVideoOn(true);
-        isVideoOnRef.current = true;
 
-        // Broadcast to all other participants immediately that camera is loading
-        await updateDoc(doc(db, "voice_users", profile.uid), {
+        // Broadcast camera loading immediately to all peers so they see the loading animation
+        sendSignal("all", "camera_loading", "");
+        updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoLoading: true,
           isVideoOn: false,
-        }).catch((err) => console.warn("Error setting isVideoLoading:", err));
+          timestamp: Date.now(),
+        }).catch(() => {});
+        updateDoc(doc(db, "presence", profile.uid), {
+          isVideoLoading: true,
+          isVideoOn: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
 
         // 1. Request camera stream from user's hardware
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 480 },
             frameRate: { ideal: 30, max: 30 },
           },
           audio: false,
         });
 
-        if (!isMountedRef.current || !isVideoOnRef.current) {
+        if (!isMountedRef.current) {
           videoStream.getTracks().forEach((track) => {
             track.stop();
             track.enabled = false;
           });
           setIsCameraLoading(false);
-          setIsVideoOn(false);
-          isVideoOnRef.current = false;
-          await updateDoc(doc(db, "voice_users", profile.uid), {
-            isVideoOn: false,
-            isVideoLoading: false,
-          }).catch(() => {});
           return;
         }
 
         const realVideoTrack = videoStream.getVideoTracks()[0];
+        realVideoTrack.enabled = true;
         videoStreamRef.current = videoStream;
+        setIsVideoOn(true);
+        isVideoOnRef.current = true;
+        setIsCameraLoading(false);
 
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = videoStream;
@@ -2052,22 +1921,43 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
-                (s) => s.track?.kind === "video"
-              );
-              if (videoSender) {
-                await videoSender.replaceTrack(realVideoTrack);
+              let videoSender = cameraSendersRef.current[pUid];
+              if (!videoSender) {
+                const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+                if (videoSenders.length > 0) {
+                  videoSender = videoSenders[0];
+                  cameraSendersRef.current[pUid] = videoSender;
+                }
               }
+              if (videoSender) {
+                await videoSender.replaceTrack(realVideoTrack).catch(() => {});
+                try {
+                  const params = videoSender.getParameters();
+                  if (!params.encodings || params.encodings.length === 0) {
+                    params.encodings = [{}];
+                  }
+                  params.encodings[0].maxBitrate = 1500000;
+                  params.encodings[0].priority = "high";
+                  await videoSender.setParameters(params).catch(() => {});
+                } catch (e) {}
+              }
+              sendSignal(pUid, "camera_started", "");
             }
           })
         );
+        sendSignal("all", "camera_started", "");
 
-        // 3. Mark camera as active and ready in Firestore
-        setIsCameraLoading(false);
+        // 3. Mark camera as active in Firestore and presence
         await updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoOn: true,
           isVideoLoading: false,
-        });
+          timestamp: Date.now(),
+        }).catch(() => {});
+        await updateDoc(doc(db, "presence", profile.uid), {
+          isVideoOn: true,
+          isVideoLoading: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
       } else {
         setIsVideoOn(false);
         isVideoOnRef.current = false;
@@ -2080,15 +1970,22 @@ export default function VoiceChannel({
           Object.keys(peersRef.current).map(async (pUid) => {
             const pc = peersRef.current[pUid];
             if (pc && pc.connectionState !== "closed") {
-              const videoSender = cameraSendersRef.current[pUid] || pc.getSenders().find(
-                (s) => s.track?.kind === "video"
-              );
-              if (videoSender) {
-                await videoSender.replaceTrack(dummyTrack);
+              let videoSender = cameraSendersRef.current[pUid];
+              if (!videoSender) {
+                const videoSenders = pc.getSenders().filter((s) => s.track?.kind === "video");
+                if (videoSenders.length > 0) {
+                  videoSender = videoSenders[0];
+                  cameraSendersRef.current[pUid] = videoSender;
+                }
               }
+              if (videoSender) {
+                await videoSender.replaceTrack(dummyTrack).catch(() => {});
+              }
+              sendSignal(pUid, "camera_stopped", "");
             }
           })
         );
+        sendSignal("all", "camera_stopped", "");
 
         // 2. Stop camera hardware so camera indicator light turns off
         if (videoStreamRef.current) {
@@ -2105,7 +2002,13 @@ export default function VoiceChannel({
         await updateDoc(doc(db, "voice_users", profile.uid), {
           isVideoOn: false,
           isVideoLoading: false,
-        });
+          timestamp: Date.now(),
+        }).catch(() => {});
+        await updateDoc(doc(db, "presence", profile.uid), {
+          isVideoOn: false,
+          isVideoLoading: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
       }
     } catch (e: any) {
       console.error("Failed to toggle camera:", e);
@@ -2118,7 +2021,12 @@ export default function VoiceChannel({
         videoStreamRef.current.getTracks().forEach((t) => t.stop());
         videoStreamRef.current = null;
       }
+      sendSignal("all", "camera_stopped", "");
       await updateDoc(doc(db, "voice_users", profile.uid), {
+        isVideoOn: false,
+        isVideoLoading: false,
+      }).catch(() => {});
+      await updateDoc(doc(db, "presence", profile.uid), {
         isVideoOn: false,
         isVideoLoading: false,
       }).catch(() => {});
@@ -2177,24 +2085,11 @@ export default function VoiceChannel({
               await sender.replaceTrack(dummyTrack);
             } catch (e) {}
           }
-          if (pc.signalingState === "stable") {
-            try {
-              const offer = await pc.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true,
-              });
-              const highQualityOffer = new RTCSessionDescription({
-                type: offer.type,
-                sdp: optimizeAudioSdp(offer.sdp || ""),
-              });
-              await pc.setLocalDescription(highQualityOffer);
-              sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
-            } catch (renegErr) {}
-          }
           sendSignal(pUid, "screenshare_stopped", "");
         }
       })
     );
+    sendSignal("all", "screenshare_stopped", "");
 
     // 2. Disconnect screen audio from Web Audio mix
     if (screenAudioSourceRef.current) {
@@ -2377,26 +2272,12 @@ export default function VoiceChannel({
               } catch (e) {}
             }
 
-            if (pc.signalingState === "stable") {
-              try {
-                const offer = await pc.createOffer({
-                  offerToReceiveAudio: true,
-                  offerToReceiveVideo: true,
-                });
-                const highQualityOffer = new RTCSessionDescription({
-                  type: offer.type,
-                  sdp: optimizeAudioSdp(offer.sdp || ""),
-                });
-                await pc.setLocalDescription(highQualityOffer);
-                sendSignal(pUid, "offer", JSON.stringify(highQualityOffer));
-              } catch (renegErr) {}
-            }
-
             // Send custom signaling message to notify peer that screen share started
             sendSignal(pUid, "screenshare_started", JSON.stringify({ hasAudio }));
           }
         })
       );
+      sendSignal("all", "screenshare_started", JSON.stringify({ hasAudio }));
 
       setIsScreenSharing(true);
       isScreenSharingRef.current = true;
@@ -2498,9 +2379,9 @@ export default function VoiceChannel({
             key={`audio-playback-${p.uid || "peer"}-${pIdx}`}
             ref={(el) => {
               remoteAudioRefs.current[p.uid] = el;
-              const remoteStream = remoteStreamsRef.current[p.uid];
-              if (el && remoteStream && el.srcObject !== remoteStream) {
-                el.srcObject = remoteStream;
+              const remoteAudioStream = remoteAudioStreamsRef.current[p.uid];
+              if (el && remoteAudioStream && el.srcObject !== remoteAudioStream) {
+                el.srcObject = remoteAudioStream;
                 el.play().catch(() => {});
               }
             }}
@@ -2627,29 +2508,20 @@ export default function VoiceChannel({
                     title="Click to view camera fullscreen"
                   >
                     {activeRemoteWithVideo ? (
-                      remoteFrames[activeRemoteWithVideo.uid]?.camera ? (
-                        <img
-                          src={`data:image/jpeg;base64,${remoteFrames[activeRemoteWithVideo.uid].camera}`}
-                          alt={`${activeRemoteWithVideo.username}'s camera`}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <video
-                          ref={(el) => {
-                            remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
-                            const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
-                            if (el && stream && el.srcObject !== stream) {
-                              el.srcObject = stream;
-                              el.play().catch(() => {});
-                            }
-                          }}
-                          autoPlay
-                          playsInline
-                          muted
-                          className="w-full h-full object-cover"
-                        />
-                      )
+                      <video
+                        ref={(el) => {
+                          remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                          const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                          if (el && stream && el.srcObject !== stream) {
+                            el.srcObject = stream;
+                            el.play().catch(() => {});
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-cover"
+                      />
                     ) : (
                       <video
                         ref={(el) => {
@@ -2673,29 +2545,20 @@ export default function VoiceChannel({
               </>
             ) : activeRemoteWithVideo ? (
               <>
-                {remoteFrames[activeRemoteWithVideo.uid]?.camera ? (
-                  <img
-                    src={`data:image/jpeg;base64,${remoteFrames[activeRemoteWithVideo.uid].camera}`}
-                    alt={`${activeRemoteWithVideo.username}'s camera`}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <video
-                    ref={(el) => {
-                      remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
-                      const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
-                      if (el && stream && el.srcObject !== stream) {
-                        el.srcObject = stream;
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover"
-                  />
-                )}
+                <video
+                  ref={(el) => {
+                    remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                    const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                    if (el && stream && el.srcObject !== stream) {
+                      el.srcObject = stream;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
                 <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white truncate max-w-[140px]">
                   {activeRemoteWithVideo.username}
                 </div>
@@ -3030,10 +2893,7 @@ export default function VoiceChannel({
                     autoPlay
                     playsInline
                     muted
-                    onLoadedData={() => setIsCameraLoading(false)}
-                    className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
-                      isCameraLoading ? "opacity-0" : "opacity-100"
-                    }`}
+                    className="w-full h-full object-cover transform -scale-x-100"
                   />
 
                   {isCameraLoading && (
@@ -3121,6 +2981,7 @@ export default function VoiceChannel({
             border: "rgba(88, 101, 242, 0.85)",
             ring: "rgba(88, 101, 242, 0.35)",
           };
+          const isCameraShowing = !!p.isVideoOn;
 
           return (
             <div
@@ -3135,14 +2996,14 @@ export default function VoiceChannel({
                   : "0 4px 12px rgba(0,0,0,0.5)",
               }}
               onDoubleClick={() => {
-                if (p.isVideoOn) {
+                if (isCameraShowing) {
                   setFullscreenUid(p.uid);
                   setFullscreenType("camera");
                 }
               }}
             >
               {/* Fullscreen Video Button */}
-              {p.isVideoOn && (
+              {isCameraShowing && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -3173,44 +3034,35 @@ export default function VoiceChannel({
               )}
 
               {/* Video Element */}
-              {p.isVideoOn ? (
+              {isCameraShowing ? (
                 <div className="relative w-full h-full">
-                  {remoteFrames[p.uid]?.camera ? (
-                    <img
-                      src={`data:image/jpeg;base64,${remoteFrames[p.uid].camera}`}
-                      alt={`${p.username}'s camera`}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <video
-                      ref={(el) => {
-                        remoteVideoRefs.current[p.uid] = el;
-                        const remoteStream = remoteStreamsRef.current[p.uid];
-                        if (el && remoteStream) {
-                          if (el.srcObject !== remoteStream) {
-                            el.srcObject = remoteStream;
-                          }
+                  <video
+                    ref={(el) => {
+                      remoteVideoRefs.current[p.uid] = el;
+                      if (el) {
+                        const camStream = remoteCameraStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+                        if (camStream && el.srcObject !== camStream) {
+                          el.srcObject = camStream;
                           el.play().catch(() => {});
-                          if (el.readyState >= 1 || el.videoWidth > 0) {
-                            setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
-                          }
                         }
-                      }}
-                      autoPlay
-                      playsInline
-                      muted
-                      onLoadedData={() => {
-                        setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                      }}
-                      onPlaying={() => {
-                        setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                      }}
-                      className="w-full h-full object-cover"
-                    />
-                  )}
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    onLoadedData={() => {
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                    }}
+                    onPlaying={() => {
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                    }}
+                    onCanPlay={() => {
+                      setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                    }}
+                    className="w-full h-full object-cover"
+                  />
 
-                  {!remoteFrames[p.uid]?.camera && (!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
+                  {p.isVideoLoading && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200 pointer-events-none">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
@@ -3268,7 +3120,7 @@ export default function VoiceChannel({
 
               <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
-                {(p.isScreenSharing || remoteScreenStreamsRef.current[p.uid]) && (
+                {p.isScreenSharing === true && (
                   <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
                     <MonitorUp size={9} />
                     <span>LIVE</span>
@@ -3314,15 +3166,6 @@ export default function VoiceChannel({
                           autoPlay
                           playsInline
                           muted
-                          className={`w-full h-full ${
-                            screenFitMode === "cover" ? "object-cover" : "object-contain"
-                          }`}
-                        />
-                      ) : remoteFrames[activeScreenShare.uid]?.screen ? (
-                        <img
-                          src={`data:image/jpeg;base64,${remoteFrames[activeScreenShare.uid].screen}`}
-                          alt={`${activeScreenShare.username}'s screen share`}
-                          referrerPolicy="no-referrer"
                           className={`w-full h-full ${
                             screenFitMode === "cover" ? "object-cover" : "object-contain"
                           }`}
@@ -3483,15 +3326,6 @@ export default function VoiceChannel({
                           autoPlay
                           playsInline
                           muted
-                          className={`w-full h-full ${
-                            screenFitMode === "cover" ? "object-cover" : "object-contain"
-                          }`}
-                        />
-                      ) : remoteFrames[activeScreenShare.uid]?.screen ? (
-                        <img
-                          src={`data:image/jpeg;base64,${remoteFrames[activeScreenShare.uid].screen}`}
-                          alt={`${activeScreenShare.username}'s screen share`}
-                          referrerPolicy="no-referrer"
                           className={`w-full h-full ${
                             screenFitMode === "cover" ? "object-cover" : "object-contain"
                           }`}
@@ -3768,7 +3602,7 @@ export default function VoiceChannel({
 
       const cameraStream = isFullscreenLocal
         ? videoStreamRef.current
-        : remoteStreamsRef.current[fullscreenUid];
+        : (remoteCameraStreamsRef.current[fullscreenUid] || remoteStreamsRef.current[fullscreenUid]);
 
       return (
         <div
@@ -4127,6 +3961,29 @@ export default function VoiceChannel({
         </div>
       );
     })()}
+
+    {/* Hidden Audio Elements for all remote voice participants */}
+    <div className="hidden" aria-hidden="true">
+      {participants
+        .filter((p) => p.uid !== profile.uid)
+        .map((p) => (
+          <audio
+            key={`remote-audio-${p.uid}`}
+            ref={(el) => {
+              if (el) {
+                remoteAudioRefs.current[p.uid] = el;
+                const stream = remoteAudioStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+                if (stream && el.srcObject !== stream) {
+                  el.srcObject = stream;
+                  el.play().catch(() => {});
+                }
+              }
+            }}
+            autoPlay
+            playsInline
+          />
+        ))}
+    </div>
   </>
   );
 }
