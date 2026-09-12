@@ -3,9 +3,12 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
+import { createServer as createHttpServer } from "http";
+import { WebSocketServer, WebSocket } from "ws";
 
 async function startServer() {
   const app = express();
+  const httpServer = createHttpServer(app);
   const PORT = 3000;
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
@@ -565,6 +568,142 @@ async function startServer() {
       }
     });
   };
+
+  // ==========================================
+  // Vercel Native WebSockets Engine (SAVS Live Relay)
+  // ==========================================
+  const wss = new WebSocketServer({ server: httpServer });
+  const wsClients = new Map<WebSocket, { uid?: string; channelId?: string }>();
+
+  wss.on("connection", (ws) => {
+    wsClients.set(ws, {});
+
+    ws.on("message", (messageData) => {
+      try {
+        const msg = JSON.parse(messageData.toString());
+        if (msg.type === "register") {
+          wsClients.set(ws, { uid: msg.uid, channelId: msg.channelId });
+        } else if (msg.type === "voice" || msg.type === "video") {
+          const senderInfo = wsClients.get(ws);
+          const cid = msg.channelId || senderInfo?.channelId;
+          const senderUid = msg.uid || senderInfo?.uid;
+
+          wsClients.forEach((client, clientWs) => {
+            if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+              if (client.channelId === cid) {
+                clientWs.send(JSON.stringify({
+                  type: msg.type,
+                  uid: senderUid,
+                  videoType: msg.videoType,
+                  data: msg.data
+                }));
+              }
+            }
+          });
+        }
+      } catch (e) {
+        // Parse error or invalid frame format
+      }
+    });
+
+    ws.on("close", () => {
+      wsClients.delete(ws);
+    });
+
+    ws.on("error", () => {
+      wsClients.delete(ws);
+    });
+  });
+
+  // ==========================================
+  // SAVS (Serverless Audio/Video Sync) Storage & Endpoints
+  // ==========================================
+  const savsVoiceChunks: Record<string, Array<{
+    uid: string;
+    data: string;
+    timestamp: number;
+  }>> = {};
+
+  const savsVideoFrames: Record<string, Record<string, {
+    camera?: { data: string; timestamp: number };
+    screen?: { data: string; timestamp: number };
+  }>> = {};
+
+  // POST /api/voice/upload
+  app.post("/api/voice/upload", (req, res) => {
+    const { uid, channelId, data } = req.body;
+    if (!channelId || !uid || !data) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    if (!savsVoiceChunks[channelId]) {
+      savsVoiceChunks[channelId] = [];
+    }
+
+    savsVoiceChunks[channelId].push({
+      uid,
+      data,
+      timestamp: Date.now(),
+    });
+
+    // Prune chunks older than 8 seconds to prevent memory bloating
+    const now = Date.now();
+    savsVoiceChunks[channelId] = savsVoiceChunks[channelId].filter(
+      (c) => now - c.timestamp < 8000
+    );
+
+    res.json({ success: true });
+  });
+
+  // GET /api/voice/download
+  app.get("/api/voice/download", (req, res) => {
+    const { channelId, lastTimestamp } = req.query;
+    if (!channelId) {
+      return res.status(400).json({ error: "Missing channelId" });
+    }
+
+    const cid = channelId as string;
+    const since = parseInt(lastTimestamp as string || "0");
+
+    const chunks = savsVoiceChunks[cid] || [];
+    const filtered = chunks.filter((c) => c.timestamp > since);
+
+    res.json({ chunks: filtered });
+  });
+
+  // POST /api/video/upload
+  app.post("/api/video/upload", (req, res) => {
+    const { uid, channelId, type, data } = req.body;
+    if (!channelId || !uid || !type || !data) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    if (!savsVideoFrames[channelId]) {
+      savsVideoFrames[channelId] = {};
+    }
+
+    if (!savsVideoFrames[channelId][uid]) {
+      savsVideoFrames[channelId][uid] = {};
+    }
+
+    savsVideoFrames[channelId][uid][type as "camera" | "screen"] = {
+      data,
+      timestamp: Date.now(),
+    };
+
+    res.json({ success: true });
+  });
+
+  // GET /api/video/download
+  app.get("/api/video/download", (req, res) => {
+    const { channelId } = req.query;
+    if (!channelId) {
+      return res.status(400).json({ error: "Missing channelId" });
+    }
+
+    const cid = channelId as string;
+    res.json({ frames: savsVideoFrames[cid] || {} });
+  });
 
   // 1. Cassandra Realtime SSE Stream
   app.get("/api/cassandra/stream", (req, res) => {
@@ -1145,7 +1284,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 }

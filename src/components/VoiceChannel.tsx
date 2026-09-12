@@ -253,6 +253,388 @@ export default function VoiceChannel({
     return () => clearInterval(timer);
   }, []);
 
+  // ==========================================
+  // SAVS (Serverless Audio/Video Sync) Engine for Vercel with Native WebSockets
+  // ==========================================
+  const [remoteFrames, setRemoteFrames] = useState<{ [uid: string]: { camera?: string; screen?: string } }>({});
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const savsPlaybackQueuesRef = useRef<{ [uid: string]: Array<AudioBuffer> }>({});
+  const savsIsPlayingRef = useRef<{ [uid: string]: boolean }>({});
+  const lastAudioTimestampRef = useRef<number>(0);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const decodeAndQueueAudio = useCallback(async (uid: string, base64Str: string) => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+
+    try {
+      const binaryString = window.atob(base64Str);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const arrayBuffer = bytes.buffer;
+
+      ctx.decodeAudioData(arrayBuffer, (decodedBuffer) => {
+        if (!savsPlaybackQueuesRef.current[uid]) {
+          savsPlaybackQueuesRef.current[uid] = [];
+        }
+        savsPlaybackQueuesRef.current[uid].push(decodedBuffer);
+
+        if (!savsIsPlayingRef.current[uid]) {
+          playNextSavsChunk(uid);
+        }
+      }, () => {});
+    } catch (e) {}
+  }, []);
+
+  const playNextSavsChunk = useCallback((uid: string) => {
+    const ctx = audioCtxRef.current;
+    const queue = savsPlaybackQueuesRef.current[uid];
+    if (!ctx || !queue || queue.length === 0) {
+      savsIsPlayingRef.current[uid] = false;
+      return;
+    }
+
+    savsIsPlayingRef.current[uid] = true;
+    const buffer = queue.shift();
+    if (!buffer) {
+      savsIsPlayingRef.current[uid] = false;
+      return;
+    }
+
+    try {
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+
+      let rData = remoteAnalysersRef.current[uid];
+      if (!rData) {
+        const rAnalyser = ctx.createAnalyser();
+        rAnalyser.fftSize = 256;
+        rAnalyser.smoothingTimeConstant = 0.2;
+        rData = { analyser: rAnalyser, source: null as any };
+        remoteAnalysersRef.current[uid] = rData;
+      }
+
+      source.connect(rData.analyser);
+      rData.analyser.connect(ctx.destination);
+
+      source.onended = () => {
+        playNextSavsChunk(uid);
+      };
+
+      source.start(0);
+    } catch (e) {
+      savsIsPlayingRef.current[uid] = false;
+    }
+  }, []);
+
+  // Establish live, persistent WebSocket connection
+  useEffect(() => {
+    let active = true;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
+
+    const connectWS = () => {
+      if (!active) return;
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (!active) {
+            ws?.close();
+            return;
+          }
+          ws?.send(JSON.stringify({
+            type: "register",
+            uid: profile.uid,
+            channelId: "voice_channel_general"
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          if (!active) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.uid === profile.uid) return;
+
+            if (msg.type === "voice" && msg.data) {
+              decodeAndQueueAudio(msg.uid, msg.data);
+            } else if (msg.type === "video") {
+              setRemoteFrames((prev) => {
+                const current = prev[msg.uid] || {};
+                return {
+                  ...prev,
+                  [msg.uid]: {
+                    ...current,
+                    [msg.videoType]: msg.data
+                  }
+                };
+              });
+            }
+          } catch (e) {
+            // Unmarshal error or heartbeat response
+          }
+        };
+
+        ws.onclose = () => {
+          if (!active) return;
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connectWS, 2000);
+        };
+
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch (err) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connectWS, 3000);
+      }
+    };
+
+    connectWS();
+
+    return () => {
+      active = false;
+      clearTimeout(reconnectTimer);
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) {}
+      }
+    };
+  }, [decodeAndQueueAudio, profile.uid]);
+
+  // Audio Recorder
+  useEffect(() => {
+    if (typeof MediaRecorder === "undefined" || !localStreamRef.current) return;
+
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+      mediaRecorderRef.current = null;
+    }
+
+    let chunkId = 0;
+    try {
+      const rec = new MediaRecorder(rawStreamRef.current || localStreamRef.current, {
+        mimeType: "audio/webm;codecs=opus",
+      });
+
+      rec.ondataavailable = async (e) => {
+        if (e.data && e.data.size > 0 && !isMutedRef.current) {
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const base64data = reader.result as string;
+            const base64Str = base64data.split(",")[1];
+            if (base64Str) {
+              const ws = wsRef.current;
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: "voice",
+                  uid: profile.uid,
+                  channelId: "voice_channel_general",
+                  data: base64Str,
+                }));
+              } else {
+                fetch("/api/voice/upload", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    uid: profile.uid,
+                    channelId: "voice_channel_general",
+                    chunkId: chunkId++,
+                    data: base64Str,
+                  }),
+                }).catch(() => {});
+              }
+            }
+          };
+          reader.readAsDataURL(e.data);
+        }
+      };
+
+      rec.start(300);
+      mediaRecorderRef.current = rec;
+    } catch (e) {
+      console.warn("Failed to start SAVS Audio MediaRecorder:", e);
+    }
+
+    return () => {
+      if (mediaRecorderRef.current) {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (e) {}
+      }
+    };
+  }, [localStreamRef.current]);
+
+  // Camera upload
+  useEffect(() => {
+    if (!isVideoOn) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+
+    const timer = setInterval(() => {
+      const videoEl = localVideoRef.current;
+      if (videoEl && ctx) {
+        try {
+          ctx.drawImage(videoEl, 0, 0, 320, 240);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
+          const base64Str = dataUrl.split(",")[1];
+          if (base64Str) {
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "video",
+                videoType: "camera",
+                uid: profile.uid,
+                channelId: "voice_channel_general",
+                data: base64Str,
+              }));
+            } else {
+              fetch("/api/video/upload", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  uid: profile.uid,
+                  channelId: "voice_channel_general",
+                  type: "camera",
+                  data: base64Str,
+                }),
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {}
+      }
+    }, 400);
+
+    return () => clearInterval(timer);
+  }, [isVideoOn]);
+
+  // Screen upload
+  useEffect(() => {
+    if (!isScreenSharing) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext("2d");
+
+    const timer = setInterval(() => {
+      const videoEl = localScreenVideoRef.current;
+      if (videoEl && ctx) {
+        try {
+          ctx.drawImage(videoEl, 0, 0, 640, 480);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.4);
+          const base64Str = dataUrl.split(",")[1];
+          if (base64Str) {
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "video",
+                videoType: "screen",
+                uid: profile.uid,
+                channelId: "voice_channel_general",
+                data: base64Str,
+              }));
+            } else {
+              fetch("/api/video/upload", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  uid: profile.uid,
+                  channelId: "voice_channel_general",
+                  type: "screen",
+                  data: base64Str,
+                }),
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {}
+      }
+    }, 500);
+
+    return () => clearInterval(timer);
+  }, [isScreenSharing]);
+
+  // Download poll loop
+  useEffect(() => {
+    let active = true;
+
+    const pollMedia = async () => {
+      if (!active) return;
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        setTimeout(pollMedia, 1500);
+        return;
+      }
+
+      try {
+        const resAudio = await fetch(
+          `/api/voice/download?channelId=voice_channel_general&lastTimestamp=${lastAudioTimestampRef.current}`
+        );
+        const dataAudio = await resAudio.json();
+        if (dataAudio && dataAudio.chunks && dataAudio.chunks.length > 0) {
+          dataAudio.chunks.forEach((chunk: any) => {
+            if (chunk.uid !== profile.uid) {
+              decodeAndQueueAudio(chunk.uid, chunk.data);
+            }
+            lastAudioTimestampRef.current = Math.max(
+              lastAudioTimestampRef.current,
+              chunk.timestamp
+            );
+          });
+        }
+
+        const resVideo = await fetch(
+          `/api/video/download?channelId=voice_channel_general`
+        );
+        const dataVideo = await resVideo.json();
+        if (dataVideo && dataVideo.frames) {
+          const newFrames: { [uid: string]: { camera?: string; screen?: string } } = {};
+          Object.entries(dataVideo.frames).forEach(([uid, userFrames]: [string, any]) => {
+            if (uid !== profile.uid) {
+              newFrames[uid] = {
+                camera: userFrames.camera?.data,
+                screen: userFrames.screen?.data,
+              };
+            }
+          });
+          setRemoteFrames((prev) => {
+            const merged = { ...prev };
+            Object.entries(newFrames).forEach(([uid, frames]) => {
+              merged[uid] = {
+                ...(merged[uid] || {}),
+                ...frames
+              };
+            });
+            return merged;
+          });
+        }
+      } catch (e) {}
+
+      setTimeout(pollMedia, 500);
+    };
+
+    pollMedia();
+
+    return () => {
+      active = false;
+    };
+  }, [decodeAndQueueAudio, profile.uid]);
+
   // Filter out any invalid, anonymous, or disconnected participant (> 8s without heartbeat), sorted deterministically
   const activeParticipants = useMemo(() => {
     return participants
@@ -1188,137 +1570,25 @@ export default function VoiceChannel({
 
   const initiateCall = useCallback(
     async (partnerUid: string, micStream: MediaStream) => {
-      try {
-        const pc = createPeerConnection(partnerUid, micStream);
-        const offer = await pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true,
-        });
-        const highQualityOffer = new RTCSessionDescription({
-          type: offer.type,
-          sdp: optimizeAudioSdp(offer.sdp || ""),
-        });
-        await pc.setLocalDescription(highQualityOffer);
-        sendSignal(partnerUid, "offer", JSON.stringify(highQualityOffer));
-      } catch (err) {
-        console.warn("Error initiating call to", partnerUid, err);
-      }
+      // SAVS bypasses WebRTC call initiation
     },
-    [createPeerConnection, sendSignal]
+    []
   );
 
   const handleSignal = useCallback(
     async (signal: VoiceSignal, micStream: MediaStream) => {
-      const sigKey = signal.id || `${signal.uid}_${signal.type}_${signal.timestamp || ""}_${(signal.sdp || "").slice(0, 30)}`;
-      if (processedSignalsRef.current.has(sigKey)) {
-        return;
-      }
-      processedSignalsRef.current.add(sigKey);
-      if (processedSignalsRef.current.size > 300) {
-        const first = processedSignalsRef.current.values().next().value;
-        if (first) processedSignalsRef.current.delete(first);
-      }
-
-      if (signal.timestamp && signal.timestamp < sessionStartTimeRef.current - 15000) {
-        return;
-      }
+      // SAVS bypasses WebRTC signal handling
       const partnerUid = signal.uid;
-
-      try {
-        if (signal.type === "offer") {
-          let pc = peersRef.current[partnerUid];
-          const isDead =
-            !pc || pc.connectionState === "closed" || pc.signalingState === "closed";
-
-          if (isDead) {
-            pc = createPeerConnection(partnerUid, micStream);
-          } else if (pc.signalingState !== "stable") {
-            const isPolite = profile.uid < partnerUid;
-            if (!isPolite && pc.signalingState === "have-local-offer") {
-              return;
-            }
-            try {
-              await pc.setLocalDescription({ type: "rollback" });
-            } catch (e) {
-              pc = createPeerConnection(partnerUid, micStream);
-            }
-          }
-
-          if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
-            try {
-              const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
-              await pc.setRemoteDescription(offerDescription);
-              await processCandidateQueue(partnerUid, pc);
-
-              if (pc.signalingState === "have-remote-offer") {
-                const answer = await pc.createAnswer();
-                const highQualityAnswer = new RTCSessionDescription({
-                  type: answer.type,
-                  sdp: optimizeAudioSdp(answer.sdp || ""),
-                });
-                await pc.setLocalDescription(highQualityAnswer);
-                sendSignal(partnerUid, "answer", JSON.stringify(highQualityAnswer));
-              }
-
-              syncPeerTracks(partnerUid, pc);
-            } catch (e) {
-              // Gracefully ignore state transitions
-            }
-          }
-        } else if (signal.type === "answer") {
-          const pc = peersRef.current[partnerUid];
-          if (pc && pc.signalingState === "have-local-offer") {
-            try {
-              const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
-              await pc.setRemoteDescription(answerDescription);
-              await processCandidateQueue(partnerUid, pc);
-              syncPeerTracks(partnerUid, pc);
-            } catch (e) {
-              // Gracefully ignore stale/duplicate answer
-            }
-          }
-        } else if (signal.type === "candidate") {
-          const candidateData = JSON.parse(signal.sdp);
-          const pc = peersRef.current[partnerUid];
-          if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== "closed") {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-            } catch (e) {}
-          } else {
-            if (!iceCandidateQueuesRef.current[partnerUid]) {
-              iceCandidateQueuesRef.current[partnerUid] = [];
-            }
-            iceCandidateQueuesRef.current[partnerUid].push(candidateData);
-          }
-        } else if (signal.type === "screenshare_started") {
-          let signalData: any = {};
-          try {
-            signalData = JSON.parse(signal.sdp || "{}");
-          } catch (e) {}
-          remoteScreenSharersRef.current[partnerUid] = { hasAudio: !!signalData.hasAudio };
-          const pc = peersRef.current[partnerUid];
-          if (pc) {
-            syncPeerTracks(partnerUid, pc);
-          }
-          setTrackTrigger((v) => v + 1);
-        } else if (signal.type === "screenshare_stopped") {
-          delete remoteScreenSharersRef.current[partnerUid];
-          if (remoteScreenStreamsRef.current[partnerUid]) {
-            delete remoteScreenStreamsRef.current[partnerUid];
-          }
-          if (remoteScreenVideoRefs.current[partnerUid]) {
-            remoteScreenVideoRefs.current[partnerUid]!.srcObject = null;
-          }
-          setTrackTrigger((v) => v + 1);
-        }
-      } catch (err: any) {
-        const msg = String(err?.message || err || "");
-        if (!msg.includes("Called in wrong state") && !msg.includes("stable")) {
-          console.warn("Signal handling note:", err);
-        }
+      const sigType = signal.type as any;
+      if (sigType === "screenshare_started") {
+        remoteScreenSharersRef.current[partnerUid] = { hasAudio: false };
+        setTrackTrigger((v) => v + 1);
+      } else if (sigType === "screenshare_stopped") {
+        delete remoteScreenSharersRef.current[partnerUid];
+        setTrackTrigger((v) => v + 1);
       }
     },
-    [createPeerConnection, processCandidateQueue, profile.uid, sendSignal]
+    []
   );
 
   // Main lifecycle: acquire microphone and register in voice_users
@@ -2357,20 +2627,29 @@ export default function VoiceChannel({
                     title="Click to view camera fullscreen"
                   >
                     {activeRemoteWithVideo ? (
-                      <video
-                        ref={(el) => {
-                          remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
-                          const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
-                          if (el && stream && el.srcObject !== stream) {
-                            el.srcObject = stream;
-                            el.play().catch(() => {});
-                          }
-                        }}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover"
-                      />
+                      remoteFrames[activeRemoteWithVideo.uid]?.camera ? (
+                        <img
+                          src={`data:image/jpeg;base64,${remoteFrames[activeRemoteWithVideo.uid].camera}`}
+                          alt={`${activeRemoteWithVideo.username}'s camera`}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <video
+                          ref={(el) => {
+                            remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                            const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                            if (el && stream && el.srcObject !== stream) {
+                              el.srcObject = stream;
+                              el.play().catch(() => {});
+                            }
+                          }}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full h-full object-cover"
+                        />
+                      )
                     ) : (
                       <video
                         ref={(el) => {
@@ -2394,20 +2673,29 @@ export default function VoiceChannel({
               </>
             ) : activeRemoteWithVideo ? (
               <>
-                <video
-                  ref={(el) => {
-                    remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
-                    const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
-                    if (el && stream && el.srcObject !== stream) {
-                      el.srcObject = stream;
-                      el.play().catch(() => {});
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover"
-                />
+                {remoteFrames[activeRemoteWithVideo.uid]?.camera ? (
+                  <img
+                    src={`data:image/jpeg;base64,${remoteFrames[activeRemoteWithVideo.uid].camera}`}
+                    alt={`${activeRemoteWithVideo.username}'s camera`}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <video
+                    ref={(el) => {
+                      remoteVideoRefs.current[activeRemoteWithVideo.uid] = el;
+                      const stream = remoteStreamsRef.current[activeRemoteWithVideo.uid];
+                      if (el && stream && el.srcObject !== stream) {
+                        el.srcObject = stream;
+                        el.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                )}
                 <div className="absolute bottom-2 left-2 bg-black/75 px-2 py-0.5 rounded text-[10px] font-semibold text-white truncate max-w-[140px]">
                   {activeRemoteWithVideo.username}
                 </div>
@@ -2887,33 +3175,42 @@ export default function VoiceChannel({
               {/* Video Element */}
               {p.isVideoOn ? (
                 <div className="relative w-full h-full">
-                  <video
-                    ref={(el) => {
-                      remoteVideoRefs.current[p.uid] = el;
-                      const remoteStream = remoteStreamsRef.current[p.uid];
-                      if (el && remoteStream) {
-                        if (el.srcObject !== remoteStream) {
-                          el.srcObject = remoteStream;
+                  {remoteFrames[p.uid]?.camera ? (
+                    <img
+                      src={`data:image/jpeg;base64,${remoteFrames[p.uid].camera}`}
+                      alt={`${p.username}'s camera`}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <video
+                      ref={(el) => {
+                        remoteVideoRefs.current[p.uid] = el;
+                        const remoteStream = remoteStreamsRef.current[p.uid];
+                        if (el && remoteStream) {
+                          if (el.srcObject !== remoteStream) {
+                            el.srcObject = remoteStream;
+                          }
+                          el.play().catch(() => {});
+                          if (el.readyState >= 1 || el.videoWidth > 0) {
+                            setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
+                          }
                         }
-                        el.play().catch(() => {});
-                        if (el.readyState >= 1 || el.videoWidth > 0) {
-                          setRemoteVideoLoaded((prev) => (prev[p.uid] ? prev : { ...prev, [p.uid]: true }));
-                        }
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    onLoadedData={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                    }}
-                    onPlaying={() => {
-                      setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
-                    }}
-                    className="w-full h-full object-cover"
-                  />
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      onLoadedData={() => {
+                        setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                      }}
+                      onPlaying={() => {
+                        setRemoteVideoLoaded((prev) => ({ ...prev, [p.uid]: true }));
+                      }}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
 
-                  {(!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
+                  {!remoteFrames[p.uid]?.camera && (!remoteVideoLoaded[p.uid] || p.isVideoLoading) && (
                     <div className="absolute inset-0 bg-[#30343b] flex items-center justify-center z-10 animate-in fade-in duration-200 pointer-events-none">
                       <img
                         src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/loading-discord-4cdhz1tE0SAtxrt5ioRt7yzc8DpALU.gif"
@@ -3017,6 +3314,15 @@ export default function VoiceChannel({
                           autoPlay
                           playsInline
                           muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      ) : remoteFrames[activeScreenShare.uid]?.screen ? (
+                        <img
+                          src={`data:image/jpeg;base64,${remoteFrames[activeScreenShare.uid].screen}`}
+                          alt={`${activeScreenShare.username}'s screen share`}
+                          referrerPolicy="no-referrer"
                           className={`w-full h-full ${
                             screenFitMode === "cover" ? "object-cover" : "object-contain"
                           }`}
@@ -3177,6 +3483,15 @@ export default function VoiceChannel({
                           autoPlay
                           playsInline
                           muted
+                          className={`w-full h-full ${
+                            screenFitMode === "cover" ? "object-cover" : "object-contain"
+                          }`}
+                        />
+                      ) : remoteFrames[activeScreenShare.uid]?.screen ? (
+                        <img
+                          src={`data:image/jpeg;base64,${remoteFrames[activeScreenShare.uid].screen}`}
+                          alt={`${activeScreenShare.username}'s screen share`}
+                          referrerPolicy="no-referrer"
                           className={`w-full h-full ${
                             screenFitMode === "cover" ? "object-cover" : "object-contain"
                           }`}
