@@ -1111,6 +1111,15 @@ export default function VoiceChannel({
         cameraSender = pc.addTransceiver("video", { direction: "sendrecv", streams: [cameraStream] }).sender;
       }
       cameraSendersRef.current[partnerUid] = cameraSender;
+      if (cameraSender && cameraSender.setParameters) {
+        try {
+          const params = cameraSender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+          params.encodings[0].maxBitrate = 2500000;
+          params.encodings[0].maxFramerate = 60;
+          cameraSender.setParameters(params).catch(() => {});
+        } catch (e) {}
+      }
 
       // 3. Add screen share track (transceiver 2) with dedicated screen stream
       const realScreenTrack = screenStreamRef.current?.getVideoTracks()[0];
@@ -1122,6 +1131,15 @@ export default function VoiceChannel({
         screenSender = pc.addTransceiver("video", { direction: "sendrecv", streams: [screenStream] }).sender;
       }
       screenSendersRef.current[partnerUid] = screenSender;
+      if (screenSender && screenSender.setParameters) {
+        try {
+          const params = screenSender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+          params.encodings[0].maxBitrate = 4500000;
+          params.encodings[0].maxFramerate = 60;
+          screenSender.setParameters(params).catch(() => {});
+        } catch (e) {}
+      }
 
       // Ensure transceivers are configured to bidirectional sendrecv
       pc.getTransceivers().forEach((t) => {
