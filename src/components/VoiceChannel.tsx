@@ -448,16 +448,14 @@ export default function VoiceChannel({
     return list;
   }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants, trackTrigger]);
 
-  // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
-  // Acquire studio microphone stream with 200% boosted gain
+  // Automatically acquire studio microphone stream with fast initialization
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2,
+          noiseSuppression: true,
+          autoGainControl: true,
         },
         video: false,
       });
@@ -1566,7 +1564,7 @@ export default function VoiceChannel({
             }
             let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
             if (ts <= 0) ts = now;
-            if (now - ts <= 120000) {
+            if (now - ts <= 7000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1581,7 +1579,7 @@ export default function VoiceChannel({
             if (pData.inVoice) {
               let ts = toTimestampMs(pData.lastSeen || pData.timestamp);
               if (ts <= 0) ts = now;
-              if (now - ts <= 120000) {
+              if (now - ts <= 7000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,
@@ -1774,18 +1772,21 @@ export default function VoiceChannel({
 
     initVoice();
 
-    // Fast 2-second heartbeat to ensure other peers know this client is alive
+    // Fast 1.2-second heartbeat to ensure other peers know this client is active
     const heartbeatInterval = setInterval(async () => {
       if (!isMountedRef.current) return;
       try {
-        await updateDoc(doc(db, "voice_users", profile.uid), {
+        await setDoc(doc(db, "voice_users", profile.uid), {
+          uid: profile.uid,
+          username: profile.username,
+          photoURL: profile.photoURL || "",
           timestamp: Date.now(),
           isMuted: isMutedRef.current,
           isVideoOn: isVideoOnRef.current,
           isVideoLoading: isCameraLoadingRef.current,
           isScreenSharing: isScreenSharingRef.current,
           isScreenAudioOn: isScreenAudioOnRef.current,
-        }).catch(() => {});
+        }, { merge: true }).catch(() => {});
         await updateDoc(doc(db, "presence", profile.uid), {
           lastSeen: Date.now(),
           status: "online",
@@ -1795,7 +1796,7 @@ export default function VoiceChannel({
           isScreenSharing: isScreenSharingRef.current,
         }).catch(() => {});
       } catch (e) {}
-    }, 2000);
+    }, 1200);
 
     return () => {
       isMountedRef.current = false;

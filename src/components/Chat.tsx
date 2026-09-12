@@ -133,7 +133,7 @@ export default function Chat({
           return;
         }
         const ts = toTimestampMs(data.timestamp || data.lastSeen);
-        if (ts > 0 && now - ts <= 120000) {
+        if (ts > 0 && now - ts <= 7000) {
           userMap.set(data.uid, { ...data, timestamp: ts });
         }
       });
@@ -147,7 +147,7 @@ export default function Chat({
         }
         if (data.inVoice) {
           const ts = toTimestampMs(data.lastSeen || data.timestamp);
-          if (ts > 0 && now - ts <= 60000) {
+          if (ts > 0 && now - ts <= 7000) {
             const existing = userMap.get(data.uid);
             userMap.set(data.uid, {
               uid: data.uid,
@@ -197,6 +197,19 @@ export default function Chat({
   useEffect(() => {
     isOpenRef.current = isOpen;
   }, [isOpen]);
+
+  // Ensure local user presence is marked as not in voice when disconnected
+  useEffect(() => {
+    if (!isInVoiceSession && profile?.uid) {
+      deleteDoc(doc(db, "voice_users", profile.uid)).catch(() => {});
+      updateDoc(doc(db, "presence", profile.uid), {
+        inVoice: false,
+        isMuted: false,
+        isVideoOn: false,
+        isScreenSharing: false,
+      }).catch(() => {});
+    }
+  }, [isInVoiceSession, profile?.uid]);
 
   useEffect(() => {
     profileRef.current = profile;
