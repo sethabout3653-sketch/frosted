@@ -473,9 +473,7 @@ const PORT = 3000;
   // ==========================================
   // SQLite Distributed Engine & Storage
   // ==========================================
-  const sqlite3 = require("sqlite3");
-  const { open } = require("sqlite");
-
+  
   let dbInstance: any = null;
   async function getDb() {
     if (dbInstance) return dbInstance;
@@ -483,12 +481,10 @@ const PORT = 3000;
       ? path.join(uploadsDir, 'database.sqlite')
       : '/tmp/database.sqlite';
       
-    dbInstance = await open({
-      filename: dbFile,
-      driver: sqlite3.Database
-    });
+    const Database = (await import("better-sqlite3")).default;
+    dbInstance = new Database(dbFile);
 
-    await dbInstance.exec(`
+    dbInstance.exec(`
       CREATE TABLE IF NOT EXISTS records (
         collection TEXT,
         id TEXT,
@@ -506,6 +502,12 @@ const PORT = 3000;
         timestamp INTEGER
       );
     `);
+    
+    // Polyfill async sqlite API so the rest of the code works unmodified
+    dbInstance.run = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).run(...params);
+    dbInstance.all = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).all(...params);
+    dbInstance.get = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).get(...params);
+    
     return dbInstance;
   }
 
