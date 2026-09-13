@@ -52,3 +52,28 @@ export interface VoiceSignal {
   sdp: string;
   timestamp: number;
 }
+
+export interface PrivateCall {
+  id: string;
+  callerUid: string;
+  callerUsername: string;
+  callerPhotoURL: string;
+  calleeUid: string;
+  calleeUsername: string;
+  calleePhotoURL: string;
+  status: "ringing" | "accepted" | "declined" | "timeout" | "ended" | "missed";
+  callType: "voice" | "video";
+  createdAt: number;
+  acceptedAt?: number;
+  endedAt?: number;
+}
+
+export interface PrivateCallSignal {
+  id: string;
+  callId: string;
+  fromUid: string;
+  toUid: string;
+  type: "offer" | "answer" | "candidate" | "end" | "video_state" | "screen_state";
+  payload: string;
+  timestamp: number;
+}

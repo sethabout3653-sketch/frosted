@@ -32,10 +32,14 @@ import {
   Volume2,
   Video,
   MonitorUp,
+  Phone,
+  PhoneCall,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
 import MediaAttachment from "./MediaAttachment";
+import UserCallPopover from "./UserCallPopover";
+import { initiatePrivateCallGlobal } from "./PrivateCallManager";
 import { detectMediaType, formatFileSize } from "../utils/mediaUtils";
 
 interface ChatPanelProps {
@@ -1056,26 +1060,46 @@ export default function ChatPanel({
                 className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
               >
                 {/* Avatar Circle */}
-                <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex-shrink-0 flex items-center justify-center font-bold text-white text-sm">
-                  {msg.photoURL ? (
-                    <img
-                      src={msg.photoURL}
-                      alt={msg.username || "User"}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <span>{(msg.username || "?").charAt(0).toUpperCase()}</span>
-                  )}
-                </div>
+                <UserCallPopover
+                  user={{
+                    uid: msg.uid,
+                    username: msg.username,
+                    photoURL: msg.photoURL,
+                  }}
+                  isCurrentUser={isMe}
+                  align="left"
+                >
+                  <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex-shrink-0 flex items-center justify-center font-bold text-white text-sm cursor-pointer hover:ring-2 hover:ring-emerald-500/50 transition-all">
+                    {msg.photoURL ? (
+                      <img
+                        src={msg.photoURL}
+                        alt={msg.username || "User"}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span>{(msg.username || "?").charAt(0).toUpperCase()}</span>
+                    )}
+                  </div>
+                </UserCallPopover>
 
                 {/* Message Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-sm font-bold text-white hover:underline cursor-pointer">
-                      {msg.username}
-                    </span>
+                    <UserCallPopover
+                      user={{
+                        uid: msg.uid,
+                        username: msg.username,
+                        photoURL: msg.photoURL,
+                      }}
+                      isCurrentUser={isMe}
+                      align="left"
+                    >
+                      <span className="text-sm font-bold text-white hover:underline cursor-pointer">
+                        {msg.username}
+                      </span>
+                    </UserCallPopover>
                     <span className="text-[11px] text-neutral-500 font-normal">
                       {formatTimestamp(msg.timestamp)}
                     </span>
@@ -1123,8 +1147,26 @@ export default function ChatPanel({
                   )}
                 </div>
 
-                {/* Actions (Delete, React) */}
+                {/* Actions (Delete, React, Call) */}
                 <div className="absolute right-2 -top-3 sm:top-2 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 transition-opacity flex items-center gap-1 bg-neutral-900 border border-neutral-700 rounded-lg p-1 shadow-md z-10">
+                  {!isMe && (
+                    <button
+                      onClick={() =>
+                        initiatePrivateCallGlobal(
+                          {
+                            uid: msg.uid,
+                            username: msg.username,
+                            photoURL: msg.photoURL,
+                          },
+                          "video"
+                        )
+                      }
+                      className="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-neutral-800 rounded transition-colors cursor-pointer mr-0.5"
+                      title={`Call ${msg.username}`}
+                    >
+                      <Phone size={14} />
+                    </button>
+                  )}
                   {["👍", "❤️", "😂"].map((emoji) => (
                     <button
                       key={emoji}
@@ -1386,30 +1428,44 @@ export default function ChatPanel({
                   return (
                     <div
                       key={`${user.uid || "online"}-${uIdx}`}
-                      className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-neutral-900/60 transition-colors"
+                      className="group flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-neutral-900/80 transition-colors relative"
                     >
-                      {/* Avatar with Green Online Dot Badge */}
-                      <div className="relative">
-                        <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex items-center justify-center text-xs font-bold text-white">
-                          {user.photoURL ? (
-                            <img
-                              src={user.photoURL}
-                              alt={user.username || "User"}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <span>{(user.username || "?").charAt(0).toUpperCase()}</span>
-                          )}
+                      <UserCallPopover
+                        user={user}
+                        isCurrentUser={isCurrentUser}
+                        isInVoice={isInVoice}
+                        align="right"
+                      >
+                        {/* Avatar with Green Online Dot Badge */}
+                        <div className="relative cursor-pointer">
+                          <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex items-center justify-center text-xs font-bold text-white hover:ring-2 hover:ring-emerald-500/50 transition-all">
+                            {user.photoURL ? (
+                              <img
+                                src={user.photoURL}
+                                alt={user.username || "User"}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <span>{(user.username || "?").charAt(0).toUpperCase()}</span>
+                            )}
+                          </div>
+                          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080808]" />
                         </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080808]" />
-                      </div>
+                      </UserCallPopover>
 
                       {/* Username & Status Label */}
                       <div className="flex-1 min-w-0 flex flex-col">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-neutral-200 truncate">
-                            {user.username}
-                          </span>
+                          <UserCallPopover
+                            user={user}
+                            isCurrentUser={isCurrentUser}
+                            isInVoice={isInVoice}
+                            align="right"
+                          >
+                            <span className="text-xs font-bold text-neutral-200 hover:text-white truncate cursor-pointer hover:underline">
+                              {user.username}
+                            </span>
+                          </UserCallPopover>
                           {isCurrentUser && (
                             <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider">
                               YOU
@@ -1437,6 +1493,32 @@ export default function ChatPanel({
                           )}
                         </div>
                       </div>
+
+                      {/* Quick Call Action Buttons on Hover */}
+                      {!isCurrentUser && (
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              initiatePrivateCallGlobal(user, "video");
+                            }}
+                            className="p-1 text-neutral-400 hover:text-white rounded hover:bg-neutral-800 transition-colors"
+                            title="Video Call"
+                          >
+                            <Video size={13} />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              initiatePrivateCallGlobal(user, "voice");
+                            }}
+                            className="p-1 text-neutral-400 hover:text-emerald-400 rounded hover:bg-neutral-800 transition-colors"
+                            title="Call"
+                          >
+                            <Phone size={12} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

@@ -17,6 +17,7 @@ import {
 import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
+import PrivateCallManager from "./PrivateCallManager";
 import { ChatProfile, ChatMessage } from "../types";
 import {
   collection,
@@ -673,7 +674,16 @@ export default function Chat({
     />
   )}
 
-  {/* 3. Toast notification when chat is closed */}
+  {/* 3. Private 1-on-1 Call Manager (Audio, Video, Ringtone, 40s timeout, Notifications) */}
+  <PrivateCallManager
+    profile={profile}
+    onOpenChat={() => {
+      setActiveTab("chat");
+      onOpenVoiceChat?.();
+    }}
+  />
+
+  {/* 4. Toast notification when chat is closed */}
   {!isOpen && notification && (
     <div className="fixed top-6 right-6 z-50 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in hover:bg-neutral-800 transition-colors cursor-pointer">
       <div
