@@ -1,3 +1,5 @@
+import { io, Socket } from "socket.io-client";
+
 // Storage Helper mapping to our local server storage
 export const cassandra = {
   storage: {
@@ -33,10 +35,8 @@ export const cassandra = {
   },
 };
 
-// Remove all Supabase dependencies and rely strictly on our custom local SSE real-time engine.
-export const db = { name: "CustomServerlessDB" };
+export const db = { name: "SocketIODB" };
 
-// Types & Helpers
 export enum OperationType {
   GET = "get",
   LIST = "list",
@@ -47,7 +47,7 @@ export enum OperationType {
 }
 
 export function handleFirestoreError(error: any, op: string, path: string) {
-  console.warn(`[LocalDB] Error during ${op} on ${path}:`, error);
+  console.warn(`[SocketIO] Error during ${op} on ${path}:`, error);
 }
 
 export function toTimestampMs(val: any): number {
@@ -76,77 +76,52 @@ export function orderBy(field: string, direction: "asc" | "desc" = "asc") { retu
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
 
 // ==========================================
-// Centralized SSE Connection Manager
+// Centralized Socket.io Connection Manager
 // ==========================================
-class CassandraClient {
-  private static instance: CassandraClient;
-  private sse: EventSource | null = null;
-  private listeners: Map<string, Set<(data: Record<string, any>) => void>> = new Map();
+class SocketClient {
+  private static instance: SocketClient;
+  private socket: Socket;
+  private listeners: Map<string, Set<(snap: any) => void>> = new Map();
   private cache: Map<string, Record<string, any>> = new Map();
 
   private constructor() {
-    this.connect();
-  }
-
-  public static getInstance(): CassandraClient {
-    if (!CassandraClient.instance) {
-      CassandraClient.instance = new CassandraClient();
-    }
-    return CassandraClient.instance;
-  }
-
-  private connect() {
-    if (this.sse) return;
-    this.sse = new EventSource("/api/cassandra/stream");
-    
-    this.sse.addEventListener("message", (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "init" || msg.type === "initial") {
-          // Full state sync
-          this.cache.clear();
-          for (const [col, docs] of Object.entries(msg.data || {})) {
-            this.cache.set(col, docs as Record<string, any>);
-            this.notify(col);
-          }
-        } else if (msg.type === "change") {
-          // Delta update
-          const { op, collection, id, data } = msg;
-          if (!this.cache.has(collection)) {
-            this.cache.set(collection, {});
-          }
-          const colData = this.cache.get(collection)!;
-          if (op === "delete") {
-            delete colData[id];
-          } else {
-            colData[id] = { ...colData[id], ...data };
-          }
-          this.notify(collection);
-        }
-      } catch (err) {}
+    this.socket = io({
+      transports: ["websocket"] // Required for Vercel according to docs
     });
 
-    this.sse.onerror = () => {
-      this.sse?.close();
-      this.sse = null;
-      setTimeout(() => this.connect(), 2000);
-    };
+    this.socket.on("change", (msg) => {
+      const { op, collection, id, data } = msg;
+      if (!this.cache.has(collection)) {
+        this.cache.set(collection, {});
+      }
+      const colData = this.cache.get(collection)!;
+      if (op === "delete") {
+        delete colData[id];
+      } else {
+        colData[id] = { ...colData[id], ...data };
+      }
+      this.notify(collection);
+    });
+  }
+
+  public static getInstance(): SocketClient {
+    if (!SocketClient.instance) {
+      SocketClient.instance = new SocketClient();
+    }
+    return SocketClient.instance;
   }
 
   private notify(colName: string) {
     const colListeners = this.listeners.get(colName);
     if (colListeners) {
-      const data = this.cache.get(colName) || {};
-      colListeners.forEach(cb => cb(data));
+      const dataMap = this.cache.get(colName) || {};
+      const dataList = Object.entries(dataMap).map(([id, val]) => ({ id, ...val }));
+      const docs = dataList.map(d => ({ id: d.id, data: () => d }));
+      colListeners.forEach(cb => cb({ docs, forEach: (fn: any) => docs.forEach(fn), empty: docs.length === 0, size: docs.length }));
     }
   }
 
   public async getCollection(colName: string) {
-    // Attempt local cache first to avoid redundant fetches
-    if (this.cache.has(colName) && Object.keys(this.cache.get(colName)!).length > 0) {
-      return this.cache.get(colName);
-    }
-    // Fetch directly if not in cache
     try {
       const res = await fetch(`/api/cassandra/data?collection=${encodeURIComponent(colName)}`);
       if (res.ok) {
@@ -155,33 +130,35 @@ class CassandraClient {
         return json;
       }
     } catch (e) {}
-    return {};
+    return this.cache.get(colName) || {};
   }
 
-  public subscribe(colName: string, cb: (data: Record<string, any>) => void) {
+  public subscribe(colName: string, queryObj: any, cb: (snap: any) => void) {
     if (!this.listeners.has(colName)) {
       this.listeners.set(colName, new Set());
+      this.socket.emit("subscribe", colName);
     }
-    this.listeners.get(colName)!.add(cb);
     
-    // Immediately fire with current cache
-    this.getCollection(colName).then(data => cb(data || {}));
+    const wrapper = (snap: any) => {
+      // Re-apply filters from queryObj if necessary
+      // For now, onSnapshot usually takes the whole collection and filters locally
+      cb(snap);
+    };
 
-    // High-reliability sync with Cloud SQL every 3 seconds
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/cassandra/data?collection=${encodeURIComponent(colName)}`);
-        if (res.ok) {
-          const freshData = await res.json();
-          this.cache.set(colName, freshData);
-          this.notify(colName);
-        }
-      } catch (e) {}
-    }, 3000);
+    this.listeners.get(colName)!.add(wrapper);
+    
+    // Initial fetch
+    this.getCollection(colName).then(dataMap => {
+      const docs = Object.entries(dataMap).map(([id, val]: [string, any]) => ({ id, data: () => val }));
+      cb({ docs, forEach: (fn: any) => docs.forEach(fn), empty: docs.length === 0, size: docs.length });
+    });
 
     return () => {
-      clearInterval(interval);
-      this.listeners.get(colName)?.delete(cb);
+      this.listeners.get(colName)?.delete(wrapper);
+      if (this.listeners.get(colName)?.size === 0) {
+        this.listeners.delete(colName);
+        this.socket.emit("unsubscribe", colName);
+      }
     };
   }
 
@@ -194,49 +171,40 @@ class CassandraClient {
         keepalive: true,
       });
     } catch (e) {
-      console.warn("Cassandra write error:", e);
+      console.warn("Write error:", e);
     }
+  }
+
+  public identify(uid: string) {
+    this.socket.emit("identify", uid);
+  }
+
+  public sendSignal(payload: any) {
+    this.socket.emit("webrtc-signal", payload);
+  }
+
+  public onSignal(cb: (signal: any) => void) {
+    this.socket.on("webrtc-signal", cb);
+    return () => this.socket.off("webrtc-signal", cb);
   }
 }
 
-// Database Operations mapping directly to CassandraClient
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
-  const constraints = queryObj?.constraints || [];
-  
-  if (!colName) {
-    return { docs: [], forEach: () => {}, empty: true, size: 0 };
-  }
+  if (!colName) return { docs: [], forEach: () => {}, empty: true, size: 0 };
 
-  try {
-    const dataMap = await CassandraClient.getInstance().getCollection(colName);
-    const dataList = Object.entries(dataMap || {}).map(([id, val]: [string, any]) => ({
-      id,
-      ...val
-    }));
-    
-    let filtered = dataList;
-    for (const c of constraints) {
-      if (c.type === "where") {
-        if (c.op === "==") filtered = filtered.filter(d => d[c.field] === c.value);
-      } else if (c.type === "orderBy") {
-        filtered.sort((a, b) => {
-          const valA = a[c.field];
-          const valB = b[c.field];
-          return c.direction === "asc" ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
-        });
-      }
-    }
+  const dataMap = await SocketClient.getInstance().getCollection(colName);
+  const docs = Object.entries(dataMap).map(([id, val]: [string, any]) => ({
+    id,
+    data: () => ({ ...val, id })
+  }));
 
-    return {
-      docs: filtered.map(d => ({ id: d.id, data: () => d })),
-      forEach: (cb: any) => filtered.forEach(d => cb({ id: d.id, data: () => d })),
-      empty: filtered.length === 0,
-      size: filtered.length
-    };
-  } catch (e) {
-    return { docs: [], forEach: () => {}, empty: true, size: 0 };
-  }
+  return {
+    docs,
+    forEach: (cb: any) => docs.forEach(cb),
+    empty: docs.length === 0,
+    size: docs.length
+  };
 }
 
 export function onSnapshot(
@@ -245,53 +213,26 @@ export function onSnapshot(
   _onError?: (err: any) => void
 ) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
-  
-  if (!colName) {
-    return () => {};
-  }
+  if (!colName) return () => {};
 
-  const client = CassandraClient.getInstance();
-
-  return client.subscribe(colName, (dataMap) => {
-    const dataList = Object.entries(dataMap || {}).map(([id, val]: [string, any]) => ({
-      id,
-      ...val
-    }));
-    
-    const constraints = queryObj?.constraints || [];
-    let filtered = dataList;
-    for (const c of constraints) {
-      if (c.type === "where") {
-        if (c.op === "==") filtered = filtered.filter(d => d[c.field] === c.value);
-      } else if (c.type === "orderBy") {
-        filtered.sort((a, b) => {
-          const valA = a[c.field];
-          const valB = b[c.field];
-          return c.direction === "asc" ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
-        });
-      }
-    }
-
-    const docs = filtered.map(d => ({ id: d.id, data: () => d }));
-    onNext({ docs, forEach: (cb: any) => docs.forEach(cb), empty: docs.length === 0, size: docs.length });
-  });
+  return SocketClient.getInstance().subscribe(colName, queryObj, onNext);
 }
 
 export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  await CassandraClient.getInstance().write("set", docRef.colName, docRef.id, data);
+  await SocketClient.getInstance().write("set", docRef.colName, docRef.id, data);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  await CassandraClient.getInstance().write("set", docRef.colName, docRef.id, data);
+  await SocketClient.getInstance().write("update", docRef.colName, docRef.id, data);
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  await CassandraClient.getInstance().write("delete", docRef.colName, docRef.id);
+  await SocketClient.getInstance().write("delete", docRef.colName, docRef.id);
 }
 
 export async function addDoc(colName: string, data: any) {
   const id = "msg_" + Math.random().toString(36).substring(2, 11);
-  await CassandraClient.getInstance().write("set", colName, id, data);
+  await setDoc({ colName, id }, data);
   return { colName, id };
 }
 
@@ -311,80 +252,12 @@ export function writeBatch() {
   };
 }
 
-// Signaling Compatibility (used for WebRTC) using our local API
+// Signaling Compatibility
 export function sendBroadcastSignal(payload: any) {
-  fetch("/api/webrtc/signal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}_${Math.random().toString(36).substring(2, 6)}` }),
-    keepalive: true,
-  }).catch(console.error);
+  SocketClient.getInstance().sendSignal(payload);
 }
 
 export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-  let eventSource: EventSource | null = null;
-  let isSubscribed = true;
-  const processedSignals = new Set<string>();
-
-  const handleSignalData = (raw: string) => {
-    try {
-      const data = JSON.parse(raw);
-      const payload = data.payload || data;
-      if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
-        if (!processedSignals.has(payload.id)) {
-          processedSignals.add(payload.id);
-          onSignal(payload);
-        }
-      }
-    } catch (e) {}
-  };
-
-  const connect = () => {
-    if (!isSubscribed) return;
-    eventSource = new EventSource("/api/cassandra/stream");
-    
-    eventSource.addEventListener("webrtc_signal", (event) => {
-      handleSignalData(event.data);
-    });
-
-    eventSource.addEventListener("message", (event) => {
-      handleSignalData(event.data);
-    });
-
-    eventSource.onerror = () => {
-      if (isSubscribed) {
-        eventSource?.close();
-        setTimeout(connect, 2000);
-      }
-    };
-  };
-
-  connect();
-
-  // Active Polling for signals across serverless instances
-  const interval = setInterval(async () => {
-    if (!isSubscribed) return;
-    try {
-      const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}`);
-      if (res.ok) {
-        const json = await res.json();
-        const signals = json.signals || [];
-        for (const s of signals) {
-           if (!processedSignals.has(s.id)) {
-              processedSignals.add(s.id);
-              onSignal(s);
-           }
-        }
-      }
-    } catch(e) {}
-  }, 1500);
-
-  return () => {
-    isSubscribed = false;
-    clearInterval(interval);
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
-    }
-  };
+  SocketClient.getInstance().identify(myUid);
+  return SocketClient.getInstance().onSignal(onSignal);
 }

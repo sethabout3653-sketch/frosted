@@ -3,13 +3,52 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
+import { createServer } from "http";
+import { Server } from "socket.io";
 
 import { db } from "./src/db/index.js";
 import { records, webrtcSignals } from "./src/db/schema.js";
 import { eq, and, gt, ne, or } from "drizzle-orm";
 
 export const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
 const PORT = 3000;
+
+// Socket.io real-time handling
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
+
+  socket.on("subscribe", (collection) => {
+    socket.join(`collection:${collection}`);
+  });
+
+  socket.on("unsubscribe", (collection) => {
+    socket.leave(`collection:${collection}`);
+  });
+
+  socket.on("webrtc-signal", (payload) => {
+    // Broadcast to target or all
+    if (payload.targetUid === "all") {
+      socket.broadcast.emit("webrtc-signal", payload);
+    } else {
+      io.to(`user:${payload.targetUid}`).emit("webrtc-signal", payload);
+    }
+  });
+
+  socket.on("identify", (uid) => {
+    socket.join(`user:${uid}`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected:", socket.id);
+  });
+});
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
   let uploadsDir = path.join(process.cwd(), "uploads");
@@ -543,6 +582,9 @@ const PORT = 3000;
         sseClients.delete(client);
       }
     });
+
+    // Also broadcast via Socket.io
+    io.to(`collection:${collection}`).emit("change", { op, collection, id, data, timestamp: Date.now() });
   };
 
   const broadcastWebRTCSignal = (signal: any) => {
@@ -961,7 +1003,7 @@ const PORT = 3000;
         });
       }
 
-      app.listen(PORT, "0.0.0.0", () => {
+      httpServer.listen(PORT, "0.0.0.0", () => {
         console.log(`Server running on http://localhost:${PORT}`);
       });
     })();
