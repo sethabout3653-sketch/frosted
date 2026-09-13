@@ -125,6 +125,8 @@ export default function ChatPanel({
   const [attachmentSize, setAttachmentSize] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadingFileInfo, setUploadingFileInfo] = useState<{ name: string; size: number } | null>(null);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
@@ -667,40 +669,82 @@ export default function ChatPanel({
     }
   };
 
+  const cancelUpload = () => {
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+      uploadAbortControllerRef.current = null;
+    }
+    setIsUploading(false);
+    setUploadProgress(null);
+    setUploadingFileInfo(null);
+  };
+
   const uploadFile = async (file: File) => {
-    setIsUploading(true);
-    setUploadProgress(10);
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    uploadAbortControllerRef.current = abortController;
+
+    // 1. Synchronously stage instant preview in 0ms so the UI NEVER gets stuck on loading
+    let localBlobUrl = "";
     try {
-      const result: any = await cassandra.storage.upload(file, (percent) => {
-        setUploadProgress(percent);
-      });
+      localBlobUrl = URL.createObjectURL(file);
+    } catch (e) {
+      localBlobUrl = "";
+    }
+
+    setAttachment(localBlobUrl || "pending");
+    setAttachmentType(file.type || "application/octet-stream");
+    setAttachmentName(file.name);
+    setAttachmentSize(file.size);
+
+    setIsUploading(true);
+    setUploadProgress(5);
+    setUploadingFileInfo({ name: file.name, size: file.size });
+
+    try {
+      const result: any = await (cassandra.storage as any).upload(
+        file,
+        (percent: number) => {
+          setUploadProgress(percent);
+        },
+        abortController
+      );
       const url = typeof result === "string" ? result : result?.url || "";
       const resMime = typeof result === "object" ? result?.mimetype : null;
       const resName = typeof result === "object" ? result?.filename : null;
       const resSize = typeof result === "object" ? result?.size : null;
 
-      setAttachment(url);
+      if (url) {
+        setAttachment(url);
+      }
       setAttachmentType(resMime || file.type || "application/octet-stream");
       setAttachmentName(resName || file.name || "attachment");
       setAttachmentSize(resSize || file.size || 0);
     } catch (error: any) {
+      if (error?.message?.includes("cancelled") || error?.message?.includes("aborted")) {
+        console.log("Upload cancelled by user");
+        return;
+      }
       console.warn("Storage upload fallback invoked:", error);
-      try {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = reader.result as string;
-          setAttachment(dataUrl);
-          setAttachmentType(file.type || "application/octet-stream");
-          setAttachmentName(file.name);
-          setAttachmentSize(file.size);
-        };
-        reader.readAsDataURL(file);
-      } catch (err) {
-        console.error("Local file attachment fallback error:", err);
+      // Fallback already has localBlobUrl in attachment
+      if (!attachment && localBlobUrl) {
+        setAttachment(localBlobUrl);
       }
     } finally {
       setIsUploading(false);
       setUploadProgress(null);
+      setUploadingFileInfo(null);
+      uploadAbortControllerRef.current = null;
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+      e.preventDefault();
+      const file = e.clipboardData.files[0];
+      uploadFile(file);
     }
   };
 
@@ -1074,85 +1118,104 @@ export default function ChatPanel({
 
         {/* Attachment Preview Drawer */}
         {(attachment || isUploading) && (
-          <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
-            {isUploading ? (
-              <div className="flex items-center gap-3 w-full">
-                <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 relative">
-                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-xs font-semibold text-white">Uploading file...</span>
-                    <span className="text-xs text-neutral-400 font-bold">{uploadProgress !== null ? `${uploadProgress}%` : ""}</span>
-                  </div>
-                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
-                    <div 
-                      className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300"
-                      style={{ width: `${uploadProgress ?? 0}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="relative flex items-center gap-3 w-full max-w-md">
-                <div className="relative flex-shrink-0">
-                  {(() => {
-                    const stagedType = detectMediaType(attachment || "", attachmentType || "", attachmentName || "");
-                    if (stagedType === "image") {
-                      return (
-                        <img
-                          src={attachment!}
-                          alt="Preview"
-                          className="h-12 w-12 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
-                        />
-                      );
-                    }
-                    if (stagedType === "video") {
-                      return (
-                        <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-indigo-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
-                        </div>
-                      );
-                    }
-                    if (stagedType === "audio") {
-                      return (
-                        <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-emerald-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-                        </div>
-                      );
-                    }
+          <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center justify-between gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
+            <div className="flex items-center gap-3 min-w-0 flex-1 max-w-xl">
+              <div className="relative flex-shrink-0">
+                {(() => {
+                  const stagedType = detectMediaType(attachment || "", attachmentType || "", attachmentName || "");
+                  if (stagedType === "image" && attachment && attachment !== "pending") {
                     return (
-                      <div className="h-12 w-12 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                      <img
+                        src={attachment}
+                        alt="Preview"
+                        className="h-11 w-11 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
+                      />
+                    );
+                  }
+                  if (stagedType === "video") {
+                    return (
+                      <div className="h-11 w-11 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
                       </div>
                     );
-                  })()}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAttachment(null);
-                      setAttachmentType(null);
-                      setAttachmentName(null);
-                      setAttachmentSize(null);
-                    }}
-                    className="absolute -top-1.5 -right-1.5 bg-neutral-900 text-neutral-400 hover:text-white rounded-full p-0.5 border border-neutral-700 transition-colors shadow-md"
-                  >
-                    <X size={10} />
-                  </button>
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="text-xs font-bold text-white truncate">
-                    {attachmentName || "Attached file"}
-                  </span>
-                  <span className="text-[10px] text-neutral-500 font-medium">
-                    {attachmentSize ? `${formatFileSize(attachmentSize)} • ` : ""}Ready to send
-                  </span>
-                </div>
+                  }
+                  if (stagedType === "audio") {
+                    return (
+                      <div className="h-11 w-11 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="h-11 w-11 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                    </div>
+                  );
+                })()}
+
+                {isUploading && (
+                  <div className="absolute -bottom-1 -right-1 bg-indigo-600 text-white rounded-full p-0.5 shadow-md">
+                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                )}
               </div>
-            )}
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-xs font-bold text-white truncate">
+                    {attachmentName || uploadingFileInfo?.name || "Attached file"}
+                  </span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {(attachmentSize || uploadingFileInfo?.size) && (
+                      <span className="text-[11px] text-neutral-400 font-medium">
+                        {formatFileSize(attachmentSize || uploadingFileInfo?.size || 0)}
+                      </span>
+                    )}
+                    {isUploading ? (
+                      <span className="text-[11px] text-indigo-400 font-bold">
+                        {uploadProgress !== null ? `${uploadProgress}%` : "Uploading..."}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-emerald-400 font-medium bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                        Ready
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {isUploading ? (
+                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-indigo-500 h-1.5 rounded-full transition-all duration-150 ease-out shadow-sm shadow-indigo-500/50"
+                      style={{ width: `${Math.max(5, uploadProgress ?? 5)}%` }}
+                    />
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-neutral-500 truncate">Press Enter or click Send to share</p>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (isUploading) {
+                  cancelUpload();
+                } else {
+                  setAttachment(null);
+                  setAttachmentType(null);
+                  setAttachmentName(null);
+                  setAttachmentSize(null);
+                }
+              }}
+              title={isUploading ? "Cancel upload" : "Remove attachment"}
+              className="p-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 transition-colors flex-shrink-0 cursor-pointer"
+            >
+              <X size={15} />
+            </button>
           </div>
         )}
 
@@ -1176,6 +1239,7 @@ export default function ChatPanel({
           )}
           <form
             onSubmit={handleSendMessage}
+            onPaste={handlePaste}
             className="bg-neutral-900/90 border border-neutral-800 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-neutral-700 transition-colors"
           >
             <input

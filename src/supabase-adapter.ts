@@ -7,27 +7,99 @@ export const cassandra = {
   storage: {
     upload: async (
       file: File,
-      onProgress?: (p: number) => void
+      onProgress?: (p: number) => void,
+      abortController?: AbortController
     ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-      // 1. Attempt primary upload via Supabase Storage
+      // Helper to safely trigger progress callback
+      const reportProgress = (percent: number) => {
+        if (typeof onProgress === "function") {
+          try {
+            onProgress(Math.min(100, Math.max(0, Math.round(percent))));
+          } catch (e) {}
+        }
+      };
+
+      reportProgress(5);
+
+      // 1. Primary high-speed direct server upload with real-time XHR progress tracking
+      const uploadToServer = (): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/upload", true);
+          xhr.timeout = 10 * 60 * 1000; // 10 minutes timeout for very large files (GBs)
+
+          if (abortController) {
+            abortController.signal.addEventListener("abort", () => {
+              xhr.abort();
+              reject(new Error("Upload cancelled by user"));
+            });
+          }
+
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && event.total > 0) {
+              const percentComplete = (event.loaded / event.total) * 100;
+              reportProgress(percentComplete);
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const response = JSON.parse(xhr.responseText);
+                if (response && response.url) {
+                  reportProgress(100);
+                  resolve(response);
+                  return;
+                }
+              } catch (e) {}
+            }
+            reject(new Error(`Server upload returned status ${xhr.status}: ${xhr.statusText}`));
+          };
+
+          xhr.onerror = () => reject(new Error("Network error during file upload"));
+          xhr.ontimeout = () => reject(new Error("Upload timed out"));
+          xhr.onabort = () => reject(new Error("Upload aborted"));
+
+          const formData = new FormData();
+          formData.append("file", file);
+          xhr.send(formData);
+        });
+      };
+
       try {
+        return await uploadToServer();
+      } catch (serverError) {
+        console.warn("[Upload Pipeline] Direct server upload fallback triggered:", serverError);
+      }
+
+      // 2. Secondary fallback: Supabase Storage with timeout & progress simulation
+      try {
+        reportProgress(30);
         const fileExt = file.name.split('.').pop() || 'bin';
         const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${cleanName}`;
         const filePath = `uploads/${fileName}`;
 
-        const { data, error } = await supabase.storage
+        // Create a 15-second timeout promise so Supabase bucket delays never hang the UI
+        const uploadPromise = supabase.storage
           .from('attachments')
           .upload(filePath, file, {
             cacheControl: '3600',
             upsert: true,
           });
 
+        const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+          setTimeout(() => reject(new Error("Supabase storage upload timeout")), 15000)
+        );
+
+        const { data, error } = await Promise.race([uploadPromise, timeoutPromise]) as any;
+
         if (!error && data?.path) {
           const { data: { publicUrl } } = supabase.storage
             .from('attachments')
             .getPublicUrl(filePath);
 
+          reportProgress(100);
           return {
             url: publicUrl,
             filename: file.name,
@@ -35,35 +107,50 @@ export const cassandra = {
             size: file.size,
           };
         }
-      } catch (e) {
-        console.warn("[Supabase Storage] Notice: bucket 'attachments' not ready yet, using unlimited server storage fallback:", e);
+      } catch (supabaseErr) {
+        console.warn("[Supabase Storage] Storage fallback notice:", supabaseErr);
       }
 
-      // 2. High-speed unlimited server storage fallback (supports files of any size, videos, GBs)
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          body: formData,
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.url) return json;
-        }
-      } catch (e) {
-        console.warn("[Storage Fallback] Server upload unavailable, using base64 data URL:", e);
-      }
-
-      // 3. Final resilient fallback to Data URL for offline/instant preview
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({
-          url: reader.result as string,
+      // 3. Resilient instant fallback: For files < 15MB, use Base64; for larger files, use Object URL to prevent browser memory freezing
+      reportProgress(80);
+      if (file.size > 15 * 1024 * 1024) {
+        // Blob / Object URL avoids blowing up RAM on multi-gigabyte or 50MB+ files
+        const objectUrl = URL.createObjectURL(file);
+        reportProgress(100);
+        return {
+          url: objectUrl,
           filename: file.name,
           mimetype: file.type || "application/octet-stream",
           size: file.size,
-        });
+        };
+      }
+
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onprogress = (e) => {
+          if (e.lengthComputable && e.total > 0) {
+            reportProgress(80 + (e.loaded / e.total) * 20);
+          }
+        };
+        reader.onload = () => {
+          reportProgress(100);
+          resolve({
+            url: reader.result as string,
+            filename: file.name,
+            mimetype: file.type || "application/octet-stream",
+            size: file.size,
+          });
+        };
+        reader.onerror = () => {
+          const objectUrl = URL.createObjectURL(file);
+          reportProgress(100);
+          resolve({
+            url: objectUrl,
+            filename: file.name,
+            mimetype: file.type || "application/octet-stream",
+            size: file.size,
+          });
+        };
         reader.readAsDataURL(file);
       });
     },
