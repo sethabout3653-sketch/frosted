@@ -1,101 +1,17 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { realtimeDb } from "./lib/realtime-db";
 
-// Initialize Supabase client
-const supabaseUrl = (import.meta as any).env.VITE_SUPABASE_URL;
-const supabaseAnonKey = (import.meta as any).env.VITE_SUPABASE_ANON_KEY;
+// Remove all Supabase dependencies and rely strictly on our custom 
+// local/Vercel-compatible SSE real-time engine.
 
-const isSupabaseConfigured = 
-  supabaseUrl && 
-  supabaseAnonKey && 
-  supabaseUrl !== "https://placeholder.supabase.co" &&
-  supabaseAnonKey !== "placeholder";
+export const db = { name: "CustomServerlessDB" };
 
-// Global connectivity state
-let supabaseIsHealthy = isSupabaseConfigured;
-
-// Connectivity check with timeout
-const checkSupabaseHealth = async () => {
-  if (!isSupabaseConfigured) return false;
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
-    
-    // Select from any table, even if it's empty or doesn't exist, the error status tells us if it's reachable
-    const { error, status } = await supabase.from("presence").select("uid").limit(1).abortSignal(controller.signal);
-    clearTimeout(timeoutId);
-
-    if (!error) return true;
-    
-    // PGRST116: No rows found (healthy)
-    // 42P01: Relation does not exist (reachable/healthy)
-    // PGRST204: Column not found (reachable/healthy)
-    // Status 404: PostgREST responded (reachable)
-    if (
-      error.code === "PGRST116" || 
-      error.code === "42P01" || 
-      error.code === "PGRST204" || 
-      (status && status >= 200 && status < 500)
-    ) {
-      return true;
-    }
-    
-    return false;
-  } catch (e) {
-    return false;
-  }
-};
-
-// Periodic health check
-if (isSupabaseConfigured) {
-  checkSupabaseHealth().then(h => supabaseIsHealthy = h);
-  setInterval(() => {
-    checkSupabaseHealth().then(h => supabaseIsHealthy = h);
-  }, 30000); // Check every 30s
-}
-
-export const supabase: SupabaseClient = createClient(
-  supabaseUrl || "https://placeholder.supabase.co",
-  supabaseAnonKey || "placeholder"
-);
-
-export const db = { name: (isSupabaseConfigured && supabaseIsHealthy) ? "Supabase" : "LocalDB" };
-
-// Storage Helper
+// Storage Helper mapping to our local server storage
 export const cassandra = {
   storage: {
     upload: async (
       file: File,
       onProgress?: (p: number) => void
     ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-      // Use Supabase Storage if configured, otherwise fallback to local upload
-      if (supabaseUrl && supabaseAnonKey && supabaseUrl !== "https://placeholder.supabase.co") {
-        const fileExt = file.name.split(".").pop();
-        const fileName = `${Math.random()}.${fileExt}`;
-        const filePath = `uploads/${fileName}`;
-
-        const { data, error } = await supabase.storage
-          .from("chat-assets")
-          .upload(filePath, file, {
-            cacheControl: "3600",
-            upsert: false,
-          });
-
-        if (!error && data) {
-          const { data: { publicUrl } } = supabase.storage
-            .from("chat-assets")
-            .getPublicUrl(filePath);
-          
-          return {
-            url: publicUrl,
-            filename: file.name,
-            mimetype: file.type,
-            size: file.size,
-          };
-        }
-      }
-
-      // Fallback to local server upload (matching existing logic)
       try {
         const formData = new FormData();
         formData.append("file", file);
@@ -105,8 +21,11 @@ export const cassandra = {
         });
         const json = await res.json();
         if (json.url) return json;
-      } catch (e) {}
+      } catch (e) {
+        console.error("Local upload failed", e);
+      }
 
+      // Final fallback to Data URL if completely offline
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = () => resolve({
@@ -132,7 +51,7 @@ export enum OperationType {
 }
 
 export function handleFirestoreError(error: any, op: string, path: string) {
-  console.warn(`[Supabase] Error during ${op} on ${path}:`, error);
+  console.warn(`[LocalDB] Error during ${op} on ${path}:`, error);
 }
 
 export function toTimestampMs(val: any): number {
@@ -160,61 +79,15 @@ export function where(field: string, op: string, value: any) { return { type: "w
 export function orderBy(field: string, direction: "asc" | "desc" = "asc") { return { type: "orderBy", field, direction }; }
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
 
-// Database Operations
+// Database Operations mapping directly to realtimeDb
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   const constraints = queryObj?.constraints || [];
   
   if (!colName) {
-    console.error("[Supabase] getDocs called with missing collection name", queryObj);
     return { docs: [], forEach: () => {}, empty: true, size: 0 };
   }
 
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
-
-      let q: any = supabase.from(colName).select("*").abortSignal(controller.signal);
-
-      for (const c of constraints) {
-        if (c.type === "where") {
-          if (c.op === "==") q = q.eq(c.field, c.value);
-          else if (c.op === "!=") q = q.neq(c.field, c.value);
-          else if (c.op === ">") q = q.gt(c.field, c.value);
-          else if (c.op === "<") q = q.lt(c.field, c.value);
-        } else if (c.type === "orderBy") {
-          q = q.order(c.field, { ascending: c.direction === "asc" });
-        } else if (c.type === "limit") {
-          // User requested "NO limits", so we ignore limit constraints if they are small
-          if (c.limitCount > 0 && c.limitCount < 1000) {
-            q = q.limit(1000); // Set a higher default
-          } else {
-            q = q.limit(c.limitCount);
-          }
-        }
-      }
-
-      const { data, error } = await q;
-      clearTimeout(timeoutId);
-      if (!error) {
-        return {
-          docs: (data || []).map((d: any) => ({
-            id: d.uid || d.id,
-            data: () => d
-          })),
-          forEach: (cb: any) => (data || []).forEach((d: any) => cb({ id: d.uid || d.id, data: () => d })),
-          empty: !data || data.length === 0,
-          size: data?.length || 0
-        };
-      }
-      console.warn("[Supabase] getDocs error, falling back to local:", error);
-    } catch (e) {
-      console.warn("[Supabase] getDocs exception, falling back to local:", e);
-    }
-  }
-
-  // Local Fallback
   try {
     const dataMap = await realtimeDb.get(colName);
     const dataList = Object.entries(dataMap || {}).map(([id, val]: [string, any]) => ({
@@ -254,141 +127,41 @@ export function onSnapshot(
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   
   if (!colName) {
-    console.error("[Supabase] onSnapshot called with missing collection name", queryObj);
     return () => {};
   }
 
   // Initial fetch
   getDocs(queryObj).then(onNext).catch(console.error);
 
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    // Subscribe to changes with a unique channel name to avoid "after subscribe" errors
-    const channelId = `snapshot_${colName}_${Math.random().toString(36).slice(2, 9)}`;
-    const channel = supabase
-      .channel(channelId)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: colName },
-        () => {
-          // Re-fetch everything to maintain the expected "snapshot" behavior
-          getDocs(queryObj).then(onNext).catch(console.error);
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn(`[Supabase] Channel ${channelId} failed with ${status}, ignoring Supabase for this session.`);
-          supabaseIsHealthy = false;
-        }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  } else {
-    // Local fallback for realtime
-    return realtimeDb.subscribe(colName, {
-      onSnapshot: (data) => {
-        const docs = Object.entries(data || {}).map(([id, val]: [string, any]) => ({
-          id,
-          data: () => val
-        }));
-        onNext({ docs, forEach: (cb: any) => docs.forEach(cb), empty: docs.length === 0, size: docs.length });
-      },
-      onChange: () => {
-        getDocs(queryObj).then(onNext).catch(console.error);
-      }
-    });
-  }
+  // Local realtime SSE fallback
+  return realtimeDb.subscribe(colName, {
+    onSnapshot: (data) => {
+      const docs = Object.entries(data || {}).map(([id, val]: [string, any]) => ({
+        id,
+        data: () => val
+      }));
+      onNext({ docs, forEach: (cb: any) => docs.forEach(cb), empty: docs.length === 0, size: docs.length });
+    },
+    onChange: () => {
+      getDocs(queryObj).then(onNext).catch(console.error);
+    }
+  });
 }
 
 export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
-    const { error } = await supabase
-      .from(docRef.colName)
-      .upsert({ [pk]: docRef.id, ...data }, { onConflict: pk });
-    
-    if (error) {
-      // Handle missing columns (PGRST204) by retrying without the problematic fields
-      if (error.code === "PGRST204") {
-        const sanitized = { ...data };
-        const missingColumn = error.message.match(/'(.+)' column/)?.[1];
-        if (missingColumn && sanitized[missingColumn] !== undefined) {
-          delete sanitized[missingColumn];
-          console.info(`[Supabase] Retrying setDoc without missing column: ${missingColumn}`);
-          return setDoc(docRef, sanitized, _options);
-        }
-      }
-
-      // If it's a network error (Failed to fetch), mark unhealthy and suppress warning
-      if (error.message?.includes("Failed to fetch") || error.message?.includes("NetworkError")) {
-        supabaseIsHealthy = false;
-        return realtimeDb.set(docRef.colName, docRef.id, data);
-      }
-      
-      console.warn("[Supabase] setDoc failed, falling back to local:", error);
-    }
-  }
   await realtimeDb.set(docRef.colName, docRef.id, data);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
-    const { error } = await supabase
-      .from(docRef.colName)
-      .update(data)
-      .eq(pk, docRef.id);
-    
-    if (error) {
-      // Handle missing columns (PGRST204)
-      if (error.code === "PGRST204") {
-        const sanitized = { ...data };
-        const missingColumn = error.message.match(/'(.+)' column/)?.[1];
-        if (missingColumn && sanitized[missingColumn] !== undefined) {
-          delete sanitized[missingColumn];
-          console.info(`[Supabase] Retrying updateDoc without missing column: ${missingColumn}`);
-          return updateDoc(docRef, sanitized);
-        }
-      }
-
-      // Handle network errors
-      if (error.message?.includes("Failed to fetch") || error.message?.includes("NetworkError")) {
-        supabaseIsHealthy = false;
-        const existing = await realtimeDb.get(docRef.colName, docRef.id);
-        return realtimeDb.set(docRef.colName, docRef.id, { ...(existing || {}), ...data });
-      }
-
-      console.warn("[Supabase] updateDoc failed, falling back to local:", error);
-    }
-  }
   const existing = await realtimeDb.get(docRef.colName, docRef.id);
   await realtimeDb.set(docRef.colName, docRef.id, { ...existing, ...data });
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    const pk = (docRef.colName === "presence" || docRef.colName === "voice_users") ? "uid" : "id";
-    const { error } = await supabase
-      .from(docRef.colName)
-      .delete()
-      .eq(pk, docRef.id);
-    if (!error) return;
-    console.warn("[Supabase] deleteDoc failed, falling back to local:", error);
-  }
   await realtimeDb.delete(docRef.colName, docRef.id);
 }
 
 export async function addDoc(colName: string, data: any) {
-  if (isSupabaseConfigured && supabaseIsHealthy) {
-    const { data: inserted, error } = await supabase
-      .from(colName)
-      .insert(data)
-      .select()
-      .single();
-    if (!error && inserted) return { colName, id: inserted.id || inserted.uid };
-    console.warn("[Supabase] addDoc failed, falling back to local:", error);
-  }
   const id = "msg_" + Math.random().toString(36).substring(2, 11);
   await realtimeDb.set(colName, id, data);
   return { colName, id };
@@ -410,42 +183,48 @@ export function writeBatch() {
   };
 }
 
-// Signaling Compatibility (used for WebRTC)
-const signalChannel = supabase.channel('realtime_signals', {
-  config: {
-    broadcast: { self: true, ack: true }
-  }
-});
-
-// Explicitly subscribe to the channel to establish the WebSocket connection for broadcasting
-signalChannel.subscribe((status) => {
-  if (status === 'SUBSCRIBED') {
-    console.log('[Supabase] Signal channel joined successfully');
-  }
-});
-
+// Signaling Compatibility (used for WebRTC) using our local API
 export function sendBroadcastSignal(payload: any) {
-  // Use the modern broadcast method
-  // We explicitly allow httpSend to suppress the REST fallback warning when the socket isn't yet subscribed
-  signalChannel.send(
-    {
-      type: 'broadcast',
-      event: 'signal',
-      payload: { ...payload, id: payload.id || `sig_${Date.now()}` }
-    }
-  );
+  fetch("/api/webrtc/signal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}` })
+  }).catch(console.error);
 }
 
 export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-  const sub = signalChannel
-    .on('broadcast', { event: 'signal' }, ({ payload }) => {
-      if (payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === 'all')) {
-        onSignal(payload);
+  let eventSource: EventSource | null = null;
+  let isSubscribed = true;
+
+  const connect = () => {
+    if (!isSubscribed) return;
+    eventSource = new EventSource("/api/cassandra/stream");
+    
+    eventSource.addEventListener("webrtc_signal", (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        const payload = data.payload;
+        if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
+          onSignal(payload);
+        }
+      } catch (e) {}
+    });
+
+    eventSource.onerror = () => {
+      if (isSubscribed) {
+        eventSource?.close();
+        setTimeout(connect, 2000);
       }
-    })
-    .subscribe();
+    };
+  };
+
+  connect();
 
   return () => {
-    supabase.removeChannel(sub);
+    isSubscribed = false;
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
   };
 }
