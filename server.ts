@@ -4,8 +4,9 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
 
+export const app = express();
+
 async function startServer() {
-  const app = express();
   const PORT = 3000;
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
@@ -920,9 +921,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // Start the server only if run directly (not imported as a module by Vercel)
+  const isMain = typeof require !== 'undefined' && require.main === module;
+  const isStandalone = typeof process !== 'undefined' && process.argv[1]?.includes('server');
+  
+  if (isMain || isStandalone) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+// Export the initialized Express app for serverless environments (Vercel)
+export default app;
