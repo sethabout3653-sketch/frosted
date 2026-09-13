@@ -493,7 +493,7 @@ const PORT = 3000;
         // Convert SQLite INSERT OR REPLACE INTO to Postgres UPSERT
         if (pgSql.includes("INSERT OR REPLACE INTO records")) {
            pgSql = pgSql.replace("INSERT OR REPLACE INTO records", "INSERT INTO records");
-           pgSql += " ON CONFLICT (id) DO UPDATE SET collection = EXCLUDED.collection, data = EXCLUDED.data, timestamp = EXCLUDED.timestamp";
+           pgSql += " ON CONFLICT (collection, id) DO UPDATE SET data = EXCLUDED.data, timestamp = EXCLUDED.timestamp";
         }
         
         return pool.query(pgSql, params);
@@ -552,6 +552,7 @@ const PORT = 3000;
 
     sseClients.forEach((client) => {
       try {
+        client.write(`event: webrtc_signal\ndata: ${payload}\n\n`);
         client.write(`data: ${payload}\n\n`);
         (client as any).flush?.();
       } catch (e) {
@@ -632,8 +633,8 @@ const PORT = 3000;
 
       const db = await getDb();
       await db.run(
-        "INSERT INTO webrtc_signals (id, uid, targetUid, type, sdp, candidate, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [sigObj.id, sigObj.uid, sigObj.targetUid, sigObj.type, sigObj.sdp, sigObj.candidate, sigObj.timestamp]
+        "INSERT INTO webrtc_signals (id, target_uid, uid, payload, timestamp) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, timestamp = EXCLUDED.timestamp",
+        [sigObj.id, sigObj.targetUid, sigObj.uid, JSON.stringify(sigObj), sigObj.timestamp]
       );
       
       // Cleanup old signals
@@ -659,11 +660,19 @@ const PORT = 3000;
 
       const db = await getDb();
       const rows = await db.all(
-        "SELECT * FROM webrtc_signals WHERE (targetUid = ? OR targetUid = 'all') AND timestamp > ? AND uid != ?",
+        "SELECT payload FROM webrtc_signals WHERE (target_uid = ? OR target_uid = 'all') AND timestamp > ? AND uid != ?",
         [targetUid, since, targetUid]
       );
       
-      res.json({ signals: rows, timestamp: Date.now() });
+      const signals = rows.map((r: any) => {
+        try {
+          return JSON.parse(r.payload);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+
+      res.json({ signals, timestamp: Date.now() });
     } catch (e) {
       res.json({ signals: [], timestamp: Date.now() });
     }
@@ -678,7 +687,11 @@ const PORT = 3000;
       if (col) {
         const rows = await db.all("SELECT id, data FROM records WHERE collection = ?", [col]);
         const result: Record<string, any> = {};
-        rows.forEach((r: any) => { result[r.id] = JSON.parse(r.data); });
+        rows.forEach((r: any) => {
+          try {
+            result[r.id] = JSON.parse(r.data);
+          } catch(e) {}
+        });
         return res.json(result);
       }
       
@@ -688,13 +701,15 @@ const PORT = 3000;
       rows.forEach((r: any) => {
         collections.add(r.collection);
         if (!result[r.collection]) result[r.collection] = {};
-        result[r.collection][r.id] = JSON.parse(r.data);
+        try {
+          result[r.collection][r.id] = JSON.parse(r.data);
+        } catch(e) {}
       });
       
       res.json({
         status: "online",
         provider: "Cloud SQL (PostgreSQL)",
-        quota: "Unlimited (0 / \u221E)",
+        quota: "Unlimited (0 / ∞)",
         collections: Array.from(collections),
         data: result,
       });
@@ -703,8 +718,8 @@ const PORT = 3000;
     }
   });
 
-  // 3. Cassandra Write Endpoint
-  app.post("/api/cassandra/write", async (req, res) => {
+  // 3. Cassandra Write Endpoint (handles both /write and /data)
+  app.post(["/api/cassandra/write", "/api/cassandra/data"], async (req, res) => {
     try {
       const { op, collection: col, id, data } = req.body || {};
       if (!col || !id) {
@@ -713,21 +728,23 @@ const PORT = 3000;
 
       const db = await getDb();
       const ts = Date.now();
+      let recordData = data;
 
       if (op === "delete") {
         await db.run("DELETE FROM records WHERE collection = ? AND id = ?", [col, id]);
       } else if (op === "update") {
         const row = await db.get("SELECT data FROM records WHERE collection = ? AND id = ?", [col, id]);
         const existing = row ? JSON.parse(row.data) : {};
-        const merged = { ...existing, ...data, id };
+        recordData = { ...existing, ...data, id };
         await db.run(
           "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
-          [col, id, JSON.stringify(merged), ts]
+          [col, id, JSON.stringify(recordData), ts]
         );
       } else {
+        recordData = { ...data, id };
         await db.run(
           "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
-          [col, id, JSON.stringify({ ...data, id }), ts]
+          [col, id, JSON.stringify(recordData), ts]
         );
       }
 
@@ -738,7 +755,7 @@ const PORT = 3000;
       }
 
       // Broadcast to all SSE listeners in real time
-      broadcastCassandraChange(op || "set", col, id, data);
+      broadcastCassandraChange(op || "set", col, id, recordData);
 
       res.json({ success: true, timestamp: ts });
     } catch (err: any) {

@@ -1,12 +1,13 @@
-import { pgTable, text, bigint, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, bigint, index, primaryKey } from 'drizzle-orm/pg-core';
 
 export const records = pgTable('records', {
   collection: text('collection').notNull(),
-  id: text('id').primaryKey(),
+  id: text('id').notNull(),
   data: text('data').notNull(),
   timestamp: bigint('timestamp', { mode: 'number' }).notNull(),
 }, (table) => {
   return {
+    pk: primaryKey({ columns: [table.collection, table.id] }),
     collectionIdx: index('idx_records_collection').on(table.collection),
   };
 });

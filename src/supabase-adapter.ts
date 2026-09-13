@@ -167,17 +167,35 @@ class CassandraClient {
     // Immediately fire with current cache
     this.getCollection(colName).then(data => cb(data || {}));
 
+    // High-reliability sync with Cloud SQL every 3 seconds
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/cassandra/data?collection=${encodeURIComponent(colName)}`);
+        if (res.ok) {
+          const freshData = await res.json();
+          this.cache.set(colName, freshData);
+          this.notify(colName);
+        }
+      } catch (e) {}
+    }, 3000);
+
     return () => {
+      clearInterval(interval);
       this.listeners.get(colName)?.delete(cb);
     };
   }
 
   public async write(op: string, colName: string, id: string, data?: any) {
-    await fetch("/api/cassandra/data", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ op, collection: colName, id, data })
-    });
+    try {
+      await fetch("/api/cassandra/write", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op, collection: colName, id, data }),
+        keepalive: true,
+      });
+    } catch (e) {
+      console.warn("Cassandra write error:", e);
+    }
   }
 }
 
@@ -298,7 +316,8 @@ export function sendBroadcastSignal(payload: any) {
   fetch("/api/webrtc/signal", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}` })
+    body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}_${Math.random().toString(36).substring(2, 6)}` }),
+    keepalive: true,
   }).catch(console.error);
 }
 
@@ -307,21 +326,29 @@ export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any)
   let isSubscribed = true;
   const processedSignals = new Set<string>();
 
+  const handleSignalData = (raw: string) => {
+    try {
+      const data = JSON.parse(raw);
+      const payload = data.payload || data;
+      if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
+        if (!processedSignals.has(payload.id)) {
+          processedSignals.add(payload.id);
+          onSignal(payload);
+        }
+      }
+    } catch (e) {}
+  };
+
   const connect = () => {
     if (!isSubscribed) return;
     eventSource = new EventSource("/api/cassandra/stream");
     
     eventSource.addEventListener("webrtc_signal", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const payload = data.payload;
-        if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
-          if (!processedSignals.has(payload.id)) {
-            processedSignals.add(payload.id);
-            onSignal(payload);
-          }
-        }
-      } catch (e) {}
+      handleSignalData(event.data);
+    });
+
+    eventSource.addEventListener("message", (event) => {
+      handleSignalData(event.data);
     });
 
     eventSource.onerror = () => {

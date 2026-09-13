@@ -49,6 +49,25 @@ export default function Chat({
 }) {
   const [profile, setProfile] = useState<ChatProfile | null>(() => {
     try {
+      // Optional url query for immediate multi-user testing (e.g. ?user=Alice)
+      const params = new URLSearchParams(window.location.search);
+      const urlUser = params.get("user");
+      if (urlUser && urlUser.trim().toLowerCase() !== "anonymous") {
+        return {
+          uid: "user_" + urlUser.toLowerCase().replace(/[^a-z0-9]/g, ""),
+          username: urlUser.trim(),
+          photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(urlUser.trim())}`,
+        };
+      }
+
+      const sessionSaved = sessionStorage.getItem("frosted_chat_profile");
+      if (sessionSaved) {
+        const parsed = JSON.parse(sessionSaved);
+        if (parsed && parsed.username && parsed.username.trim().toLowerCase() !== "anonymous") {
+          return parsed;
+        }
+      }
+
       const saved = localStorage.getItem("frosted_chat_profile");
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -311,6 +330,7 @@ export default function Chat({
     setProfile(newProfile);
     try {
       localStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
+      sessionStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
     } catch (e) {}
     setActiveTab("chat");
 
@@ -339,6 +359,7 @@ export default function Chat({
   const handleLogoutProfile = () => {
     try {
       localStorage.removeItem("frosted_chat_profile");
+      sessionStorage.removeItem("frosted_chat_profile");
     } catch (e) {}
     setProfile(null);
     setActiveTab("profile");
