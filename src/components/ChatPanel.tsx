@@ -368,11 +368,6 @@ export default function ChatPanel({
         const newMessages: ChatMessage[] = [];
         snapshot.forEach((docSnap: any) => {
           const data = docSnap.data() as any;
-          const uname = (data.username || "").trim();
-          if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
-            deleteDoc(doc(db, "messages", docSnap.id)).catch(() => {});
-            return;
-          }
           newMessages.push({
             id: docSnap.id,
             ...data,
@@ -767,22 +762,21 @@ export default function ChatPanel({
     return [...list].sort(compareMessagesChronological);
   }, [channelMessages, searchQuery]);
 
-  // Deduplicate by username (keeping most recent or local user) and filter by activity
+  // Deduplicate by UID (keeping most recent or local user) and filter by activity
   const activeOnlineUsers = useMemo(() => {
     const userMap = new Map<string, MemberUser>();
     
     memberUsers.forEach(u => {
-      const uname = (u.username || "").trim().toLowerCase();
-      if (!uname) return;
+      if (!u.uid) return;
 
       const isMe = u.uid === profile.uid;
       const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
       const isValid = isMe || (isRecent && u.status !== "left");
 
       if (isValid) {
-        const existing = userMap.get(uname);
+        const existing = userMap.get(u.uid);
         if (!existing || (u.lastSeen || 0) > (existing.lastSeen || 0) || isMe) {
-          userMap.set(uname, u);
+          userMap.set(u.uid, u);
         }
       }
     });
@@ -796,19 +790,18 @@ export default function ChatPanel({
 
   const leftUsers = useMemo(() => {
     const userMap = new Map<string, MemberUser>();
-    const onlineNames = new Set(activeOnlineUsers.map(u => (u.username || "").trim().toLowerCase()));
+    const onlineUids = new Set(activeOnlineUsers.map(u => u.uid));
 
     memberUsers.forEach(u => {
-      const uname = (u.username || "").trim().toLowerCase();
-      if (!uname || u.uid === profile.uid || onlineNames.has(uname)) return;
+      if (!u.uid || u.uid === profile.uid || onlineUids.has(u.uid)) return;
 
       const isRecent = typeof u.lastSeen === "number" && currentTime - u.lastSeen < 60000;
       const isLeft = u.status === "left" || !isRecent;
 
       if (isLeft) {
-        const existing = userMap.get(uname);
+        const existing = userMap.get(u.uid);
         if (!existing || (u.lastSeen || 0) > (existing.lastSeen || 0)) {
-          userMap.set(uname, u);
+          userMap.set(u.uid, u);
         }
       }
     });

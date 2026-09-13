@@ -491,9 +491,11 @@ const PORT = 3000;
         let pgSql = sql.replace(/\?/g, () => `$${i++}`);
         
         // Convert SQLite INSERT OR REPLACE INTO to Postgres UPSERT
-        if (pgSql.includes("INSERT OR REPLACE INTO records")) {
-           pgSql = pgSql.replace("INSERT OR REPLACE INTO records", "INSERT INTO records");
-           pgSql += " ON CONFLICT (collection, id) DO UPDATE SET data = EXCLUDED.data, timestamp = EXCLUDED.timestamp";
+        if (pgSql.toUpperCase().includes("INSERT OR REPLACE INTO RECORDS") || pgSql.toUpperCase().includes("INSERT INTO RECORDS")) {
+           if (!pgSql.toUpperCase().includes("ON CONFLICT")) {
+             pgSql = pgSql.replace(/INSERT OR REPLACE INTO records/gi, "INSERT INTO records");
+             pgSql += " ON CONFLICT (collection, id) DO UPDATE SET data = EXCLUDED.data, timestamp = EXCLUDED.timestamp";
+           }
         }
         
         return pool.query(pgSql, params);
