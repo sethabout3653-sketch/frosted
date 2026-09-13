@@ -4,6 +4,10 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
 
+import { db } from "./src/db/index.js";
+import { records, webrtcSignals } from "./src/db/schema.js";
+import { eq, and, gt, ne, or } from "drizzle-orm";
+
 export const app = express();
 const PORT = 3000;
 
@@ -471,57 +475,43 @@ const PORT = 3000;
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
   // ==========================================
-  // SQLite Distributed Engine & Storage
+  // Distributed Postgres Engine & Storage
   // ==========================================
   
   let dbInstance: any = null;
   async function getDb() {
     if (dbInstance) return dbInstance;
-    const dbFile = fs.existsSync(uploadsDir) 
-      ? path.join(uploadsDir, 'database.sqlite')
-      : '/tmp/database.sqlite';
-      
-    const { createClient } = await import("@libsql/client");
-    const client = createClient({
-      url: `file:${dbFile}`
-    });
+    
+    const { createPool } = await import("./src/db/index.js");
+    const pool = createPool();
     
     dbInstance = {
       run: async (sql: string, params: any[] = []) => {
-        return client.execute({ sql, args: params });
+        let i = 1;
+        let pgSql = sql.replace(/\?/g, () => `$${i++}`);
+        
+        // Convert SQLite INSERT OR REPLACE INTO to Postgres UPSERT
+        if (pgSql.includes("INSERT OR REPLACE INTO records")) {
+           pgSql = pgSql.replace("INSERT OR REPLACE INTO records", "INSERT INTO records");
+           pgSql += " ON CONFLICT (id) DO UPDATE SET collection = EXCLUDED.collection, data = EXCLUDED.data, timestamp = EXCLUDED.timestamp";
+        }
+        
+        return pool.query(pgSql, params);
       },
       all: async (sql: string, params: any[] = []) => {
-        const rs = await client.execute({ sql, args: params });
+        let i = 1;
+        const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+        const rs = await pool.query(pgSql, params);
         return rs.rows;
       },
       get: async (sql: string, params: any[] = []) => {
-        const rs = await client.execute({ sql, args: params });
+        let i = 1;
+        const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+        const rs = await pool.query(pgSql, params);
         return rs.rows[0];
       }
     };
 
-    await dbInstance.run(`
-      CREATE TABLE IF NOT EXISTS records (
-        collection TEXT,
-        id TEXT,
-        data TEXT,
-        timestamp INTEGER,
-        PRIMARY KEY (collection, id)
-      );
-    `);
-    
-    await dbInstance.run(`
-      CREATE TABLE IF NOT EXISTS webrtc_signals (
-        id TEXT PRIMARY KEY,
-        uid TEXT,
-        targetUid TEXT,
-        type TEXT,
-        sdp TEXT,
-        candidate TEXT,
-        timestamp INTEGER
-      );
-    `);
-    
     return dbInstance;
   }
 
@@ -583,8 +573,8 @@ const PORT = 3000;
     res.write(
       `data: ${JSON.stringify({
         type: "connected",
-        provider: "SQLite / Serverless Engine",
-        quota: "Unlimited (0 / \u221E)",
+        provider: "Cloud SQL (PostgreSQL)",
+        quota: "Unlimited (0 / ∞)",
         serverTime: Date.now(),
       })}\n\n`
     );
@@ -703,7 +693,7 @@ const PORT = 3000;
       
       res.json({
         status: "online",
-        provider: "SQLite Database",
+        provider: "Cloud SQL (PostgreSQL)",
         quota: "Unlimited (0 / \u221E)",
         collections: Array.from(collections),
         data: result,
@@ -768,7 +758,7 @@ const PORT = 3000;
       const row = await db.get("SELECT COUNT(*) as count FROM records");
       res.json({
         status: "online",
-        provider: "SQLite Database",
+        provider: "Cloud SQL (PostgreSQL)",
         quota: "Unlimited (0 / \u221E)",
         transport: "Server-Sent Events (SSE) + Database Polling",
         activeClients: sseClients.size,

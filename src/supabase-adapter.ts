@@ -102,7 +102,7 @@ class CassandraClient {
     this.sse.addEventListener("message", (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === "initial") {
+        if (msg.type === "init" || msg.type === "initial") {
           // Full state sync
           this.cache.clear();
           for (const [col, docs] of Object.entries(msg.data || {})) {
