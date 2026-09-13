@@ -481,10 +481,26 @@ const PORT = 3000;
       ? path.join(uploadsDir, 'database.sqlite')
       : '/tmp/database.sqlite';
       
-    const Database = (await import("better-sqlite3")).default;
-    dbInstance = new Database(dbFile);
+    const { createClient } = await import("@libsql/client");
+    const client = createClient({
+      url: `file:${dbFile}`
+    });
+    
+    dbInstance = {
+      run: async (sql: string, params: any[] = []) => {
+        return client.execute({ sql, args: params });
+      },
+      all: async (sql: string, params: any[] = []) => {
+        const rs = await client.execute({ sql, args: params });
+        return rs.rows;
+      },
+      get: async (sql: string, params: any[] = []) => {
+        const rs = await client.execute({ sql, args: params });
+        return rs.rows[0];
+      }
+    };
 
-    dbInstance.exec(`
+    await dbInstance.run(`
       CREATE TABLE IF NOT EXISTS records (
         collection TEXT,
         id TEXT,
@@ -492,6 +508,9 @@ const PORT = 3000;
         timestamp INTEGER,
         PRIMARY KEY (collection, id)
       );
+    `);
+    
+    await dbInstance.run(`
       CREATE TABLE IF NOT EXISTS webrtc_signals (
         id TEXT PRIMARY KEY,
         uid TEXT,
@@ -502,11 +521,6 @@ const PORT = 3000;
         timestamp INTEGER
       );
     `);
-    
-    // Polyfill async sqlite API so the rest of the code works unmodified
-    dbInstance.run = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).run(...params);
-    dbInstance.all = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).all(...params);
-    dbInstance.get = async (sql: string, params: any[] = []) => dbInstance.prepare(sql).get(...params);
     
     return dbInstance;
   }

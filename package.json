@@ -15,6 +15,7 @@
     "@giphy/js-fetch-api": "^5.8.0",
     "@giphy/react-components": "^10.1.2",
     "@google/genai": "^2.4.0",
+    "@libsql/client": "^0.18.0",
     "@radix-ui/react-avatar": "^1.2.6",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-label": "^2.1.15",
