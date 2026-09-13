@@ -5,9 +5,7 @@ import fs from "fs";
 import multer from "multer";
 
 export const app = express();
-
-async function startServer() {
-  const PORT = 3000;
+const PORT = 3000;
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
   let uploadsDir = path.join(process.cwd(), "uploads");
@@ -903,36 +901,34 @@ async function startServer() {
   });
 
   // Vite integration and static asset serving
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-        watch: null,
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
-  // Start the server only if run directly (not imported as a module by Vercel)
   const isMain = typeof require !== 'undefined' && require.main === module;
   const isStandalone = typeof process !== 'undefined' && process.argv[1]?.includes('server');
   
   if (isMain || isStandalone) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
-}
+    (async () => {
+      if (process.env.NODE_ENV !== "production") {
+        const vite = await createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: false,
+            watch: null,
+          },
+          appType: "spa",
+        });
+        app.use(vite.middlewares);
+      } else {
+        const distPath = path.join(process.cwd(), "dist");
+        app.use(express.static(distPath));
+        app.get("*", (req, res) => {
+          res.sendFile(path.join(distPath, "index.html"));
+        });
+      }
 
-startServer();
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    })();
+  }
 
 // Export the initialized Express app for serverless environments (Vercel)
 export default app;
