@@ -327,6 +327,72 @@ export default function VoiceChannel({
     }
   }, [activeScreenShare, fullscreenType, fullscreenUid]);
 
+  // Robust screen share stream & video element binding watcher to prevent black screen stalls
+  useEffect(() => {
+    if (!activeScreenShare) return;
+
+    const bindAndPlayScreen = () => {
+      if (activeScreenShare.isLocal) {
+        if (localScreenVideoRef.current && screenStreamRef.current) {
+          if (localScreenVideoRef.current.srcObject !== screenStreamRef.current) {
+            localScreenVideoRef.current.srcObject = screenStreamRef.current;
+          }
+          if (localScreenVideoRef.current.paused) {
+            localScreenVideoRef.current.play().catch(() => {});
+          }
+        }
+      } else {
+        const sharerUid = activeScreenShare.uid;
+        let stream = remoteScreenStreamsRef.current[sharerUid];
+        const pc = peersRef.current[sharerUid];
+
+        // If stream is missing or doesn't have live tracks, extract from peer connection transceivers
+        if ((!stream || !stream.getVideoTracks().some((t) => t.readyState === "live")) && pc) {
+          const transceivers = pc.getTransceivers();
+          const videoTransceivers = transceivers.filter((t) => t.receiver.track?.kind === "video");
+          let scrTrack: MediaStreamTrack | null = null;
+          if (transceivers.length >= 3 && transceivers[2].receiver.track?.kind === "video") {
+            scrTrack = transceivers[2].receiver.track;
+          } else if (videoTransceivers.length >= 2) {
+            scrTrack = videoTransceivers[1].receiver.track;
+          } else if (videoTransceivers.length === 1) {
+            scrTrack = videoTransceivers[0].receiver.track;
+          }
+
+          if (scrTrack) {
+            scrTrack.enabled = true;
+            stream = new MediaStream([scrTrack]);
+            remoteScreenStreamsRef.current[sharerUid] = stream;
+          }
+        }
+
+        if (stream) {
+          const el = remoteScreenVideoRefs.current[sharerUid];
+          if (el) {
+            if (el.srcObject !== stream) {
+              el.srcObject = stream;
+            }
+            if (el.paused) {
+              el.play().catch(() => {});
+            }
+          }
+          if (fullscreenVideoRef.current && fullscreenUid === sharerUid && fullscreenType === "screen") {
+            if (fullscreenVideoRef.current.srcObject !== stream) {
+              fullscreenVideoRef.current.srcObject = stream;
+            }
+            if (fullscreenVideoRef.current.paused) {
+              fullscreenVideoRef.current.play().catch(() => {});
+            }
+          }
+        }
+      }
+    };
+
+    bindAndPlayScreen();
+    const interval = setInterval(bindAndPlayScreen, 1000);
+    return () => clearInterval(interval);
+  }, [activeScreenShare, fullscreenType, fullscreenUid, trackTrigger]);
+
   const exitFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
@@ -452,18 +518,28 @@ export default function VoiceChannel({
     return list;
   }, [isScreenSharing, isVideoOn, profile.uid, profile.username, activeParticipants, trackTrigger]);
 
-  // Automatically acquire studio microphone stream with Acoustic Echo Cancellation enabled (AEC)
-  // Acquire studio microphone stream with 200% boosted gain
+  // Acquire studio microphone stream with hardware/browser noise suppression, acoustic echo cancellation, and auto gain
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
     try {
-      return await navigator.mediaDevices.getUserMedia({
+      const constraints: MediaStreamConstraints = {
         audio: {
           echoCancellation: true,
-          noiseSuppression: false,
+          noiseSuppression: true,
           autoGainControl: true,
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          // Vendor specific noise suppression & echo cancellation flags for Chromium/WebKit/Blink
+          ...({
+            googEchoCancellation: true,
+            googAutoGainControl: true,
+            googNoiseSuppression: true,
+            googHighpassFilter: true,
+            googNoiseReduction: true,
+          } as any),
         },
         video: false,
-      });
+      };
+      return await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
       console.warn("Standard mic constraints failed, using fallback:", err);
       return await navigator.mediaDevices.getUserMedia({
@@ -473,7 +549,7 @@ export default function VoiceChannel({
     }
   }, []);
 
-  // Connect microphone to live Web Audio pipeline for speech/sound analysis & visual VAD
+  // Connect microphone to live Web Audio pipeline for speech/sound analysis, noise cleanup & visual VAD
   const setupAudioPipeline = useCallback(
     async (sourceStream: MediaStream): Promise<MediaStream> => {
       if (animFrameRef.current) {
@@ -504,12 +580,29 @@ export default function VoiceChannel({
 
         const source = ctx.createMediaStreamSource(sourceStream);
 
-        // Analyser for real-time Voice & Sound Activity Detection (VAD)
+        // 1. Highpass Filter: Cut sub-bass rumble (< 75Hz) from desk bumps, airflow, and HVAC hum
+        const highpass = ctx.createBiquadFilter();
+        highpass.type = "highpass";
+        highpass.frequency.value = 75;
+        highpass.Q.value = 0.7;
+
+        // 2. Dynamics Compressor: Even out whispers and loud voice, creating warm, rich vocal presence
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -24;
+        compressor.knee.value = 12;
+        compressor.ratio.value = 3.5;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.15;
+
+        // 3. Analyser for real-time Voice & Sound Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
-        source.connect(analyser);
+        // Connect source to filters and analyser
+        source.connect(highpass);
+        highpass.connect(compressor);
+        compressor.connect(analyser);
         analyserRef.current = analyser;
 
         // Mixed destination node that combines microphone and any screen share audio
@@ -517,11 +610,11 @@ export default function VoiceChannel({
         mixedDestinationRef.current = mixedDest;
 
         const micGain = ctx.createGain();
-        // Boost microphone gain to 200% (2.0x multiplier)
+        // Boost microphone gain for crystal-clear studio volume
         micGain.gain.value = isMutedRef.current ? 0 : 2.0;
         gainNodeRef.current = micGain;
 
-        source.connect(micGain);
+        compressor.connect(micGain);
         micGain.connect(mixedDest);
 
         // Monitor real-time volume levels & speech/sound activity for local user and remote participants
@@ -1009,6 +1102,8 @@ export default function VoiceChannel({
       scrTrack = transceivers[2].receiver.track;
     } else if (videoTransceivers.length >= 2) {
       scrTrack = videoTransceivers[1].receiver.track;
+    } else if (videoTransceivers.length === 1) {
+      scrTrack = videoTransceivers[0].receiver.track;
     }
 
     if (scrTrack) {
@@ -1027,20 +1122,30 @@ export default function VoiceChannel({
         }
         screenEl.play().catch(() => {});
       }
+      if (fullscreenVideoRef.current && fullscreenUid === partnerUid && fullscreenType === "screen") {
+        if (fullscreenVideoRef.current.srcObject !== scrStream) {
+          fullscreenVideoRef.current.srcObject = scrStream;
+        }
+        fullscreenVideoRef.current.play().catch(() => {});
+      }
       scrTrack.onunmute = () => {
+        const freshStream = remoteScreenStreamsRef.current[partnerUid] || new MediaStream([scrTrack!]);
+        remoteScreenStreamsRef.current[partnerUid] = freshStream;
         const el = remoteScreenVideoRefs.current[partnerUid];
-        if (el && remoteScreenStreamsRef.current[partnerUid]) {
-          if (el.srcObject !== remoteScreenStreamsRef.current[partnerUid]) {
-            el.srcObject = remoteScreenStreamsRef.current[partnerUid];
-          }
+        if (el) {
+          el.srcObject = freshStream;
           el.play().catch(() => {});
+        }
+        if (fullscreenVideoRef.current && fullscreenUid === partnerUid && fullscreenType === "screen") {
+          fullscreenVideoRef.current.srcObject = freshStream;
+          fullscreenVideoRef.current.play().catch(() => {});
         }
         setTrackTrigger((v) => v + 1);
       };
     }
 
     setTrackTrigger((v) => v + 1);
-  }, []);
+  }, [fullscreenType, fullscreenUid]);
 
   const createPeerConnection = useCallback(
     (partnerUid: string, micStream: MediaStream): RTCPeerConnection => {
@@ -1337,10 +1442,33 @@ export default function VoiceChannel({
           } catch (e) {}
           remoteScreenSharersRef.current[partnerUid] = { hasAudio: !!signalData.hasAudio };
           setParticipants((prev) =>
-            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: true } : p))
+            prev.map((p) => (p.uid === partnerUid ? { ...p, isScreenSharing: true, isScreenAudioOn: !!signalData.hasAudio } : p))
           );
           const pc = peersRef.current[partnerUid];
           if (pc) {
+            const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track?.kind === "video");
+            let scrTrack: MediaStreamTrack | null = null;
+            if (pc.getTransceivers().length >= 3 && pc.getTransceivers()[2].receiver.track?.kind === "video") {
+              scrTrack = pc.getTransceivers()[2].receiver.track;
+            } else if (videoTransceivers.length >= 2) {
+              scrTrack = videoTransceivers[1].receiver.track;
+            } else if (videoTransceivers.length === 1) {
+              scrTrack = videoTransceivers[0].receiver.track;
+            }
+            if (scrTrack) {
+              scrTrack.enabled = true;
+              const freshStream = new MediaStream([scrTrack]);
+              remoteScreenStreamsRef.current[partnerUid] = freshStream;
+              const screenEl = remoteScreenVideoRefs.current[partnerUid];
+              if (screenEl) {
+                screenEl.srcObject = freshStream;
+                screenEl.play().catch(() => {});
+              }
+              if (fullscreenVideoRef.current && fullscreenUid === partnerUid) {
+                fullscreenVideoRef.current.srcObject = freshStream;
+                fullscreenVideoRef.current.play().catch(() => {});
+              }
+            }
             syncPeerTracks(partnerUid, pc);
           }
           setTrackTrigger((v) => v + 1);
@@ -2260,9 +2388,11 @@ export default function VoiceChannel({
                 if (!params.encodings || params.encodings.length === 0) {
                   params.encodings = [{}];
                 }
-                params.encodings[0].maxBitrate = 3000000;
+                params.encodings[0].maxBitrate = 6000000;
                 params.encodings[0].priority = "high";
                 params.encodings[0].networkPriority = "high";
+                params.encodings[0].maxFramerate = 60;
+                (params as any).degradationPreference = "maintain-resolution";
                 await screenSender.setParameters(params).catch(() => {});
               } catch (e) {}
             } else {
@@ -2272,12 +2402,22 @@ export default function VoiceChannel({
               } catch (e) {}
             }
 
+            // Trigger clean renegotiation offer if peer connection is stable to guarantee resolution upgrade
+            if (pc.signalingState === "stable") {
+              try {
+                const offer = await pc.createOffer();
+                const optOffer = optimizeAudioSdp(offer.sdp || "");
+                await pc.setLocalDescription({ type: "offer", sdp: optOffer });
+                sendSignal(pUid, "offer", optOffer);
+              } catch (renegErr) {}
+            }
+
             // Send custom signaling message to notify peer that screen share started
-            sendSignal(pUid, "screenshare_started", JSON.stringify({ hasAudio }));
+            sendSignal(pUid, "screenshare_started", JSON.stringify({ hasAudio, trackId: screenVideoTrack.id }));
           }
         })
       );
-      sendSignal("all", "screenshare_started", JSON.stringify({ hasAudio }));
+      sendSignal("all", "screenshare_started", JSON.stringify({ hasAudio, trackId: screenVideoTrack.id }));
 
       setIsScreenSharing(true);
       isScreenSharingRef.current = true;
