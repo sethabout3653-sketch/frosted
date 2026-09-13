@@ -19,23 +19,36 @@ export const cassandra = {
         }
       };
 
+      // If already aborted, exit immediately
+      if (abortController?.signal?.aborted) {
+        throw new Error("Upload cancelled by user");
+      }
+
       reportProgress(5);
 
       // 1. Primary high-speed direct server upload with real-time XHR progress tracking
       const uploadToServer = (): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
         return new Promise((resolve, reject) => {
+          if (abortController?.signal?.aborted) {
+            reject(new Error("Upload cancelled by user"));
+            return;
+          }
+
           const xhr = new XMLHttpRequest();
           xhr.open("POST", "/api/upload", true);
           xhr.timeout = 10 * 60 * 1000; // 10 minutes timeout for very large files (GBs)
 
           if (abortController) {
             abortController.signal.addEventListener("abort", () => {
-              xhr.abort();
+              try {
+                xhr.abort();
+              } catch (e) {}
               reject(new Error("Upload cancelled by user"));
             });
           }
 
           xhr.upload.onprogress = (event) => {
+            if (abortController?.signal?.aborted) return;
             if (event.lengthComputable && event.total > 0) {
               const percentComplete = (event.loaded / event.total) * 100;
               reportProgress(percentComplete);
@@ -43,6 +56,7 @@ export const cassandra = {
           };
 
           xhr.onload = () => {
+            if (abortController?.signal?.aborted) return;
             if (xhr.status >= 200 && xhr.status < 300) {
               try {
                 const response = JSON.parse(xhr.responseText);
@@ -56,9 +70,15 @@ export const cassandra = {
             reject(new Error(`Server upload returned status ${xhr.status}: ${xhr.statusText}`));
           };
 
-          xhr.onerror = () => reject(new Error("Network error during file upload"));
+          xhr.onerror = () => {
+            if (abortController?.signal?.aborted) {
+              reject(new Error("Upload cancelled by user"));
+            } else {
+              reject(new Error("Network error during file upload"));
+            }
+          };
           xhr.ontimeout = () => reject(new Error("Upload timed out"));
-          xhr.onabort = () => reject(new Error("Upload aborted"));
+          xhr.onabort = () => reject(new Error("Upload cancelled by user"));
 
           const formData = new FormData();
           formData.append("file", file);
@@ -68,8 +88,19 @@ export const cassandra = {
 
       try {
         return await uploadToServer();
-      } catch (serverError) {
+      } catch (serverError: any) {
+        if (
+          abortController?.signal?.aborted ||
+          serverError?.message?.includes("cancelled") ||
+          serverError?.message?.includes("aborted")
+        ) {
+          throw new Error("Upload cancelled by user");
+        }
         console.warn("[Upload Pipeline] Direct server upload fallback triggered:", serverError);
+      }
+
+      if (abortController?.signal?.aborted) {
+        throw new Error("Upload cancelled by user");
       }
 
       // 2. Secondary fallback: Supabase Storage with timeout & progress simulation
@@ -94,6 +125,10 @@ export const cassandra = {
 
         const { data, error } = await Promise.race([uploadPromise, timeoutPromise]) as any;
 
+        if (abortController?.signal?.aborted) {
+          throw new Error("Upload cancelled by user");
+        }
+
         if (!error && data?.path) {
           const { data: { publicUrl } } = supabase.storage
             .from('attachments')
@@ -107,8 +142,19 @@ export const cassandra = {
             size: file.size,
           };
         }
-      } catch (supabaseErr) {
+      } catch (supabaseErr: any) {
+        if (
+          abortController?.signal?.aborted ||
+          supabaseErr?.message?.includes("cancelled") ||
+          supabaseErr?.message?.includes("aborted")
+        ) {
+          throw new Error("Upload cancelled by user");
+        }
         console.warn("[Supabase Storage] Storage fallback notice:", supabaseErr);
+      }
+
+      if (abortController?.signal?.aborted) {
+        throw new Error("Upload cancelled by user");
       }
 
       // 3. Resilient instant fallback: For files < 15MB, use Base64; for larger files, use Object URL to prevent browser memory freezing

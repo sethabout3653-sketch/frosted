@@ -127,6 +127,8 @@ export default function ChatPanel({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadingFileInfo, setUploadingFileInfo] = useState<{ name: string; size: number } | null>(null);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadSessionIdRef = useRef<number>(0);
+  const stagedBlobUrlRef = useRef<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [typingUsers, setTypingUsers] = useState<any[]>([]);
@@ -596,6 +598,13 @@ export default function ChatPanel({
     setAttachmentType(null);
     setAttachmentName(null);
     setAttachmentSize(null);
+    setIsUploading(false);
+    setUploadProgress(null);
+    setUploadingFileInfo(null);
+    stagedBlobUrlRef.current = null;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
     inputRef.current?.focus();
     isUserScrolledUpRef.current = false;
     window.setTimeout(() => scrollToBottom("smooth"), 10);
@@ -670,26 +679,64 @@ export default function ChatPanel({
   };
 
   const cancelUpload = () => {
+    // 1. Invalidate session so pending callbacks are discarded
+    uploadSessionIdRef.current++;
+
+    // 2. Abort XHR request
     if (uploadAbortControllerRef.current) {
-      uploadAbortControllerRef.current.abort();
+      try {
+        uploadAbortControllerRef.current.abort();
+      } catch (e) {}
       uploadAbortControllerRef.current = null;
     }
+
+    // 3. Clean up blob memory if one was generated
+    if (stagedBlobUrlRef.current) {
+      try {
+        URL.revokeObjectURL(stagedBlobUrlRef.current);
+      } catch (e) {}
+      stagedBlobUrlRef.current = null;
+    }
+
+    // 4. Wipe attachment state cleanly
+    setAttachment(null);
+    setAttachmentType(null);
+    setAttachmentName(null);
+    setAttachmentSize(null);
     setIsUploading(false);
     setUploadProgress(null);
     setUploadingFileInfo(null);
+
+    // 5. Reset file input value so user can immediately re-select
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const uploadFile = async (file: File) => {
+    // Abort any existing upload and start a new session
     if (uploadAbortControllerRef.current) {
-      uploadAbortControllerRef.current.abort();
+      try {
+        uploadAbortControllerRef.current.abort();
+      } catch (e) {}
     }
+
+    if (stagedBlobUrlRef.current) {
+      try {
+        URL.revokeObjectURL(stagedBlobUrlRef.current);
+      } catch (e) {}
+      stagedBlobUrlRef.current = null;
+    }
+
+    const sessionId = ++uploadSessionIdRef.current;
     const abortController = new AbortController();
     uploadAbortControllerRef.current = abortController;
 
-    // 1. Synchronously stage instant preview in 0ms so the UI NEVER gets stuck on loading
+    // 1. Synchronously stage instant preview in 0ms
     let localBlobUrl = "";
     try {
       localBlobUrl = URL.createObjectURL(file);
+      stagedBlobUrlRef.current = localBlobUrl;
     } catch (e) {
       localBlobUrl = "";
     }
@@ -707,10 +754,16 @@ export default function ChatPanel({
       const result: any = await (cassandra.storage as any).upload(
         file,
         (percent: number) => {
-          setUploadProgress(percent);
+          if (uploadSessionIdRef.current === sessionId) {
+            setUploadProgress(percent);
+          }
         },
         abortController
       );
+
+      // If user cancelled or switched files in the meantime, ignore this result completely
+      if (uploadSessionIdRef.current !== sessionId) return;
+
       const url = typeof result === "string" ? result : result?.url || "";
       const resMime = typeof result === "object" ? result?.mimetype : null;
       const resName = typeof result === "object" ? result?.filename : null;
@@ -723,6 +776,8 @@ export default function ChatPanel({
       setAttachmentName(resName || file.name || "attachment");
       setAttachmentSize(resSize || file.size || 0);
     } catch (error: any) {
+      if (uploadSessionIdRef.current !== sessionId) return;
+
       if (error?.message?.includes("cancelled") || error?.message?.includes("aborted")) {
         console.log("Upload cancelled by user");
         return;
@@ -733,10 +788,12 @@ export default function ChatPanel({
         setAttachment(localBlobUrl);
       }
     } finally {
-      setIsUploading(false);
-      setUploadProgress(null);
-      setUploadingFileInfo(null);
-      uploadAbortControllerRef.current = null;
+      if (uploadSessionIdRef.current === sessionId) {
+        setIsUploading(false);
+        setUploadProgress(null);
+        setUploadingFileInfo(null);
+        uploadAbortControllerRef.current = null;
+      }
     }
   };
 
@@ -752,6 +809,10 @@ export default function ChatPanel({
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
       uploadFile(file);
+    }
+    // Always clear input value so picking the same file again or picking a new file fires onChange properly
+    if (e.target) {
+      e.target.value = "";
     }
   };
 
@@ -1201,16 +1262,7 @@ export default function ChatPanel({
 
             <button
               type="button"
-              onClick={() => {
-                if (isUploading) {
-                  cancelUpload();
-                } else {
-                  setAttachment(null);
-                  setAttachmentType(null);
-                  setAttachmentName(null);
-                  setAttachmentSize(null);
-                }
-              }}
+              onClick={cancelUpload}
               title={isUploading ? "Cancel upload" : "Remove attachment"}
               className="p-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 transition-colors flex-shrink-0 cursor-pointer"
             >
