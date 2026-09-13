@@ -471,45 +471,46 @@ const PORT = 3000;
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
   // ==========================================
-  // Cassandra Distributed Engine & Storage
+  // SQLite Distributed Engine & Storage
   // ==========================================
-  const cassandraStoreFile = path.join(uploadsDir, "cassandra_store.json");
-  let cassandraData: Record<string, Record<string, any>> = {};
-  let cassandraChangeHistory: Array<{
-    timestamp: number;
-    collection: string;
-    id: string;
-    op: string;
-    data: any;
-  }> = [];
+  const sqlite3 = require("sqlite3");
+  const { open } = require("sqlite");
 
-  try {
-    if (fs.existsSync(cassandraStoreFile)) {
-      cassandraData = JSON.parse(fs.readFileSync(cassandraStoreFile, "utf-8"));
-    }
-  } catch (e) {
-    console.warn("[Cassandra] No prior disk store found, initializing empty store");
+  let dbInstance: any = null;
+  async function getDb() {
+    if (dbInstance) return dbInstance;
+    const dbFile = fs.existsSync(uploadsDir) 
+      ? path.join(uploadsDir, 'database.sqlite')
+      : '/tmp/database.sqlite';
+      
+    dbInstance = await open({
+      filename: dbFile,
+      driver: sqlite3.Database
+    });
+
+    await dbInstance.exec(`
+      CREATE TABLE IF NOT EXISTS records (
+        collection TEXT,
+        id TEXT,
+        data TEXT,
+        timestamp INTEGER,
+        PRIMARY KEY (collection, id)
+      );
+      CREATE TABLE IF NOT EXISTS webrtc_signals (
+        id TEXT PRIMARY KEY,
+        uid TEXT,
+        targetUid TEXT,
+        type TEXT,
+        sdp TEXT,
+        candidate TEXT,
+        timestamp INTEGER
+      );
+    `);
+    return dbInstance;
   }
-
-  const saveCassandraStore = () => {
-    try {
-      fs.writeFileSync(cassandraStoreFile, JSON.stringify(cassandraData), "utf-8");
-    } catch (e) {
-      // Ignore disk write failure in read-only sandbox
-    }
-  };
 
   // Connected SSE clients for real-time broadcasts
   const sseClients = new Set<express.Response>();
-  let recentWebRTCSignals: Array<{
-    id: string;
-    uid: string;
-    targetUid: string;
-    type: string;
-    sdp?: string;
-    candidate?: string;
-    timestamp: number;
-  }> = [];
 
   const broadcastCassandraChange = (
     op: string,
@@ -554,37 +555,43 @@ const PORT = 3000;
   };
 
   // 1. Cassandra Realtime SSE Stream
-  app.get("/api/cassandra/stream", (req, res) => {
+  app.get("/api/cassandra/stream", async (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
 
-    // Send initial 2KB comment padding to force proxies/nginx to flush buffer immediately
     res.write(":" + " ".repeat(2048) + "\n\n");
 
-    // Send initial connection handshake and all existing documents
     res.write(
       `data: ${JSON.stringify({
         type: "connected",
-        provider: "Apache Cassandra / ScyllaDB Engine",
+        provider: "SQLite / Serverless Engine",
         quota: "Unlimited (0 / \u221E)",
         serverTime: Date.now(),
       })}\n\n`
     );
 
-    res.write(
-      `data: ${JSON.stringify({
-        type: "init",
-        data: cassandraData,
-      })}\n\n`
-    );
+    try {
+      const db = await getDb();
+      const rows = await db.all("SELECT collection, id, data FROM records");
+      const result: Record<string, Record<string, any>> = {};
+      rows.forEach((r: any) => {
+        if (!result[r.collection]) result[r.collection] = {};
+        result[r.collection][r.id] = JSON.parse(r.data);
+      });
+      res.write(
+        `data: ${JSON.stringify({
+          type: "init",
+          data: result,
+        })}\n\n`
+      );
+    } catch(e) {}
+    
     (res as any).flush?.();
-
     sseClients.add(res);
 
-    // Heartbeat ping every 10 seconds to keep connection alive indefinitely
     const heartbeat = setInterval(() => {
       try {
         res.write(":ping\n\n");
@@ -600,7 +607,7 @@ const PORT = 3000;
   });
 
   // Dedicated WebRTC Signaling Endpoints (Zero-delay P2P negotiation)
-  app.post("/api/webrtc/signal", (req, res) => {
+  app.post("/api/webrtc/signal", async (req, res) => {
     try {
       const { uid, targetUid, type, sdp, candidate, timestamp } = req.body || {};
       if (!uid || !targetUid || !type) {
@@ -617,13 +624,17 @@ const PORT = 3000;
         timestamp: timestamp || Date.now(),
       };
 
-      recentWebRTCSignals.push(sigObj);
+      const db = await getDb();
+      await db.run(
+        "INSERT INTO webrtc_signals (id, uid, targetUid, type, sdp, candidate, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [sigObj.id, sigObj.uid, sigObj.targetUid, sigObj.type, sigObj.sdp, sigObj.candidate, sigObj.timestamp]
+      );
+      
+      // Cleanup old signals
       const cutoff = Date.now() - 30000;
-      if (recentWebRTCSignals.length > 500) {
-        recentWebRTCSignals = recentWebRTCSignals.filter((s) => s.timestamp > cutoff);
-      }
+      await db.run("DELETE FROM webrtc_signals WHERE timestamp < ?", [cutoff]);
 
-      // Broadcast immediately via SSE to all connected clients
+      // Broadcast immediately via SSE
       broadcastWebRTCSignal(sigObj);
 
       res.json({ success: true, id: sigObj.id });
@@ -632,90 +643,98 @@ const PORT = 3000;
     }
   });
 
-  app.get("/api/webrtc/signals", (req, res) => {
-    const targetUid = req.query.uid as string;
-    const since = parseInt(req.query.since as string, 10) || (Date.now() - 15000);
-    if (!targetUid) {
-      return res.json({ signals: [] });
-    }
+  app.get("/api/webrtc/signals", async (req, res) => {
+    try {
+      const targetUid = req.query.uid as string;
+      const since = parseInt(req.query.since as string, 10) || (Date.now() - 15000);
+      if (!targetUid) {
+        return res.json({ signals: [] });
+      }
 
-    const matched = recentWebRTCSignals.filter(
-      (s) => (s.targetUid === targetUid || s.targetUid === "all") && s.timestamp > since && s.uid !== targetUid
-    );
-    res.json({ signals: matched, timestamp: Date.now() });
+      const db = await getDb();
+      const rows = await db.all(
+        "SELECT * FROM webrtc_signals WHERE (targetUid = ? OR targetUid = 'all') AND timestamp > ? AND uid != ?",
+        [targetUid, since, targetUid]
+      );
+      
+      res.json({ signals: rows, timestamp: Date.now() });
+    } catch (e) {
+      res.json({ signals: [], timestamp: Date.now() });
+    }
   });
 
   // 2. Cassandra Data / Query Endpoint
-  app.get("/api/cassandra/data", (req, res) => {
-    const col = req.query.collection as string;
-    if (col) {
-      return res.json(cassandraData[col] || {});
+  app.get("/api/cassandra/data", async (req, res) => {
+    try {
+      const col = req.query.collection as string;
+      const db = await getDb();
+      
+      if (col) {
+        const rows = await db.all("SELECT id, data FROM records WHERE collection = ?", [col]);
+        const result: Record<string, any> = {};
+        rows.forEach((r: any) => { result[r.id] = JSON.parse(r.data); });
+        return res.json(result);
+      }
+      
+      const rows = await db.all("SELECT collection, id, data FROM records");
+      const result: Record<string, Record<string, any>> = {};
+      const collections = new Set<string>();
+      rows.forEach((r: any) => {
+        collections.add(r.collection);
+        if (!result[r.collection]) result[r.collection] = {};
+        result[r.collection][r.id] = JSON.parse(r.data);
+      });
+      
+      res.json({
+        status: "online",
+        provider: "SQLite Database",
+        quota: "Unlimited (0 / \u221E)",
+        collections: Array.from(collections),
+        data: result,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
-    res.json({
-      status: "online",
-      provider: "Apache Cassandra / ScyllaDB",
-      quota: "Unlimited (0 / \u221E)",
-      collections: Object.keys(cassandraData),
-      data: cassandraData,
-    });
   });
 
   // 3. Cassandra Write Endpoint
-  app.post("/api/cassandra/write", (req, res) => {
+  app.post("/api/cassandra/write", async (req, res) => {
     try {
       const { op, collection: col, id, data } = req.body || {};
       if (!col || !id) {
         return res.status(400).json({ error: "Missing collection or id" });
       }
 
-      if (!cassandraData[col]) {
-        cassandraData[col] = {};
-      }
+      const db = await getDb();
+      const ts = Date.now();
 
       if (op === "delete") {
-        delete cassandraData[col][id];
+        await db.run("DELETE FROM records WHERE collection = ? AND id = ?", [col, id]);
       } else if (op === "update") {
-        cassandraData[col][id] = {
-          ...(cassandraData[col][id] || {}),
-          ...data,
-          id,
-        };
+        const row = await db.get("SELECT data FROM records WHERE collection = ? AND id = ?", [col, id]);
+        const existing = row ? JSON.parse(row.data) : {};
+        const merged = { ...existing, ...data, id };
+        await db.run(
+          "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+          [col, id, JSON.stringify(merged), ts]
+        );
       } else {
-        cassandraData[col][id] = { ...data, id };
+        await db.run(
+          "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+          [col, id, JSON.stringify({ ...data, id }), ts]
+        );
       }
 
-      // Prune stale presence and voice users before broadcasting
+      // Prune stale presence and voice users
       if (col === "presence" || col === "voice_users") {
-        const now = Date.now();
-        const staleThreshold = 120000; // 2 minutes
-        const colMap = cassandraData[col];
-        Object.entries(colMap).forEach(([rowId, row]) => {
-          const ts = row.lastSeen || row.timestamp || 0;
-          if (now - ts > staleThreshold) {
-            delete colMap[rowId];
-          }
-        });
-      }
-
-      saveCassandraStore();
-
-      const changeRecord = {
-        timestamp: Date.now(),
-        collection: col,
-        id,
-        op: op || "set",
-        data,
-      };
-
-      cassandraChangeHistory.push(changeRecord);
-      if (cassandraChangeHistory.length > 1000) {
-        cassandraChangeHistory = cassandraChangeHistory.slice(-1000);
+        const staleThreshold = ts - 120000; // 2 minutes
+        await db.run("DELETE FROM records WHERE collection = ? AND timestamp < ?", [col, staleThreshold]);
       }
 
       // Broadcast to all SSE listeners in real time
       broadcastCassandraChange(op || "set", col, id, data);
 
-      res.json({ success: true, timestamp: changeRecord.timestamp });
+      res.json({ success: true, timestamp: ts });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -723,35 +742,28 @@ const PORT = 3000;
 
   // 4. Cassandra Poll Endpoint
   app.get("/api/cassandra/poll", (req, res) => {
-    const since = parseInt(req.query.since as string, 10) || 0;
-    const newChanges = cassandraChangeHistory.filter((c) => c.timestamp > since);
-    res.json({
-      timestamp: Date.now(),
-      changes: newChanges,
-      ...(since === 0 ? { fullData: cassandraData } : {}),
-    });
+    res.json({ timestamp: Date.now(), changes: [] }); // deprecated
   });
 
   // 5. Cassandra Status & CQL Execution
-  app.get("/api/cassandra/status", (req, res) => {
-    res.json({
-      status: "online",
-      provider: "Apache Cassandra / ScyllaDB Engine",
-      quota: "Unlimited (0 / \u221E)",
-      transport: "Server-Sent Events (SSE) - No WebSockets, Vercel Compatible",
-      activeClients: sseClients.size,
-      collections: Object.keys(cassandraData),
-      documentCount: Object.values(cassandraData).reduce(
-        (acc, col) => acc + Object.keys(col).length,
-        0
-      ),
-    });
+  app.get("/api/cassandra/status", async (req, res) => {
+    try {
+      const db = await getDb();
+      const row = await db.get("SELECT COUNT(*) as count FROM records");
+      res.json({
+        status: "online",
+        provider: "SQLite Database",
+        quota: "Unlimited (0 / \u221E)",
+        transport: "Server-Sent Events (SSE) + Database Polling",
+        activeClients: sseClients.size,
+        documentCount: row.count,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post("/api/cassandra/cql", (req, res) => {
-    const { query } = req.body;
-    console.log("[Cassandra] Executing CQL:", query);
-    // Dummy execution
     res.json({ success: true, message: "CQL Execution Simulated." });
   });
 

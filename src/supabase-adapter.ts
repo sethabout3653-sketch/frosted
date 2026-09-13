@@ -183,48 +183,71 @@ export function writeBatch() {
   };
 }
 
-// Signaling Compatibility (used for WebRTC) using our local API
-export function sendBroadcastSignal(payload: any) {
-  fetch("/api/webrtc/signal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}` })
-  }).catch(console.error);
-}
+  // Signaling Compatibility (used for WebRTC) using our local API
+  export function sendBroadcastSignal(payload: any) {
+    fetch("/api/webrtc/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}` })
+    }).catch(console.error);
+  }
 
-export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-  let eventSource: EventSource | null = null;
-  let isSubscribed = true;
+  export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
+    let eventSource: EventSource | null = null;
+    let isSubscribed = true;
+    const processedSignals = new Set<string>();
 
-  const connect = () => {
-    if (!isSubscribed) return;
-    eventSource = new EventSource("/api/cassandra/stream");
-    
-    eventSource.addEventListener("webrtc_signal", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const payload = data.payload;
-        if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
-          onSignal(payload);
+    const connect = () => {
+      if (!isSubscribed) return;
+      eventSource = new EventSource("/api/cassandra/stream");
+      
+      eventSource.addEventListener("webrtc_signal", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const payload = data.payload;
+          if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
+            if (!processedSignals.has(payload.id)) {
+              processedSignals.add(payload.id);
+              onSignal(payload);
+            }
+          }
+        } catch (e) {}
+      });
+
+      eventSource.onerror = () => {
+        if (isSubscribed) {
+          eventSource?.close();
+          setTimeout(connect, 2000);
         }
-      } catch (e) {}
-    });
+      };
+    };
 
-    eventSource.onerror = () => {
-      if (isSubscribed) {
-        eventSource?.close();
-        setTimeout(connect, 2000);
+    connect();
+
+    // Active Polling for signals across serverless instances
+    const interval = setInterval(async () => {
+      if (!isSubscribed) return;
+      try {
+        const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}`);
+        if (res.ok) {
+          const json = await res.json();
+          const signals = json.signals || [];
+          for (const s of signals) {
+             if (!processedSignals.has(s.id)) {
+                processedSignals.add(s.id);
+                onSignal(s);
+             }
+          }
+        }
+      } catch(e) {}
+    }, 1500);
+
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
       }
     };
-  };
-
-  connect();
-
-  return () => {
-    isSubscribed = false;
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
-    }
-  };
-}
+  }

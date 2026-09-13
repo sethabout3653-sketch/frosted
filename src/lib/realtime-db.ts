@@ -66,8 +66,25 @@ export class RealtimeDB {
 
     connect();
 
+    // Fallback Polling Mechanism for Vercel/Serverless environments
+    // where SSE clients might be isolated on different function instances
+    const interval = setInterval(async () => {
+      if (!isSubscribed) return;
+      try {
+        const query = new URLSearchParams({ path: cleanPath });
+        const res = await fetch(`${this.baseUrl}/api/db/data?${query.toString()}`);
+        if (res.ok) {
+           const json = await res.json();
+           if (json.data) callbacks.onSnapshot?.(json.data);
+        }
+      } catch (e) {
+        // ignore poll errors
+      }
+    }, 2500);
+
     return () => {
       isSubscribed = false;
+      clearInterval(interval);
       if (eventSource) {
         eventSource.close();
         eventSource = null;
