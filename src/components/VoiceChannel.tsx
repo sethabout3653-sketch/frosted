@@ -78,13 +78,13 @@ const ICE_SERVERS: RTCConfiguration = {
   rtcpMuxPolicy: "require",
 };
 
-// Studio quality uncapped raw audio SDP optimizer:
-// - 510000 bps uncapped Opus bitrate
-// - Stereo enabled (stereo=1, sprop-stereo=1) for pure uncompressed full spectrum audio
-// - maxplaybackrate=48000 for full 48kHz frequency spectrum
-// - cbr=1 (constant bitrate transmission, no ducking, gating or compression drops)
-// - usedtx=0 (no voice gating or silence cutoffs)
-// - useinbandfec=1 for forward error correction
+// Studio quality Opus audio SDP optimizer:
+// - 320000 bps high-definition Opus bitrate (crystal-clear voice & screen share fidelity)
+// - Stereo enabled (stereo=1;sprop-stereo=1) for rich immersive sound
+// - maxplaybackrate=48000 for full 48kHz studio frequency spectrum
+// - minptime=10 for ultra-low latency
+// - useinbandfec=1 for forward error correction against packet loss
+// - usedtx=0 to prevent voice cutoff on soft speech
 function optimizeAudioSdp(sdp: string): string {
   const lines = sdp.split("\r\n");
   let opusPayloadType: string | null = null;
@@ -103,7 +103,7 @@ function optimizeAudioSdp(sdp: string): string {
         (line.startsWith("a=fmtp:") && line.toLowerCase().includes("opus"))
       ) {
         const base = line.split(";")[0];
-        return `${base};maxaveragebitrate=510000;stereo=1;sprop-stereo=1;cbr=1;maxplaybackrate=48000;minptime=10;useinbandfec=1;usedtx=0`;
+        return `${base};maxaveragebitrate=320000;stereo=1;sprop-stereo=1;maxplaybackrate=48000;minptime=10;useinbandfec=1;usedtx=0`;
       }
       return line;
     })
@@ -523,18 +523,25 @@ export default function VoiceChannel({
     try {
       const constraints: MediaStreamConstraints = {
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
           channelCount: { ideal: 1 },
           sampleRate: { ideal: 48000 },
-          // Vendor specific noise suppression & echo cancellation flags for Chromium/WebKit/Blink
+          sampleSize: { ideal: 16 },
+          // Enhanced noise suppression & acoustic echo cancellation flags for Chromium/WebKit/Blink
           ...({
+            echoCancellationType: "system",
             googEchoCancellation: true,
+            googExperimentalEchoCancellation: true,
             googAutoGainControl: true,
+            googExperimentalAutoGainControl: true,
             googNoiseSuppression: true,
+            googExperimentalNoiseSuppression: true,
             googHighpassFilter: true,
             googNoiseReduction: true,
+            googTypingNoiseDetection: true,
+            googAudioMirroring: false,
           } as any),
         },
         video: false,
@@ -543,7 +550,11 @@ export default function VoiceChannel({
     } catch (err) {
       console.warn("Standard mic constraints failed, using fallback:", err);
       return await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
         video: false,
       });
     }
@@ -580,41 +591,65 @@ export default function VoiceChannel({
 
         const source = ctx.createMediaStreamSource(sourceStream);
 
-        // 1. Highpass Filter: Cut sub-bass rumble (< 75Hz) from desk bumps, airflow, and HVAC hum
+        // 1. Highpass Filter: Cut sub-bass rumble (< 80Hz) from desk bumps, airflow, and HVAC hum
         const highpass = ctx.createBiquadFilter();
         highpass.type = "highpass";
-        highpass.frequency.value = 75;
+        highpass.frequency.value = 80;
         highpass.Q.value = 0.7;
 
-        // 2. Dynamics Compressor: Even out whispers and loud voice, creating warm, rich vocal presence
-        const compressor = ctx.createDynamicsCompressor();
-        compressor.threshold.value = -24;
-        compressor.knee.value = 12;
-        compressor.ratio.value = 3.5;
-        compressor.attack.value = 0.003;
-        compressor.release.value = 0.15;
+        // 2. Vocal Presence Peaking EQ: Enhance voice intelligibility and crispness (3.2kHz +2.5dB)
+        const presenceEQ = ctx.createBiquadFilter();
+        presenceEQ.type = "peaking";
+        presenceEQ.frequency.value = 3200;
+        presenceEQ.Q.value = 1.2;
+        presenceEQ.gain.value = 2.5;
 
-        // 3. Analyser for real-time Voice & Sound Activity Detection (VAD)
+        // 3. De-Esser / High Shelf: Smooth out harsh high-frequency sibilance & hiss
+        const airEQ = ctx.createBiquadFilter();
+        airEQ.type = "highshelf";
+        airEQ.frequency.value = 8000;
+        airEQ.gain.value = -1.0;
+
+        // 4. Studio Dynamics Compressor: Smoothly balance whispers and loud vocal peaks
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -22;
+        compressor.knee.value = 10;
+        compressor.ratio.value = 3.2;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.12;
+
+        // 5. Brickwall Safety Limiter: Guarantee 0dBFS clipping protection
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -1.0;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.001;
+        limiter.release.value = 0.05;
+
+        // 6. Analyser for real-time Voice & Sound Activity Detection (VAD)
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.2;
 
-        // Connect source to filters and analyser
+        // Connect source through the studio DSP chain
         source.connect(highpass);
-        highpass.connect(compressor);
-        compressor.connect(analyser);
+        highpass.connect(presenceEQ);
+        presenceEQ.connect(airEQ);
+        airEQ.connect(compressor);
+        compressor.connect(limiter);
+        limiter.connect(analyser);
         analyserRef.current = analyser;
 
-        // Mixed destination node that combines microphone and any screen share audio
+        // Mixed destination node that combines microphone and screen share audio
         const mixedDest = ctx.createMediaStreamDestination();
         mixedDestinationRef.current = mixedDest;
 
         const micGain = ctx.createGain();
-        // Boost microphone gain for crystal-clear studio volume
-        micGain.gain.value = isMutedRef.current ? 0 : 2.0;
+        // Pristine unity gain (1.0) without artificial amplification distortion
+        micGain.gain.value = isMutedRef.current ? 0 : 1.0;
         gainNodeRef.current = micGain;
 
-        compressor.connect(micGain);
+        limiter.connect(micGain);
         micGain.connect(mixedDest);
 
         // Monitor real-time volume levels & speech/sound activity for local user and remote participants
@@ -1223,30 +1258,22 @@ export default function VoiceChannel({
             remoteAudioStreamsRef.current[partnerUid] = aStream;
           }
 
-          let audioEl = remoteAudioRefs.current[partnerUid];
-          if (!audioEl) {
-            audioEl = new Audio();
-            audioEl.autoplay = true;
-            (audioEl as any).playsInline = true;
-            remoteAudioRefs.current[partnerUid] = audioEl;
+          const audioEl = remoteAudioRefs.current[partnerUid];
+          if (audioEl) {
+            if (audioEl.srcObject !== aStream) {
+              audioEl.srcObject = aStream;
+            }
+            audioEl.play().catch(() => {});
           }
-          if (audioEl.srcObject !== aStream) {
-            audioEl.srcObject = aStream;
-          }
-          audioEl.play().catch(() => {});
 
           event.track.onunmute = () => {
-            let el = remoteAudioRefs.current[partnerUid];
-            if (!el) {
-              el = new Audio();
-              el.autoplay = true;
-              (el as any).playsInline = true;
-              remoteAudioRefs.current[partnerUid] = el;
+            const el = remoteAudioRefs.current[partnerUid];
+            if (el && aStream) {
+              if (el.srcObject !== aStream) {
+                el.srcObject = aStream;
+              }
+              el.play().catch(() => {});
             }
-            if (el.srcObject !== aStream) {
-              el.srcObject = aStream;
-            }
-            el.play().catch(() => {});
           };
 
           // Attach remote audio track to analyser for accurate speaking detection
@@ -2273,10 +2300,17 @@ export default function VoiceChannel({
             height: { max: 1080 },
           },
           audio: {
-            echoCancellation: false,
+            echoCancellation: true,
             noiseSuppression: false,
             autoGainControl: false,
-            channelCount: 2,
+            channelCount: { ideal: 2 },
+            sampleRate: { ideal: 48000 },
+            ...({
+              suppressLocalAudioPlayback: false,
+              systemAudio: "include",
+              selfBrowserSurface: "exclude",
+              surfaceSwitching: "include",
+            } as any),
           },
         });
       } catch (errAudio: any) {
@@ -2514,21 +2548,23 @@ export default function VoiceChannel({
     <>
       {/* Hidden persistent audio playback elements for all remote peers (never unmounted on view mode toggle) */}
       <div className="hidden" aria-hidden="true">
-        {activeParticipants.map((p, pIdx) => (
-          <audio
-            key={`audio-playback-${p.uid || "peer"}-${pIdx}`}
-            ref={(el) => {
-              remoteAudioRefs.current[p.uid] = el;
-              const remoteAudioStream = remoteAudioStreamsRef.current[p.uid];
-              if (el && remoteAudioStream && el.srcObject !== remoteAudioStream) {
-                el.srcObject = remoteAudioStream;
-                el.play().catch(() => {});
-              }
-            }}
-            autoPlay
-            playsInline
-          />
-        ))}
+        {activeParticipants
+          .filter((p) => p.uid !== profile.uid)
+          .map((p) => (
+            <audio
+              key={`audio-playback-${p.uid}`}
+              ref={(el) => {
+                remoteAudioRefs.current[p.uid] = el;
+                const remoteAudioStream = remoteAudioStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
+                if (el && remoteAudioStream && el.srcObject !== remoteAudioStream) {
+                  el.srcObject = remoteAudioStream;
+                  el.play().catch(() => {});
+                }
+              }}
+              autoPlay
+              playsInline
+            />
+          ))}
       </div>
 
       {isPip ? (
@@ -3929,7 +3965,7 @@ export default function VoiceChannel({
                 }}
                 autoPlay
                 playsInline
-                muted={isFullscreenLocal}
+                muted
                 className={`w-full h-full max-w-full max-h-full transition-all duration-150 cursor-pointer ${
                   fullscreenFit === "cover" ? "object-cover" : "object-contain"
                 } ${isFullscreenLocal ? "transform -scale-x-100" : ""}`}
@@ -4101,29 +4137,6 @@ export default function VoiceChannel({
         </div>
       );
     })()}
-
-    {/* Hidden Audio Elements for all remote voice participants */}
-    <div className="hidden" aria-hidden="true">
-      {participants
-        .filter((p) => p.uid !== profile.uid)
-        .map((p) => (
-          <audio
-            key={`remote-audio-${p.uid}`}
-            ref={(el) => {
-              if (el) {
-                remoteAudioRefs.current[p.uid] = el;
-                const stream = remoteAudioStreamsRef.current[p.uid] || remoteStreamsRef.current[p.uid];
-                if (stream && el.srcObject !== stream) {
-                  el.srcObject = stream;
-                  el.play().catch(() => {});
-                }
-              }
-            }}
-            autoPlay
-            playsInline
-          />
-        ))}
-    </div>
   </>
   );
 }
