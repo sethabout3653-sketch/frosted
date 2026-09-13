@@ -1,9 +1,26 @@
-import { realtimeDb } from "./lib/realtime-db";
+import * as Y from "yjs";
+import { WebrtcProvider } from "y-webrtc";
 
-// Remove all Supabase dependencies and rely strictly on our custom 
-// local/Vercel-compatible SSE real-time engine.
+// ==========================================
+// Yjs P2P Mesh Network Setup
+// ==========================================
+const ydoc = new Y.Doc();
+// Use public WebRTC signaling servers for 100% serverless, zero-config P2P sync
+let provider: any = null;
+try {
+  provider = new WebrtcProvider("frosted-global-p2p-room-v1", ydoc, {
+    signaling: [
+      "wss://signaling.yjs.dev",
+      "wss://y-webrtc-signaling-eu.herokuapp.com",
+      "wss://y-webrtc-signaling-us.herokuapp.com"
+    ]
+  });
+} catch(e) {
+  console.error("Yjs WebrtcProvider init failed", e);
+}
 
-export const db = { name: "CustomServerlessDB" };
+// Remove all Supabase dependencies and rely strictly on Yjs
+export const db = { name: "YjsWebrtcDB" };
 
 // Storage Helper mapping to our local server storage
 export const cassandra = {
@@ -12,20 +29,7 @@ export const cassandra = {
       file: File,
       onProgress?: (p: number) => void
     ): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          body: formData,
-        });
-        const json = await res.json();
-        if (json.url) return json;
-      } catch (e) {
-        console.error("Local upload failed", e);
-      }
-
-      // Final fallback to Data URL if completely offline
+      // Data URL for 100% serverless/P2P offline capability
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = () => resolve({
@@ -51,7 +55,7 @@ export enum OperationType {
 }
 
 export function handleFirestoreError(error: any, op: string, path: string) {
-  console.warn(`[LocalDB] Error during ${op} on ${path}:`, error);
+  console.warn(`[P2P DB] Error during ${op} on ${path}:`, error);
 }
 
 export function toTimestampMs(val: any): number {
@@ -79,7 +83,7 @@ export function where(field: string, op: string, value: any) { return { type: "w
 export function orderBy(field: string, direction: "asc" | "desc" = "asc") { return { type: "orderBy", field, direction }; }
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
 
-// Database Operations mapping directly to realtimeDb
+// Database Operations mapping directly to Yjs Maps
 export async function getDocs(queryObj: any) {
   const colName = typeof queryObj === "string" ? queryObj : queryObj.colName;
   const constraints = queryObj?.constraints || [];
@@ -87,13 +91,13 @@ export async function getDocs(queryObj: any) {
   if (!colName) {
     return { docs: [], forEach: () => {}, empty: true, size: 0 };
   }
-
+  
   try {
-    const dataMap = await realtimeDb.get(colName);
-    const dataList = Object.entries(dataMap || {}).map(([id, val]: [string, any]) => ({
-      id,
-      ...val
-    }));
+    const ymap = ydoc.getMap(colName);
+    const dataList: any[] = [];
+    ymap.forEach((val: any, id: string) => {
+      dataList.push({ id, ...val });
+    });
     
     let filtered = dataList;
     for (const c of constraints) {
@@ -107,7 +111,7 @@ export async function getDocs(queryObj: any) {
         });
       }
     }
-
+    
     return {
       docs: filtered.map(d => ({ id: d.id, data: () => d })),
       forEach: (cb: any) => filtered.forEach(d => cb({ id: d.id, data: () => d })),
@@ -129,41 +133,41 @@ export function onSnapshot(
   if (!colName) {
     return () => {};
   }
-
+  
+  const ymap = ydoc.getMap(colName);
+  
+  const triggerUpdate = () => {
+    getDocs(queryObj).then(onNext).catch(console.error);
+  };
+  
   // Initial fetch
-  getDocs(queryObj).then(onNext).catch(console.error);
-
-  // Local realtime SSE fallback
-  return realtimeDb.subscribe(colName, {
-    onSnapshot: (data) => {
-      const docs = Object.entries(data || {}).map(([id, val]: [string, any]) => ({
-        id,
-        data: () => val
-      }));
-      onNext({ docs, forEach: (cb: any) => docs.forEach(cb), empty: docs.length === 0, size: docs.length });
-    },
-    onChange: () => {
-      getDocs(queryObj).then(onNext).catch(console.error);
-    }
-  });
+  triggerUpdate();
+  
+  // Listen for real-time mesh changes
+  ymap.observe(triggerUpdate);
+  
+  return () => {
+    ymap.unobserve(triggerUpdate);
+  };
 }
 
 export async function setDoc(docRef: { colName: string; id: string }, data: any, _options?: { merge?: boolean }) {
-  await realtimeDb.set(docRef.colName, docRef.id, data);
+  ydoc.getMap(docRef.colName).set(docRef.id, data);
 }
 
 export async function updateDoc(docRef: { colName: string; id: string }, data: any) {
-  const existing = await realtimeDb.get(docRef.colName, docRef.id);
-  await realtimeDb.set(docRef.colName, docRef.id, { ...existing, ...data });
+  const ymap = ydoc.getMap(docRef.colName);
+  const existing = ymap.get(docRef.id) || {};
+  ymap.set(docRef.id, { ...(existing as any), ...data });
 }
 
 export async function deleteDoc(docRef: { colName: string; id: string }) {
-  await realtimeDb.delete(docRef.colName, docRef.id);
+  ydoc.getMap(docRef.colName).delete(docRef.id);
 }
 
 export async function addDoc(colName: string, data: any) {
   const id = "msg_" + Math.random().toString(36).substring(2, 11);
-  await realtimeDb.set(colName, id, data);
+  ydoc.getMap(colName).set(id, data);
   return { colName, id };
 }
 
@@ -174,80 +178,54 @@ export function writeBatch() {
     update: (ref: any, data: any) => ops.push({ type: 'update', ref, data }),
     delete: (ref: any) => ops.push({ type: 'delete', ref }),
     commit: async () => {
-      for (const op of ops) {
-        if (op.type === 'set') await setDoc(op.ref, op.data);
-        if (op.type === 'update') await updateDoc(op.ref, op.data);
-        if (op.type === 'delete') await deleteDoc(op.ref);
-      }
+      ydoc.transact(() => {
+        for (const op of ops) {
+          if (op.type === 'set') ydoc.getMap(op.ref.colName).set(op.ref.id, op.data);
+          if (op.type === 'update') {
+            const existing = ydoc.getMap(op.ref.colName).get(op.ref.id) || {};
+            ydoc.getMap(op.ref.colName).set(op.ref.id, { ...(existing as any), ...op.data });
+          }
+          if (op.type === 'delete') ydoc.getMap(op.ref.colName).delete(op.ref.id);
+        }
+      });
     }
   };
 }
 
-  // Signaling Compatibility (used for WebRTC) using our local API
-  export function sendBroadcastSignal(payload: any) {
-    fetch("/api/webrtc/signal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, id: payload.id || `sig_${Date.now()}` })
-    }).catch(console.error);
-  }
+// Signaling Compatibility (used for WebRTC voice/video handshakes)
+const signalsMap = ydoc.getMap("webrtc_signals");
 
-  export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
-    let eventSource: EventSource | null = null;
-    let isSubscribed = true;
-    const processedSignals = new Set<string>();
+export function sendBroadcastSignal(payload: any) {
+  const id = payload.id || `sig_${Date.now()}_${Math.random().toString(36).substring(2,8)}`;
+  signalsMap.set(id, { ...payload, id, timestamp: Date.now() });
+  
+  // Cleanup old signals immediately in this client's view
+  const cutoff = Date.now() - 30000;
+  signalsMap.forEach((val: any, key: string) => {
+    if (val.timestamp < cutoff) signalsMap.delete(key);
+  });
+}
 
-    const connect = () => {
-      if (!isSubscribed) return;
-      eventSource = new EventSource("/api/cassandra/stream");
-      
-      eventSource.addEventListener("webrtc_signal", (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const payload = data.payload;
-          if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
-            if (!processedSignals.has(payload.id)) {
-              processedSignals.add(payload.id);
-              onSignal(payload);
-            }
-          }
-        } catch (e) {}
-      });
-
-      eventSource.onerror = () => {
-        if (isSubscribed) {
-          eventSource?.close();
-          setTimeout(connect, 2000);
-        }
-      };
-    };
-
-    connect();
-
-    // Active Polling for signals across serverless instances
-    const interval = setInterval(async () => {
-      if (!isSubscribed) return;
-      try {
-        const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}`);
-        if (res.ok) {
-          const json = await res.json();
-          const signals = json.signals || [];
-          for (const s of signals) {
-             if (!processedSignals.has(s.id)) {
-                processedSignals.add(s.id);
-                onSignal(s);
-             }
+export function subscribeBroadcastSignals(myUid: string, onSignal: (signal: any) => void) {
+  const processedSignals = new Set<string>();
+  
+  const observer = (event: Y.YMapEvent<any>) => {
+    event.changes.keys.forEach((change, key) => {
+      if (change.action === 'add' || change.action === 'update') {
+        const payload: any = signalsMap.get(key);
+        if (payload && payload.uid !== myUid && (payload.targetUid === myUid || payload.targetUid === "all")) {
+          if (!processedSignals.has(payload.id)) {
+            processedSignals.add(payload.id);
+            onSignal(payload);
           }
         }
-      } catch(e) {}
-    }, 1500);
-
-    return () => {
-      isSubscribed = false;
-      clearInterval(interval);
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
       }
-    };
-  }
+    });
+  };
+  
+  signalsMap.observe(observer);
+  
+  return () => {
+    signalsMap.unobserve(observer);
+  };
+}
