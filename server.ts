@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
+import crypto from "crypto";
 
 import { db } from "./src/db/index.js";
 import { records, webrtcSignals } from "./src/db/schema.js";
@@ -790,6 +791,307 @@ const PORT = 3000;
 
   app.post("/api/cassandra/cql", (req, res) => {
     res.json({ success: true, message: "CQL Execution Simulated." });
+  });
+
+  // ==========================================
+  // Authentication Engine (Username/Password & Google)
+  // ==========================================
+  function hashAuthPassword(pwd: string, salt: string): string {
+    return crypto.pbkdf2Sync(pwd, salt, 1000, 64, "sha512").toString("hex");
+  }
+
+  // 1. Register with Username & Password
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { username, password, photoURL } = req.body || {};
+      const trimmedUser = (username || "").trim();
+      const trimmedPwd = (password || "").trim();
+
+      if (!trimmedUser || trimmedUser.length < 2) {
+        return res.status(400).json({ error: "Username must be at least 2 characters long." });
+      }
+      if (trimmedUser.length > 24) {
+        return res.status(400).json({ error: "Username must be 24 characters or less." });
+      }
+      if (trimmedUser.toLowerCase() === "anonymous" || trimmedUser.toLowerCase() === "admin") {
+        return res.status(400).json({ error: "This username is reserved. Please pick another." });
+      }
+      if (!trimmedPwd || trimmedPwd.length < 4) {
+        return res.status(400).json({ error: "Password must be at least 4 characters long." });
+      }
+
+      const db = await getDb();
+      const existingRows = await db.all("SELECT id, data FROM records WHERE collection = 'users'");
+      const isTaken = existingRows.some((r: any) => {
+        try {
+          const u = JSON.parse(r.data);
+          return (u.username || "").toLowerCase() === trimmedUser.toLowerCase();
+        } catch {
+          return false;
+        }
+      });
+
+      if (isTaken) {
+        return res.status(409).json({ error: "Username is already registered. Please sign in or choose another name." });
+      }
+
+      const salt = crypto.randomBytes(16).toString("hex");
+      const passwordHash = hashAuthPassword(trimmedPwd, salt);
+      const uid = "usr_" + crypto.randomBytes(8).toString("hex");
+      const avatar = photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(trimmedUser)}`;
+
+      const userRecord = {
+        uid,
+        username: trimmedUser,
+        photoURL: avatar,
+        passwordHash,
+        salt,
+        authType: "password",
+        createdAt: Date.now(),
+      };
+
+      await db.run(
+        "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+        ["users", uid, JSON.stringify(userRecord), Date.now()]
+      );
+
+      return res.json({
+        success: true,
+        user: {
+          uid: userRecord.uid,
+          username: userRecord.username,
+          photoURL: userRecord.photoURL,
+        },
+      });
+    } catch (err: any) {
+      console.error("[Auth API] Register error:", err);
+      res.status(500).json({ error: err.message || "Failed to create account" });
+    }
+  });
+
+  // 2. Login with Username & Password
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, password } = req.body || {};
+      const trimmedUser = (username || "").trim();
+      const trimmedPwd = (password || "").trim();
+
+      if (!trimmedUser || !trimmedPwd) {
+        return res.status(400).json({ error: "Please enter both username and password." });
+      }
+
+      const db = await getDb();
+      const userRows = await db.all("SELECT id, data FROM records WHERE collection = 'users'");
+      
+      let matchedUser: any = null;
+      for (const row of userRows) {
+        try {
+          const u = JSON.parse(row.data);
+          if ((u.username || "").toLowerCase() === trimmedUser.toLowerCase()) {
+            matchedUser = u;
+            break;
+          }
+        } catch {}
+      }
+
+      if (!matchedUser) {
+        return res.status(401).json({ error: "Account not found. Please check your username or register a new account." });
+      }
+
+      if (matchedUser.authType === "google" && !matchedUser.passwordHash) {
+        return res.status(400).json({ error: "This account was created with Google Sign-In. Please click 'Sign in with Google'." });
+      }
+
+      const inputHash = hashAuthPassword(trimmedPwd, matchedUser.salt || "");
+      if (inputHash !== matchedUser.passwordHash) {
+        return res.status(401).json({ error: "Incorrect password. Please try again." });
+      }
+
+      return res.json({
+        success: true,
+        user: {
+          uid: matchedUser.uid,
+          username: matchedUser.username,
+          photoURL: matchedUser.photoURL,
+        },
+      });
+    } catch (err: any) {
+      console.error("[Auth API] Login error:", err);
+      res.status(500).json({ error: err.message || "Failed to sign in" });
+    }
+  });
+
+  // 3. Google Sign-In
+  app.post("/api/auth/google", async (req, res) => {
+    try {
+      const { credential, googleId, email, name, photoURL } = req.body || {};
+      let gId = googleId;
+      let gEmail = email;
+      let gName = name;
+      let gPhoto = photoURL;
+
+      // Parse JWT credential from Google Identity Services if passed
+      if (credential && typeof credential === "string") {
+        try {
+          const parts = credential.split(".");
+          if (parts.length === 3) {
+            const payloadJson = Buffer.from(parts[1], "base64").toString("utf-8");
+            const payload = JSON.parse(payloadJson);
+            gId = payload.sub || gId;
+            gEmail = payload.email || gEmail;
+            gName = payload.name || payload.given_name || gName;
+            gPhoto = payload.picture || gPhoto;
+          }
+        } catch (jwtErr) {
+          console.warn("[Auth API] JWT decode warning:", jwtErr);
+        }
+      }
+
+      if (!gId && !gEmail && !gName) {
+        return res.status(400).json({ error: "Missing Google identity details" });
+      }
+
+      const db = await getDb();
+      const userRows = await db.all("SELECT id, data FROM records WHERE collection = 'users'");
+
+      let existingUser: any = null;
+      for (const row of userRows) {
+        try {
+          const u = JSON.parse(row.data);
+          if ((gId && u.googleId === gId) || (gEmail && (u.email || "").toLowerCase() === gEmail.toLowerCase())) {
+            existingUser = u;
+            break;
+          }
+        } catch {}
+      }
+
+      if (existingUser) {
+        // Update photo if new
+        if (gPhoto && gPhoto !== existingUser.photoURL) {
+          existingUser.photoURL = gPhoto;
+          await db.run(
+            "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+            ["users", existingUser.uid, JSON.stringify(existingUser), Date.now()]
+          );
+        }
+
+        return res.json({
+          success: true,
+          user: {
+            uid: existingUser.uid,
+            username: existingUser.username,
+            photoURL: existingUser.photoURL,
+            email: existingUser.email,
+          },
+        });
+      }
+
+      // New Google User - Generate unique friendly username
+      let baseUsername = (gName || (gEmail ? gEmail.split("@")[0] : "GoogleUser"))
+        .replace(/[^a-zA-Z0-9_ ]/g, "")
+        .trim();
+      if (!baseUsername) baseUsername = "GoogleUser";
+      if (baseUsername.length > 18) baseUsername = baseUsername.slice(0, 18);
+
+      let finalUsername = baseUsername;
+      let counter = 1;
+      while (userRows.some((r: any) => {
+        try {
+          return JSON.parse(r.data).username?.toLowerCase() === finalUsername.toLowerCase();
+        } catch { return false; }
+      })) {
+        finalUsername = `${baseUsername.slice(0, 14)}${Math.floor(100 + Math.random() * 900)}`;
+        counter++;
+        if (counter > 10) break;
+      }
+
+      const uid = "usr_g_" + (gId ? gId.slice(-8) : crypto.randomBytes(4).toString("hex"));
+      const newUser = {
+        uid,
+        username: finalUsername,
+        email: gEmail || undefined,
+        photoURL: gPhoto || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(finalUsername)}`,
+        authType: "google",
+        googleId: gId || undefined,
+        createdAt: Date.now(),
+      };
+
+      await db.run(
+        "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+        ["users", uid, JSON.stringify(newUser), Date.now()]
+      );
+
+      return res.json({
+        success: true,
+        user: {
+          uid: newUser.uid,
+          username: newUser.username,
+          photoURL: newUser.photoURL,
+          email: newUser.email,
+        },
+      });
+    } catch (err: any) {
+      console.error("[Auth API] Google sign-in error:", err);
+      res.status(500).json({ error: err.message || "Failed to authenticate with Google" });
+    }
+  });
+
+  // 4. Update Profile
+  app.post("/api/auth/update-profile", async (req, res) => {
+    try {
+      const { uid, username, photoURL, currentPassword, newPassword } = req.body || {};
+      if (!uid) {
+        return res.status(400).json({ error: "Missing user identifier" });
+      }
+
+      const db = await getDb();
+      const row = await db.get("SELECT data FROM records WHERE collection = 'users' AND id = ?", [uid]);
+      if (!row) {
+        return res.status(404).json({ error: "User profile not found" });
+      }
+
+      const user = JSON.parse(row.data);
+
+      if (username && username.trim() !== user.username) {
+        const trimmed = username.trim();
+        if (trimmed.length < 2 || trimmed.length > 24) {
+          return res.status(400).json({ error: "Username must be between 2 and 24 characters." });
+        }
+        user.username = trimmed;
+      }
+
+      if (photoURL) {
+        user.photoURL = photoURL;
+      }
+
+      if (newPassword) {
+        if (user.authType === "password") {
+          const currentHash = hashAuthPassword(currentPassword || "", user.salt || "");
+          if (currentHash !== user.passwordHash) {
+            return res.status(401).json({ error: "Current password does not match." });
+          }
+        }
+        const newSalt = crypto.randomBytes(16).toString("hex");
+        user.salt = newSalt;
+        user.passwordHash = hashAuthPassword(newPassword.trim(), newSalt);
+      }
+
+      await db.run(
+        "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+        ["users", uid, JSON.stringify(user), Date.now()]
+      );
+
+      res.json({
+        success: true,
+        user: {
+          uid: user.uid,
+          username: user.username,
+          photoURL: user.photoURL,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ==========================================

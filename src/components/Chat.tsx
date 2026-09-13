@@ -318,12 +318,14 @@ export default function Chat({
   }, []);
 
   const handleProfileComplete = async (p: {
+    uid?: string;
     username: string;
     photoURL: string;
+    email?: string;
   }) => {
     const newProfile: ChatProfile = {
       uid:
-        profile?.uid || "user_" + Math.random().toString(36).substring(2, 11),
+        p.uid || profile?.uid || "user_" + Math.random().toString(36).substring(2, 11),
       username: p.username,
       photoURL: p.photoURL,
     };
@@ -376,8 +378,10 @@ export default function Chat({
               <ProfileSetup
                 initialUsername={profile?.username}
                 initialPhotoURL={profile?.photoURL}
+                currentUid={profile?.uid}
                 onComplete={handleProfileComplete}
                 onCancel={profile ? () => setActiveTab("chat") : undefined}
+                onLogout={handleLogoutProfile}
               />
             </div>
           ) : (
