@@ -159,9 +159,9 @@ export default function DirectCallModal() {
               </div>
 
               <h3 className="text-2xl font-bold text-white tracking-tight">{peerName}</h3>
-              <div className="flex items-center gap-2 mt-2 text-indigo-400 text-xs font-semibold px-3 py-1 rounded-full bg-indigo-950/60 border border-indigo-800/60">
-                <Volume2 size={14} className="animate-bounce" />
-                <span>Ringing (Playing ringtone.mp3)...</span>
+              <div className="flex items-center gap-2 mt-2 text-indigo-400 text-xs font-medium px-3 py-1 rounded-full bg-indigo-950/40 border border-indigo-800/40">
+                <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                <span>Calling...</span>
               </div>
               <p className="text-xs text-neutral-400 mt-2">Waiting for answer...</p>
             </div>

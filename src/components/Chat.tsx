@@ -575,9 +575,6 @@ export default function Chat({
                     <ChevronDown size={12} />
                     <span>DIRECT CALLS</span>
                   </div>
-                  <span className="text-[9px] text-emerald-400 bg-emerald-950/80 px-1.5 py-0.2 rounded font-semibold border border-emerald-800/50">
-                    Ringtone
-                  </span>
                 </div>
 
                 <div className="space-y-1 mt-0.5">

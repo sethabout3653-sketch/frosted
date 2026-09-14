@@ -618,19 +618,22 @@ const PORT = 3000;
   // Dedicated WebRTC Signaling Endpoints (Zero-delay P2P negotiation)
   app.post("/api/webrtc/signal", async (req, res) => {
     try {
-      const { uid, targetUid, type, sdp, candidate, timestamp } = req.body || {};
-      if (!uid || !targetUid || !type) {
+      const body = req.body || {};
+      const uid = body.uid || body.caller?.uid;
+      const targetUid = body.targetUid || body.target?.uid || "all";
+      const type = body.type;
+
+      if (!uid || !type) {
         return res.status(400).json({ error: "Missing required signal fields" });
       }
 
       const sigObj = {
-        id: req.body?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
+        ...body,
+        id: body.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid,
         targetUid,
         type,
-        sdp: sdp || undefined,
-        candidate: candidate || undefined,
-        timestamp: timestamp || Date.now(),
+        timestamp: body.timestamp || Date.now(),
       };
 
       const db = await getDb();

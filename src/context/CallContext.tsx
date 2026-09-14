@@ -295,6 +295,8 @@ export function CallProvider({
         id: `invite_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         callId,
         type: "call_invite",
+        uid: profile.uid,
+        targetUid: target.uid,
         caller: {
           uid: profile.uid,
           username: profile.username,
@@ -588,17 +590,23 @@ export function CallProvider({
 
       // 1. Incoming Call Invite
       if (sig.type === "call_invite") {
-        if (sig.target?.uid === profile.uid && sig.caller?.uid !== profile.uid) {
-          // If we are already in another call, decline or ignore
+        const targetUid = sig.targetUid || sig.target?.uid;
+        const callerUid = sig.uid || sig.caller?.uid;
+
+        if (targetUid === profile.uid && callerUid && callerUid !== profile.uid) {
+          // If we are already in another call, ignore
           if (callStateRef.current !== "idle") {
             return;
           }
 
+          const callerName = sig.caller?.username || sig.callerName || "User";
+          const callerPhoto = sig.caller?.photoURL || sig.callerPhoto || "";
+
           const callSession: DirectCallSession = {
-            id: sig.callId,
-            callerUid: sig.caller.uid,
-            callerName: sig.caller.username,
-            callerPhoto: sig.caller.photoURL,
+            id: sig.callId || `call_${callerUid}_${profile.uid}_${Date.now()}`,
+            callerUid,
+            callerName,
+            callerPhoto,
             targetUid: profile.uid,
             targetName: profile.username,
             targetPhoto: profile.photoURL,
@@ -611,8 +619,8 @@ export function CallProvider({
           setCallRole("receiver");
           setCallState("ringing");
 
-          // Start looping ringtone.mp3 for recipient!
-          await callAudio.startRingtone();
+          // Start looping ringtone.mp3 for recipient
+          callAudio.startRingtone();
 
           // 35s timeout if unhandled
           if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
@@ -746,6 +754,32 @@ export function CallProvider({
       snapshot.forEach((callDoc: any) => {
         const data = callDoc.data() as DirectCallSession;
         if (!data) return;
+
+        // Fallback: Detect incoming ringing call
+        if (
+          data.status === "ringing" &&
+          data.callerUid !== profile.uid &&
+          callStateRef.current === "idle" &&
+          (data.createdAt || 0) > Date.now() - 35000
+        ) {
+          const callSession: DirectCallSession = {
+            id: data.id || callDoc.id,
+            callerUid: data.callerUid,
+            callerName: data.callerName || "User",
+            callerPhoto: data.callerPhoto || "",
+            targetUid: profile.uid,
+            targetName: profile.username,
+            targetPhoto: profile.photoURL,
+            status: "ringing",
+            isVideoCall: !!data.isVideoCall,
+            createdAt: data.createdAt || Date.now(),
+          };
+
+          setActiveCall(callSession);
+          setCallRole("receiver");
+          setCallState("ringing");
+          callAudio.startRingtone();
+        }
 
         // Clean up stale or ended calls
         if (data.status === "ended" || data.status === "declined" || data.status === "cancelled") {

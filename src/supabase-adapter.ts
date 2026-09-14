@@ -561,8 +561,12 @@ webrtcBroadcastChannel.subscribe();
 const userSignalChannels = new Map<string, any>();
 
 export function sendBroadcastSignal(payload: any) {
+  const targetUid = payload.targetUid || payload.target?.uid || "all";
+  const uid = payload.uid || payload.caller?.uid || "";
   const sig = {
     ...payload,
+    uid,
+    targetUid,
     id: payload.id || `sig_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     timestamp: payload.timestamp || Date.now(),
   };
@@ -608,8 +612,10 @@ export function subscribeBroadcastSignals(
 
   const handleSignal = (sig: any) => {
     if (!sig || !sig.id) return;
-    if (sig.uid === myUid) return; // ignore own signals
-    if (sig.targetUid !== "all" && sig.targetUid !== myUid) return; // not for me
+    const senderUid = sig.uid || sig.caller?.uid;
+    const targetUid = sig.targetUid || sig.target?.uid || "all";
+    if (senderUid === myUid) return; // ignore own signals
+    if (targetUid !== "all" && targetUid !== myUid) return; // not for me
     if (processedSignals.has(sig.id)) return;
     processedSignals.add(sig.id);
     onSignal(sig);
@@ -634,7 +640,7 @@ export function subscribeBroadcastSignals(
     }
   );
 
-  // 3. Server fallback polling for cross-network reliability
+  // 3. Fast server fallback polling for guaranteed cross-network arrival
   const interval = setInterval(async () => {
     try {
       const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}`);
@@ -646,7 +652,7 @@ export function subscribeBroadcastSignals(
         }
       }
     } catch (e) {}
-  }, 2000);
+  }, 1000);
 
   return () => {
     clearInterval(interval);

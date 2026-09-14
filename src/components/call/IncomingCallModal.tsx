@@ -1,5 +1,5 @@
 import React from "react";
-import { Phone, PhoneOff, Video, Volume2 } from "lucide-react";
+import { Phone, PhoneOff, Video } from "lucide-react";
 import { useCall } from "../../context/CallContext";
 
 export default function IncomingCallModal() {
@@ -12,7 +12,7 @@ export default function IncomingCallModal() {
   return (
     <div
       id="incoming-call-overlay"
-      className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center p-4 pt-12 sm:pt-4 bg-black/70 backdrop-blur-md animate-in fade-in zoom-in-95 duration-200"
+      className="fixed inset-0 z-[99999] flex items-start sm:items-center justify-center p-4 pt-12 sm:pt-4 bg-black/80 backdrop-blur-lg animate-in fade-in zoom-in-95 duration-200"
     >
       <div
         id="incoming-call-card"
@@ -21,12 +21,6 @@ export default function IncomingCallModal() {
         {/* Ambient background pulsing glow */}
         <div className="absolute -top-24 -left-24 w-52 h-52 bg-emerald-500/20 rounded-full blur-3xl pointer-events-none animate-pulse" />
         <div className="absolute -bottom-24 -right-24 w-52 h-52 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none animate-pulse" />
-
-        {/* Ringtone badge */}
-        <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-neutral-900 border border-neutral-800 text-[11px] font-semibold text-emerald-400 mb-4 shadow-sm">
-          <Volume2 size={13} className="animate-bounce" />
-          <span>Ringtone Playing</span>
-        </div>
 
         {/* Avatar with pulsing wave rings */}
         <div className="relative my-3">
@@ -64,7 +58,7 @@ export default function IncomingCallModal() {
         </p>
 
         {/* Action Buttons: Accept / Decline */}
-        <div className="flex items-center justify-center gap-6 mt-8 w-full">
+        <div className="flex items-center justify-center gap-8 mt-8 w-full">
           {/* Decline Button */}
           <div className="flex flex-col items-center gap-2">
             <button
@@ -75,20 +69,20 @@ export default function IncomingCallModal() {
             >
               <PhoneOff size={22} />
             </button>
-            <span className="text-[11px] font-medium text-neutral-400">Decline</span>
+            <span className="text-[12px] font-semibold text-rose-400">Decline</span>
           </div>
 
-          {/* Accept Button */}
+          {/* Accept / Answer Button */}
           <div className="flex flex-col items-center gap-2">
             <button
               id="accept-call-btn"
               onClick={acceptCall}
               className="w-14 h-14 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-emerald-600/40 transition-all animate-bounce cursor-pointer"
-              title="Accept Call"
+              title="Answer Call"
             >
               <Phone size={22} />
             </button>
-            <span className="text-[11px] font-medium text-neutral-400">Accept</span>
+            <span className="text-[12px] font-semibold text-emerald-400">Answer</span>
           </div>
         </div>
       </div>
