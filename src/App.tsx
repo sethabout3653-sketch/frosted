@@ -15,8 +15,9 @@ import IncomingCallModal from "./components/call/IncomingCallModal";
 import DirectCallModal from "./components/call/DirectCallModal";
 import CallPipWidget from "./components/call/CallPipWidget";
 import StartCallModal from "./components/call/StartCallModal";
-import { getSavedChatProfile, subscribeProfileUpdates } from "./utils/profile";
+import { getOrCreateChatProfile, subscribeProfileUpdates } from "./utils/profile";
 import { ChatProfile } from "./types";
+import { db, doc, setDoc, deleteDoc, serverTimestamp } from "./supabase-adapter";
 
 const SOUNDBOARD_GAME: Game = {
   id: "soundboard",
@@ -90,14 +91,67 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [userProfile, setUserProfile] = useState<ChatProfile | null>(() => getSavedChatProfile());
+  const [userProfile, setUserProfile] = useState<ChatProfile>(() => getOrCreateChatProfile());
   const [isStartCallOpen, setIsStartCallOpen] = useState(false);
 
   useEffect(() => {
     return subscribeProfileUpdates((p) => {
-      setUserProfile(p);
+      if (p) {
+        setUserProfile(p);
+      }
     });
   }, []);
+
+  // Global Presence Heartbeat: Keeps user reachable for direct calls across Games, Home, and Chat
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    const presenceRef = doc(db, "presence", userProfile.uid);
+
+    const updatePresence = async () => {
+      try {
+        let activity = "Browsing Games";
+        if (selectedGame) {
+          activity = `Playing ${selectedGame.name}`;
+        } else if (currentView === "chat") {
+          activity = "In Chat";
+        }
+
+        await setDoc(
+          presenceRef,
+          {
+            uid: userProfile.uid,
+            username: userProfile.username,
+            photoURL: userProfile.photoURL || "",
+            status: "online",
+            activity,
+            currentGame: selectedGame?.name || null,
+            currentView,
+            lastSeen: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn("Global presence update error:", err);
+      }
+    };
+
+    updatePresence();
+    const interval = setInterval(updatePresence, 12000); // 12-second periodic heartbeat
+
+    const handleUnload = () => {
+      deleteDoc(presenceRef).catch(() => {});
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+    };
+  }, [userProfile, selectedGame, currentView]);
 
   useEffect(() => {
     // Automatically restore saved tab cloak on initial mount
@@ -265,6 +319,7 @@ export default function App() {
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
+              onOpenCall={() => setIsStartCallOpen(true)}
             />
           )}
         </div>

@@ -243,6 +243,7 @@ export function query(colName: string, ...constraints: any[]) { return { colName
 export function where(field: string, op: string, value: any) { return { type: "where", field, op, value }; }
 export function orderBy(field: string, direction: "asc" | "desc" = "asc") { return { type: "orderBy", field, direction }; }
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
+export function serverTimestamp() { return Date.now(); }
 
 // =========================================================
 // Real-Time Supabase Engine Manager (Broadcast + Realtime Postgres)

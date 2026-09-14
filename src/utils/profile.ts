@@ -1,5 +1,22 @@
 import { ChatProfile } from "../types";
 
+export function getOrCreateChatProfile(): ChatProfile {
+  const existing = getSavedChatProfile();
+  if (existing) return existing;
+
+  const randomNum = Math.floor(1000 + Math.random() * 9000);
+  const guestName = `Guest_${randomNum}`;
+  const guestUid = `user_guest_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const guestProfile: ChatProfile = {
+    uid: guestUid,
+    username: guestName,
+    photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${guestUid}`,
+  };
+
+  saveChatProfile(guestProfile);
+  return guestProfile;
+}
+
 export function getSavedChatProfile(): ChatProfile | null {
   try {
     if (typeof window === "undefined") return null;
@@ -64,3 +81,4 @@ export function subscribeProfileUpdates(callback: (profile: ChatProfile | null) 
     window.removeEventListener("storage", handleStorage);
   };
 }
+

@@ -3,10 +3,18 @@ import { Phone, Video, X } from "lucide-react";
 import { useCall } from "../../context/CallContext";
 import { db, collection, onSnapshot, toTimestampMs } from "../../supabase-adapter";
 
+interface OnlineUser {
+  uid: string;
+  username: string;
+  photoURL: string;
+  activity?: string;
+  currentGame?: string | null;
+}
+
 interface StartCallModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onlineUsers?: Array<{ uid: string; username: string; photoURL: string }>;
+  onlineUsers?: OnlineUser[];
   currentUid?: string;
 }
 
@@ -17,14 +25,14 @@ export default function StartCallModal({
   currentUid,
 }: StartCallModalProps) {
   const { startCall } = useCall();
-  const [presenceUsers, setPresenceUsers] = useState<Array<{ uid: string; username: string; photoURL: string }>>([]);
+  const [presenceUsers, setPresenceUsers] = useState<OnlineUser[]>([]);
 
   useEffect(() => {
     if (!isOpen) return;
 
     const unsub = onSnapshot(collection(db, "presence"), (snapshot) => {
       const now = Date.now();
-      const users: Array<{ uid: string; username: string; photoURL: string }> = [];
+      const users: OnlineUser[] = [];
       snapshot.docs.forEach((doc: any) => {
         const data = doc.data();
         const ts = toTimestampMs(data.lastSeen);
@@ -33,6 +41,8 @@ export default function StartCallModal({
             uid: data.uid || doc.id,
             username: data.username,
             photoURL: data.photoURL || "",
+            activity: data.activity || (data.currentGame ? `Playing ${data.currentGame}` : "Online"),
+            currentGame: data.currentGame,
           });
         }
       });
@@ -66,7 +76,7 @@ export default function StartCallModal({
             </div>
             <div>
               <h3 className="text-base font-bold text-white tracking-tight">Start a Call</h3>
-              <p className="text-[11px] text-neutral-400">Direct audio & video with ringtone</p>
+              <p className="text-[11px] text-neutral-400">Direct voice & video with ringtone</p>
             </div>
           </div>
           <button
@@ -108,7 +118,12 @@ export default function StartCallModal({
                       </div>
                       <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#0e0e12]" />
                     </div>
-                    <span className="text-xs font-bold text-neutral-200 truncate">{user.username}</span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-neutral-200 truncate">{user.username}</p>
+                      <p className="text-[10px] text-emerald-400/90 font-medium truncate">
+                        {user.activity || "Online"}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1.5">
