@@ -46,7 +46,7 @@ export default function CallPipWidget() {
       aria-label="Active Call Preview"
       className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-[#0d0d11]/95 border border-neutral-800 p-2.5 pr-4 rounded-2xl shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom-5 duration-200"
     >
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ position: "absolute", width: "1px", height: "1px", opacity: 0.01, pointerEvents: "none" }} />
 
       {/* Avatar & Pulse Indicator */}
       <div className="relative flex-shrink-0">

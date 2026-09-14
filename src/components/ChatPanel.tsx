@@ -55,6 +55,9 @@ interface MemberUser {
   photoURL: string;
   lastSeen?: number;
   status?: "online" | "left" | "offline";
+  activity?: string;
+  currentGame?: string | null;
+  currentView?: string;
   isMuted?: boolean;
   inVoice?: boolean;
 }
@@ -334,6 +337,9 @@ export default function ChatPanel({
             photoURL: data.photoURL || "",
             status: data.status || "online",
             lastSeen: toTimestampMs(data.lastSeen),
+            activity: (data as any).activity || ((data as any).currentGame ? `Playing ${(data as any).currentGame}` : (data as any).currentView === "chat" ? "In Chat" : "Browsing Games"),
+            currentGame: (data as any).currentGame || null,
+            currentView: (data as any).currentView || undefined,
             isMuted: data.isMuted || false,
             inVoice: data.inVoice || false,
           });
@@ -1431,9 +1437,9 @@ export default function ChatPanel({
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-neutral-500 font-medium">
-                            Online
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] text-neutral-400 font-medium truncate max-w-[120px]" title={user.activity || (user.currentGame ? `Playing ${user.currentGame}` : "Online")}>
+                            {user.activity || (user.currentGame ? `Playing ${user.currentGame}` : "Online")}
                           </span>
                           {isInVoice && (
                             <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-1 py-0.2 rounded">

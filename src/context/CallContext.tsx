@@ -137,61 +137,100 @@ export function CallProvider({
     callStateRef.current = callState;
   }, [callState]);
 
-  // Robust media acquisition helper with multi-tier fallbacks
-  const acquireMediaStream = useCallback(async (isVideo: boolean): Promise<MediaStream> => {
-    if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      // 1. Try requested audio + video
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: isVideo ? { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" } : false,
-        });
-        return stream;
-      } catch (err1) {
-        console.warn("[Media] Full constraint failed, attempting audio-only:", err1);
+  // Helper to create a lightweight 16x16 black canvas video track for pre-negotiated video transceivers
+  const createPlaceholderVideoTrack = useCallback((): MediaStreamTrack | null => {
+    try {
+      if (typeof document === "undefined") return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = 16;
+      canvas.height = 16;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, 16, 16);
       }
+      const stream = (canvas as any).captureStream ? (canvas as any).captureStream(1) : null;
+      if (stream) {
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          track.enabled = false;
+          return track;
+        }
+      }
+    } catch (e) {
+      console.warn("[Media] Placeholder video track creation failed:", e);
+    }
+    return null;
+  }, []);
 
-      // 2. Try audio-only if video failed
-      if (isVideo) {
+  // Robust media acquisition helper with multi-tier fallbacks.
+  // ALWAYS provides both an audio track and a video track (real or placeholder)
+  // so WebRTC SDP negotiates full video & audio transceivers from second 1.
+  const acquireMediaStream = useCallback(
+    async (wantVideo: boolean): Promise<MediaStream> => {
+      let audioTrack: MediaStreamTrack | null = null;
+      let videoTrack: MediaStreamTrack | null = null;
+
+      // 1. Acquire microphone audio
+      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
             video: false,
           });
-          return audioStream;
-        } catch (err2) {
-          console.warn("[Media] Audio-only fallback failed:", err2);
+          audioTrack = audioStream.getAudioTracks()[0] || null;
+        } catch (err1) {
+          try {
+            const basicAudio = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            audioTrack = basicAudio.getAudioTracks()[0] || null;
+          } catch (err2) {
+            console.warn("[Media] Audio capture failed:", err2);
+          }
         }
       }
 
-      // 3. Try standard basic audio constraint
-      try {
-        const basicAudio = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        return basicAudio;
-      } catch (err3) {
-        console.warn("[Media] Basic audio failed:", err3);
+      // 2. Fallback synthetic audio track if mic capture fails
+      if (!audioTrack) {
+        try {
+          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioCtx) {
+            const ctx = new AudioCtx();
+            const osc = ctx.createOscillator();
+            const dst = ctx.createMediaStreamDestination();
+            osc.connect(dst);
+            osc.start();
+            audioTrack = dst.stream.getAudioTracks()[0] || null;
+            if (audioTrack) audioTrack.enabled = false;
+          }
+        } catch (e) {
+          console.warn("[Media] Synthetic audio stream fallback error:", e);
+        }
       }
-    }
 
-    // 4. Fallback: Generate synthetic silent audio stream to keep WebRTC pipeline unbroken
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioCtx) {
-        const ctx = new AudioCtx();
-        const osc = ctx.createOscillator();
-        const dst = ctx.createMediaStreamDestination();
-        osc.connect(dst);
-        osc.start();
-        const track = dst.stream.getAudioTracks()[0];
-        if (track) track.enabled = false;
-        return dst.stream;
+      // 3. Acquire video track (real camera if requested, otherwise lightweight placeholder)
+      if (wantVideo && typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+          });
+          videoTrack = videoStream.getVideoTracks()[0] || null;
+        } catch (errV) {
+          console.warn("[Media] Camera acquisition failed, falling back to placeholder:", errV);
+        }
       }
-    } catch (e) {
-      console.warn("[Media] Synthetic audio stream fallback error:", e);
-    }
 
-    return new MediaStream();
-  }, []);
+      if (!videoTrack) {
+        videoTrack = createPlaceholderVideoTrack();
+      }
+
+      const resultStream = new MediaStream();
+      if (audioTrack) resultStream.addTrack(audioTrack);
+      if (videoTrack) resultStream.addTrack(videoTrack);
+
+      return resultStream;
+    },
+    [createPlaceholderVideoTrack]
+  );
 
   // Clean up streams on unmount
   const stopLocalMedia = useCallback(() => {
@@ -777,7 +816,8 @@ export function CallProvider({
     const isCurrentlyOn = isVideoOn;
 
     if (isCurrentlyOn) {
-      // Turn video off
+      // Turn video off: stop camera track & replace with lightweight placeholder video track
+      const phTrack = createPlaceholderVideoTrack();
       if (localStreamRef.current) {
         const vTracks = localStreamRef.current.getVideoTracks();
         vTracks.forEach((t) => {
@@ -786,14 +826,15 @@ export function CallProvider({
             localStreamRef.current?.removeTrack(t);
           } catch (e) {}
         });
+        if (phTrack) localStreamRef.current.addTrack(phTrack);
         setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
       }
 
-      if (videoTransceiverRef.current?.sender) {
+      if (videoTransceiverRef.current?.sender && phTrack) {
         try {
-          await videoTransceiverRef.current.sender.replaceTrack(null);
+          await videoTransceiverRef.current.sender.replaceTrack(phTrack);
         } catch (e) {
-          console.warn("[WebRTC] replaceTrack null error:", e);
+          console.warn("[WebRTC] replaceTrack placeholder error:", e);
         }
       }
 
@@ -814,7 +855,7 @@ export function CallProvider({
         });
       }
     } else {
-      // Turn video on
+      // Turn video on: acquire real camera track & replace transceiver track
       try {
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
@@ -826,7 +867,12 @@ export function CallProvider({
             curr = new MediaStream();
             localStreamRef.current = curr;
           }
-          curr.getVideoTracks().forEach((t) => curr?.removeTrack(t));
+          curr.getVideoTracks().forEach((t) => {
+            try {
+              t.stop();
+              curr?.removeTrack(t);
+            } catch (e) {}
+          });
           curr.addTrack(newTrack);
           setLocalStream(new MediaStream(curr.getTracks()));
 
@@ -859,7 +905,7 @@ export function CallProvider({
         console.warn("Cannot enable camera:", err);
       }
     }
-  }, [isVideoOn, isMuted, profile]);
+  }, [isVideoOn, isMuted, profile, createPlaceholderVideoTrack]);
 
   const stopScreenShare = useCallback(async () => {
     setIsScreenSharing(false);
@@ -886,16 +932,23 @@ export function CallProvider({
       screenStreamRef.current = null;
     }
 
-    // Restore video track back to camera if enabled or null
-    const camTrack = localStreamRef.current?.getVideoTracks()[0] || null;
-    if (videoTransceiverRef.current?.sender) {
+    // Restore video track back to camera if camera is on, or placeholder video track
+    let restoreVideoTrack = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === "live") || null;
+    if (!restoreVideoTrack) {
+      restoreVideoTrack = createPlaceholderVideoTrack();
+      if (restoreVideoTrack && localStreamRef.current) {
+        localStreamRef.current.addTrack(restoreVideoTrack);
+      }
+    }
+
+    if (videoTransceiverRef.current?.sender && restoreVideoTrack) {
       try {
-        await videoTransceiverRef.current.sender.replaceTrack(camTrack);
+        await videoTransceiverRef.current.sender.replaceTrack(restoreVideoTrack);
       } catch (e) {}
     }
 
     // Restore audio track back to direct mic stream or mixed mic
-    const micTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+    const micTrack = localStreamRef.current?.getAudioTracks().find((t) => t.readyState === "live") || null;
     if (micTrack && audioTransceiverRef.current?.sender) {
       try {
         await audioTransceiverRef.current.sender.replaceTrack(micTrack);
@@ -917,7 +970,7 @@ export function CallProvider({
         timestamp: Date.now(),
       });
     }
-  }, [activeCall, isVideoOn, profile]);
+  }, [activeCall, isVideoOn, profile, createPlaceholderVideoTrack]);
 
   // Set up Web Audio mixing node for combining mic and screen audio
   const setupMixedAudio = useCallback((micTrack: MediaStreamTrack | null, screenAudioTrack: MediaStreamTrack | null) => {

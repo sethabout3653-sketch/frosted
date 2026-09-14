@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } fr
 import { Game } from "./types";
 import { fetchGamesList, getUniqueTags, isFnfGame, isFnfMod, deduplicateGames } from "./utils";
 import { fetchLuminGames, getLocalLuminGames, fetchLuminSessionId, getLocalLuminGamesWithSession } from "./lumin";
-import Header from "./components/Header";
+import Header, { OnlineUser } from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
@@ -17,7 +17,7 @@ import CallPipWidget from "./components/call/CallPipWidget";
 import StartCallModal from "./components/call/StartCallModal";
 import { getOrCreateChatProfile, subscribeProfileUpdates } from "./utils/profile";
 import { ChatProfile } from "./types";
-import { db, doc, setDoc, deleteDoc, serverTimestamp } from "./supabase-adapter";
+import { db, doc, setDoc, deleteDoc, serverTimestamp, collection, onSnapshot, toTimestampMs } from "./supabase-adapter";
 
 const SOUNDBOARD_GAME: Game = {
   id: "soundboard",
@@ -93,6 +93,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [userProfile, setUserProfile] = useState<ChatProfile>(() => getOrCreateChatProfile());
   const [isStartCallOpen, setIsStartCallOpen] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
 
   useEffect(() => {
     return subscribeProfileUpdates((p) => {
@@ -101,6 +102,51 @@ export default function App() {
       }
     });
   }, []);
+
+  // Global Real-time Presence Subscription
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "presence"),
+      (snapshot) => {
+        const now = Date.now();
+        const userMap = new Map<string, OnlineUser>();
+
+        snapshot.docs.forEach((docSnap: any) => {
+          const data = docSnap.data();
+          const uname = (data.username || "").trim();
+          if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") return;
+
+          const ts = toTimestampMs(data.lastSeen || data.timestamp);
+          const isMe = userProfile?.uid && (data.uid === userProfile.uid || docSnap.id === userProfile.uid);
+          const isRecent = ts > 0 && now - ts <= 60000;
+          const isOnline = isMe || (isRecent && data.status !== "left");
+
+          if (isOnline) {
+            const uid = data.uid || docSnap.id;
+            const existing = userMap.get(uid);
+            if (!existing || (ts || 0) > (existing.lastSeen || 0) || isMe) {
+              userMap.set(uid, {
+                uid,
+                username: uname,
+                photoURL: data.photoURL || "",
+                activity: data.activity || (data.currentGame ? `Playing ${data.currentGame}` : data.currentView === "chat" ? "In Chat" : "Browsing Games"),
+                currentGame: data.currentGame || null,
+                currentView: data.currentView || undefined,
+                lastSeen: ts,
+              });
+            }
+          }
+        });
+
+        setOnlineUsers(Array.from(userMap.values()));
+      },
+      (err) => {
+        console.warn("Global presence listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, [userProfile?.uid]);
 
   // Global Presence Heartbeat: Keeps user reachable for direct calls across Games, Home, and Chat
   useEffect(() => {
@@ -306,6 +352,8 @@ export default function App() {
         selectedTag={selectedTag}
         setSelectedTag={setSelectedTag}
         tags={tags}
+        onlineUsers={onlineUsers}
+        currentUid={userProfile?.uid}
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
         onOpenSettings={() => setIsSettingsOpen(true)}
@@ -384,6 +432,7 @@ export default function App() {
       <StartCallModal
         isOpen={isStartCallOpen}
         onClose={() => setIsStartCallOpen(false)}
+        onlineUsers={onlineUsers}
         currentUid={userProfile?.uid}
       />
 

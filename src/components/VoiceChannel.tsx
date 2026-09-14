@@ -261,8 +261,7 @@ export default function VoiceChannel({
       .filter((p) => {
         if (!p || !p.uid) return false;
         const uName = (p.username || "").trim();
-        // Strictly ban Anonymous or empty users from appearing in voice chat
-        if (!uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+        if (!uName) {
           return false;
         }
         // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
@@ -532,44 +531,76 @@ export default function VoiceChannel({
 
   // Acquire studio microphone stream with hardware/browser noise suppression, acoustic echo cancellation, and auto gain
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
-    try {
-      const constraints: MediaStreamConstraints = {
-        audio: {
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
-          channelCount: { ideal: 1 },
-          sampleRate: { ideal: 48000 },
-          sampleSize: { ideal: 16 },
-          // Enhanced noise suppression & acoustic echo cancellation flags for Chromium/WebKit/Blink
-          ...({
-            echoCancellationType: "system",
-            googEchoCancellation: true,
-            googExperimentalEchoCancellation: true,
-            googAutoGainControl: true,
-            googExperimentalAutoGainControl: true,
-            googNoiseSuppression: true,
-            googExperimentalNoiseSuppression: true,
-            googHighpassFilter: true,
-            googNoiseReduction: true,
-            googTypingNoiseDetection: true,
-            googAudioMirroring: false,
-          } as any),
-        },
-        video: false,
-      };
-      return await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (err) {
-      console.warn("Standard mic constraints failed, using fallback:", err);
-      return await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
+    if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const constraints: MediaStreamConstraints = {
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
+            sampleSize: { ideal: 16 },
+            // Enhanced noise suppression & acoustic echo cancellation flags for Chromium/WebKit/Blink
+            ...({
+              echoCancellationType: "system",
+              googEchoCancellation: true,
+              googExperimentalEchoCancellation: true,
+              googAutoGainControl: true,
+              googExperimentalAutoGainControl: true,
+              googNoiseSuppression: true,
+              googExperimentalNoiseSuppression: true,
+              googHighpassFilter: true,
+              googNoiseReduction: true,
+              googTypingNoiseDetection: true,
+              googAudioMirroring: false,
+            } as any),
+          },
+          video: false,
+        };
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        console.warn("Standard mic constraints failed, using fallback:", err);
+      }
+
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+      } catch (err2) {
+        console.warn("Basic mic constraints failed:", err2);
+      }
+
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (err3) {
+        console.warn("Audio=true failed:", err3);
+      }
     }
+
+    // Fallback: Generate synthetic silent audio stream to keep WebRTC pipeline unbroken
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const dst = ctx.createMediaStreamDestination();
+        osc.connect(dst);
+        osc.start();
+        const track = dst.stream.getAudioTracks()[0];
+        if (track) track.enabled = false;
+        return dst.stream;
+      }
+    } catch (e) {
+      console.warn("[VoiceChannel] Synthetic audio fallback error:", e);
+    }
+
+    return new MediaStream();
   }, []);
 
   // Connect microphone to live Web Audio pipeline for speech/sound analysis, noise cleanup & visual VAD
@@ -1645,13 +1676,8 @@ export default function VoiceChannel({
 
         localStreamRef.current = stream;
 
-        // Register self as active participant (strictly reject anonymous/empty username)
-        const myCleanUsername = (profile.username || "").trim();
-        if (!myCleanUsername || myCleanUsername.toLowerCase() === "anonymous" || myCleanUsername.toLowerCase() === "guest") {
-          console.warn("Cannot join voice channel with anonymous username.");
-          stopAllMediaTracks();
-          return;
-        }
+        // Register self as active participant
+        const myCleanUsername = (profile.username || "").trim() || `User_${profile.uid.slice(-4)}`;
 
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
@@ -1696,22 +1722,22 @@ export default function VoiceChannel({
           // 1. Process voice_users collection
           latestVoiceDocs.forEach((d) => {
             const u = d.data() as Participant;
-            const uName = (u?.username || "").trim();
-            if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+            const uName = (u?.username || "").trim() || (u?.uid ? `User_${u.uid.slice(-4)}` : "");
+            if (!u?.uid || !uName) {
               return;
             }
             let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
             if (ts <= 0) ts = now;
             if (now - ts <= 120000) {
-              userMap.set(u.uid, { ...u, timestamp: ts });
+              userMap.set(u.uid, { ...u, username: uName, timestamp: ts });
             }
           });
 
           // 2. Process presence collection for any user marked inVoice
           latestPresenceDocs.forEach((d) => {
             const pData = d.data();
-            const uName = (pData?.username || "").trim();
-            if (!pData?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
+            const uName = (pData?.username || "").trim() || (pData?.uid ? `User_${pData.uid.slice(-4)}` : "");
+            if (!pData?.uid || !uName) {
               return;
             }
             if (pData.inVoice) {

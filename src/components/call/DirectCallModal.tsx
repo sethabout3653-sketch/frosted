@@ -94,7 +94,7 @@ export default function DirectCallModal() {
       id="direct-call-overlay"
       className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200"
     >
-      {/* Hidden audio element for remote WebRTC audio */}
+      {/* Dedicated audio element for remote WebRTC audio */}
       <audio
         ref={(el) => {
           remoteAudioRef.current = el;
@@ -107,6 +107,7 @@ export default function DirectCallModal() {
         }}
         autoPlay
         playsInline
+        style={{ position: "absolute", width: "1px", height: "1px", opacity: 0.01, pointerEvents: "none" }}
       />
 
       <div
@@ -206,6 +207,7 @@ export default function DirectCallModal() {
                   }}
                   autoPlay
                   playsInline
+                  muted={true}
                   className="w-full h-full object-contain max-w-full max-h-full"
                 />
                 {peerMuted && (
