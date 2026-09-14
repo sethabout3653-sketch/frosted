@@ -1,9 +1,12 @@
-// High-fidelity Web Audio sound synthesizer for Discord ringtones and call sounds
-// Works 100% offline, zero network latency, with clean looping and instant start/stop.
+// High-fidelity Web Audio & Custom Audio sound manager for Discord ringtones and call sounds
+// Works offline, respects user's custom ringtone in Settings, zero noise clutter, instant stop on missed calls.
 
 let audioCtx: AudioContext | null = null;
 let incomingRingtoneInterval: any = null;
 let outgoingRingInterval: any = null;
+let currentRingtoneAudio: HTMLAudioElement | null = null;
+let missedCallAudio: HTMLAudioElement | null = null;
+let joinCallAudio: HTMLAudioElement | null = null;
 
 function getAudioContext(): AudioContext {
   if (!audioCtx || audioCtx.state === "closed") {
@@ -31,8 +34,13 @@ const NOTES: Record<string, number> = {
   G5: 783.99,
 };
 
-// Plays a synth chime bell note matching the Discord ringtone timbre
-function playDiscordBell(ctx: AudioContext, freq: number, startTime: number, duration: number = 0.35, gainMult: number = 0.35) {
+function playDiscordBell(
+  ctx: AudioContext,
+  freq: number,
+  startTime: number,
+  duration: number = 0.35,
+  gainMult: number = 0.35
+) {
   try {
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
@@ -41,7 +49,6 @@ function playDiscordBell(ctx: AudioContext, freq: number, startTime: number, dur
     osc1.type = "sine";
     osc1.frequency.setValueAtTime(freq, startTime);
 
-    // Subtle FM harmonics for bright bell-like Discord ringtone sound
     osc2.type = "triangle";
     osc2.frequency.setValueAtTime(freq * 2.005, startTime);
 
@@ -60,57 +67,43 @@ function playDiscordBell(ctx: AudioContext, freq: number, startTime: number, dur
   } catch (e) {}
 }
 
+let currentOutgoingAudio: HTMLAudioElement | null = null;
+
 export function playIncomingRingtone() {
   stopIncomingRingtone();
-  const ctx = getAudioContext();
 
-  const playSequence = () => {
-    const now = ctx.currentTime;
-    const tempo = 0.17; // Note spacing
+  // 1. Check if user configured a custom ringtone in Settings, or use default Discord ringtone
+  try {
+    const ringtoneType = localStorage.getItem("custom_ringtone_type") || "default";
+    const customData = localStorage.getItem("custom_ringtone_data");
+    const customUrl = localStorage.getItem("custom_ringtone_url");
+    const savedVolume = parseFloat(localStorage.getItem("custom_ringtone_volume") || "0.85");
 
-    // Discord incoming call pattern
-    const pattern = [
-      { note: "C5", time: 0 },
-      { note: "D5", time: 1 },
-      { note: "G4", time: 2 },
-      { note: "C5", time: 3 },
-      { note: "D5", time: 4 },
-      { note: "G4", time: 5 },
+    let audioSrc: string = "/audio/discord-ringtone.mp3";
 
-      { note: "C5", time: 7 },
-      { note: "D5", time: 8 },
-      { note: "F4", time: 9 },
-      { note: "C5", time: 10 },
-      { note: "D5", time: 11 },
-      { note: "F4", time: 12 },
+    if (ringtoneType === "custom_file" && customData) {
+      audioSrc = customData;
+    } else if (ringtoneType === "custom_url" && customUrl) {
+      audioSrc = customUrl;
+    } else if (ringtoneType === "discord_sound") {
+      audioSrc = "/audio/discord_sound.mp3";
+    } else if (ringtoneType === "discord_join") {
+      audioSrc = "/audio/discord-join.mp3";
+    } else if (ringtoneType === "lock_chime") {
+      audioSrc = "/audio/LockChime.wav";
+    } else {
+      // Default: the official Discord ringtone audio file uploaded
+      audioSrc = "/audio/discord-ringtone.mp3";
+    }
 
-      { note: "C5", time: 14 },
-      { note: "D5", time: 15 },
-      { note: "G4", time: 16 },
-      { note: "C5", time: 17 },
-      { note: "D5", time: 18 },
-      { note: "G4", time: 19 },
-
-      { note: "Eb5", time: 21 },
-      { note: "D5", time: 22 },
-      { note: "C5", time: 23 },
-      { note: "Bb4", time: 24 },
-      { note: "G4", time: 25 },
-    ];
-
-    pattern.forEach((p) => {
-      const freq = NOTES[p.note];
-      if (freq) {
-        playDiscordBell(ctx, freq, now + p.time * tempo, 0.4, 0.45);
-      }
-    });
-  };
-
-  playSequence();
-  // Repeat every 5.2 seconds
-  incomingRingtoneInterval = setInterval(() => {
-    playSequence();
-  }, 5200);
+    currentRingtoneAudio = new Audio(audioSrc);
+    currentRingtoneAudio.loop = true;
+    currentRingtoneAudio.volume = Math.min(1, Math.max(0, savedVolume));
+    currentRingtoneAudio.play().catch(() => {});
+    return;
+  } catch (err) {
+    console.warn("Could not load ringtone audio:", err);
+  }
 }
 
 export function stopIncomingRingtone() {
@@ -118,63 +111,80 @@ export function stopIncomingRingtone() {
     clearInterval(incomingRingtoneInterval);
     incomingRingtoneInterval = null;
   }
+  if (currentRingtoneAudio) {
+    currentRingtoneAudio.pause();
+    currentRingtoneAudio.currentTime = 0;
+    currentRingtoneAudio = null;
+  }
 }
 
-// Outgoing calling ring (classic Discord / phone outgoing ring chime)
+// Outgoing calling ring - uses the same iconic Discord ringtone
 export function playOutgoingRing() {
   stopOutgoingRing();
-  const ctx = getAudioContext();
-
-  const playChime = () => {
-    try {
-      const now = ctx.currentTime;
-      playDiscordBell(ctx, 440, now, 0.28, 0.25);
-      playDiscordBell(ctx, 480, now + 0.12, 0.35, 0.3);
-    } catch (e) {}
-  };
-
-  playChime();
-  outgoingRingInterval = setInterval(() => {
-    playChime();
-  }, 2400);
+  try {
+    const savedVolume = parseFloat(localStorage.getItem("custom_ringtone_volume") || "0.85");
+    currentOutgoingAudio = new Audio("/audio/discord-ringtone.mp3");
+    currentOutgoingAudio.loop = true;
+    currentOutgoingAudio.volume = Math.min(1, Math.max(0, savedVolume));
+    currentOutgoingAudio.play().catch(() => {});
+  } catch (e) {
+    console.warn("Could not play outgoing ring:", e);
+  }
 }
 
 export function stopOutgoingRing() {
+  if (currentOutgoingAudio) {
+    currentOutgoingAudio.pause();
+    currentOutgoingAudio.currentTime = 0;
+    currentOutgoingAudio = null;
+  }
   if (outgoingRingInterval) {
     clearInterval(outgoingRingInterval);
     outgoingRingInterval = null;
   }
 }
 
-// 3-note call disconnect / hangup sound
-export function playCallEndSound() {
+// Discord missed call / disconnect sound (uses the sound in the code: /audio/LockChime.wav)
+export function playMissedCallSound() {
+  // Immediately kill any ringing or looping audio first
+  stopIncomingRingtone();
+  stopOutgoingRing();
+
   try {
-    const ctx = getAudioContext();
-    const now = ctx.currentTime;
-    playDiscordBell(ctx, 480, now, 0.15, 0.3);
-    playDiscordBell(ctx, 380, now + 0.12, 0.15, 0.3);
-    playDiscordBell(ctx, 280, now + 0.24, 0.25, 0.35);
+    missedCallAudio ||= new Audio("/audio/LockChime.wav");
+    missedCallAudio.currentTime = 0;
+    missedCallAudio.volume = 0.85;
+    missedCallAudio.play().catch(() => {});
+  } catch (e) {
+    console.warn("Could not play missed call sound:", e);
+  }
+}
+
+// Disconnect / hangup sound
+export function playCallEndSound() {
+  stopIncomingRingtone();
+  stopOutgoingRing();
+
+  try {
+    missedCallAudio ||= new Audio("/audio/LockChime.wav");
+    missedCallAudio.currentTime = 0;
+    missedCallAudio.volume = 0.85;
+    missedCallAudio.play().catch(() => {});
   } catch (e) {}
 }
 
-// Unavailable / Busy tone
+// Replaced harsh busy tone with the clean discord disconnect sound
 export function playBusyTone() {
-  try {
-    const ctx = getAudioContext();
-    const now = ctx.currentTime;
-    playDiscordBell(ctx, 420, now, 0.2, 0.35);
-    playDiscordBell(ctx, 420, now + 0.35, 0.2, 0.35);
-    playDiscordBell(ctx, 420, now + 0.7, 0.2, 0.35);
-  } catch (e) {}
+  playMissedCallSound();
 }
 
 // Call join connected sound
 export function playCallConnectedSound() {
   try {
-    const ctx = getAudioContext();
-    const now = ctx.currentTime;
-    playDiscordBell(ctx, 320, now, 0.15, 0.25);
-    playDiscordBell(ctx, 480, now + 0.1, 0.15, 0.3);
-    playDiscordBell(ctx, 640, now + 0.2, 0.25, 0.35);
+    joinCallAudio ||= new Audio("/audio/discord-join.mp3");
+    joinCallAudio.currentTime = 0;
+    joinCallAudio.volume = 0.82;
+    joinCallAudio.play().catch(() => {});
   } catch (e) {}
 }
+

@@ -36,8 +36,8 @@ import {
   playOutgoingRing,
   stopOutgoingRing,
   playCallEndSound,
-  playBusyTone,
   playCallConnectedSound,
+  playMissedCallSound,
 } from "../utils/callSounds";
 import {
   sendOffAppNotification,
@@ -91,12 +91,18 @@ export default function PrivateCallManager({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [callingSecondsLeft, setCallingSecondsLeft] = useState(40);
+  const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
+  const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
 
   // Remote Stream and Media References
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioStreamRef = useRef<MediaStream | null>(null);
+  const remoteVideoStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const vadAnimFrameRef = useRef<number | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -129,6 +135,17 @@ export default function PrivateCallManager({
     stopIncomingRingtone();
     stopOutgoingRing();
 
+    if (vadAnimFrameRef.current) {
+      cancelAnimationFrame(vadAnimFrameRef.current);
+      vadAnimFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    setIsLocalSpeaking(false);
+    setIsRemoteSpeaking(false);
+
     if (timeoutTimerRef.current) {
       clearInterval(timeoutTimerRef.current);
       timeoutTimerRef.current = null;
@@ -149,6 +166,14 @@ export default function PrivateCallManager({
     if (remoteStreamRef.current) {
       remoteStreamRef.current.getTracks().forEach((t) => t.stop());
       remoteStreamRef.current = null;
+    }
+    if (remoteAudioStreamRef.current) {
+      remoteAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+      remoteAudioStreamRef.current = null;
+    }
+    if (remoteVideoStreamRef.current) {
+      remoteVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      remoteVideoStreamRef.current = null;
     }
 
     if (peerConnectionRef.current) {
@@ -177,7 +202,7 @@ export default function PrivateCallManager({
       const myUid = profileRef.current?.uid;
 
       cleanupMedia();
-      playCallEndSound();
+      playMissedCallSound();
 
       if (currentCall && myUid) {
         const isCaller = currentCall.callerUid === myUid;
@@ -209,15 +234,22 @@ export default function PrivateCallManager({
   const setupWebRTC = useCallback(
     async (call: PrivateCall, isInitiator: boolean) => {
       try {
-        // Setup local media tracks (Audio + Video)
+        // High-fidelity microphone constraints with aggressive echo cancellation
         const constraints: MediaStreamConstraints = {
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
             sampleRate: 48000,
-          },
-          video: call.callType === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false,
+            googEchoCancellation: { ideal: true },
+            googAutoGainControl: { ideal: true },
+            googNoiseSuppression: { ideal: true },
+            googHighpassFilter: { ideal: true },
+          } as any,
+          video:
+            call.callType === "video"
+              ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+              : false,
         };
 
         let stream: MediaStream;
@@ -225,7 +257,14 @@ export default function PrivateCallManager({
           stream = await navigator.mediaDevices.getUserMedia(constraints);
         } catch (mediaErr) {
           console.warn("Could not get video/audio with ideal constraints, falling back to basic audio:", mediaErr);
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: false,
+          });
         }
 
         localStreamRef.current = stream;
@@ -241,22 +280,64 @@ export default function PrivateCallManager({
           pc.addTrack(track, stream);
         });
 
-        // Remote stream handling
-        const remoteStream = new MediaStream();
-        remoteStreamRef.current = remoteStream;
+        // Dedicated separate remote streams for audio and video to prevent echo
+        const remoteAudioStream = new MediaStream();
+        const remoteVideoStream = new MediaStream();
+        remoteAudioStreamRef.current = remoteAudioStream;
+        remoteVideoStreamRef.current = remoteVideoStream;
 
         pc.ontrack = (event) => {
-          event.streams[0]?.getTracks().forEach((track) => {
-            remoteStream.addTrack(track);
-          });
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = remoteStream;
-          }
-          if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = remoteStream;
-            remoteAudioRef.current.play().catch(() => {});
+          if (event.track.kind === "audio") {
+            remoteAudioStream.addTrack(event.track);
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.srcObject = remoteAudioStream;
+              remoteAudioRef.current.play().catch(() => {});
+            }
+          } else if (event.track.kind === "video") {
+            remoteVideoStream.addTrack(event.track);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = remoteVideoStream;
+              remoteVideoRef.current.play().catch(() => {});
+            }
           }
         };
+
+        // Real-time speech activity detection for Discord speaking green rings
+        try {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const ctx = new AudioContextClass();
+          audioContextRef.current = ctx;
+
+          const localSource = ctx.createMediaStreamSource(stream);
+          const localAnalyser = ctx.createAnalyser();
+          localAnalyser.fftSize = 256;
+          localSource.connect(localAnalyser);
+
+          const remoteSource = ctx.createMediaStreamSource(remoteAudioStream);
+          const remoteAnalyser = ctx.createAnalyser();
+          remoteAnalyser.fftSize = 256;
+          remoteSource.connect(remoteAnalyser);
+
+          const localData = new Uint8Array(localAnalyser.frequencyBinCount);
+          const remoteData = new Uint8Array(remoteAnalyser.frequencyBinCount);
+
+          const checkVAD = () => {
+            localAnalyser.getByteFrequencyData(localData);
+            let localSum = 0;
+            for (let i = 0; i < localData.length; i++) localSum += localData[i];
+            const localAvg = localSum / localData.length;
+            setIsLocalSpeaking(localAvg > 16);
+
+            remoteAnalyser.getByteFrequencyData(remoteData);
+            let remoteSum = 0;
+            for (let i = 0; i < remoteData.length; i++) remoteSum += remoteData[i];
+            const remoteAvg = remoteSum / remoteData.length;
+            setIsRemoteSpeaking(remoteAvg > 16);
+
+            vadAnimFrameRef.current = requestAnimationFrame(checkVAD);
+          };
+          vadAnimFrameRef.current = requestAnimationFrame(checkVAD);
+        } catch (vadErr) {}
 
         // ICE candidate exchange
         pc.onicecandidate = (event) => {
@@ -399,7 +480,7 @@ export default function PrivateCallManager({
 
           // 40 seconds expired -> auto hangup
           stopOutgoingRing();
-          playBusyTone();
+          playMissedCallSound();
 
           updateDoc(doc(db, "private_calls", callId), {
             status: "timeout",
@@ -452,7 +533,7 @@ export default function PrivateCallManager({
             clearInterval(timeoutTimerRef.current);
             timeoutTimerRef.current = null;
           }
-          playBusyTone();
+          playMissedCallSound();
           setUnavailableMessage(`${targetUser.username} is not available`);
           setCallStatus("unavailable");
 
@@ -555,6 +636,7 @@ export default function PrivateCallManager({
           callStatus === "ringing"
         ) {
           stopIncomingRingtone();
+          playMissedCallSound();
           setCallStatus("idle");
           setActiveCall(null);
 
@@ -836,38 +918,53 @@ export default function PrivateCallManager({
         </div>
       )}
 
-      {/* 5. ACTIVE PRIVATE 1-ON-1 CALL SCREEN / PiP MODAL */}
+      {/* 5. ACTIVE VOICE / VIDEO CALL SCREEN - MATCHES DISCORD GENERAL VOICE CHANNEL */}
       {callStatus === "connected" && activeCall && profile && (
         <div
           id="private-call-modal"
           className={`fixed z-[9999] transition-all duration-200 ${
             isFullscreen
-              ? "inset-0 bg-black flex flex-col"
+              ? "inset-0 bg-[#0c0d0e] flex flex-col"
               : isMinimized
-              ? "bottom-6 right-6 w-72 h-44 bg-[#0a0a0a] border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
-              : "inset-4 md:inset-12 lg:inset-20 bg-[#080808]/95 border border-neutral-800 rounded-3xl shadow-2xl backdrop-blur-3xl overflow-hidden flex flex-col"
+              ? "bottom-6 right-6 w-80 h-52 bg-[#111214] border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+              : "inset-4 md:inset-10 lg:inset-16 bg-[#111214] border border-neutral-800 rounded-3xl shadow-2xl backdrop-blur-3xl overflow-hidden flex flex-col"
           }`}
         >
-          {/* Top Bar */}
-          <div className="px-4 py-3 bg-neutral-900/60 border-b border-neutral-800/80 flex items-center justify-between flex-shrink-0">
-            <div className="flex items-center gap-2.5 min-w-0">
+          {/* Audio Output Element - Strictly dedicated for remote audio to prevent ANY echo */}
+          <audio ref={remoteAudioRef} autoPlay playsInline />
+
+          {/* Top Voice Header - Styled identically to General Voice */}
+          <div className="px-5 py-3.5 bg-[#18191c] border-b border-neutral-800/90 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
-              <div className="min-w-0">
-                <h3 className="text-xs font-bold text-white truncate flex items-center gap-1.5">
-                  <span>
-                    Private Call &bull;{" "}
-                    {activeCall.callerUid === profile.uid
-                      ? activeCall.calleeUsername
-                      : activeCall.callerUsername}
-                  </span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-emerald-400 font-bold text-xs uppercase tracking-wider hidden sm:inline">
+                  Voice Connected
+                </span>
+                <span className="text-neutral-600 font-medium text-xs hidden sm:inline">/</span>
+                <h3 className="text-xs font-bold text-white truncate">
+                  Direct Voice &bull;{" "}
+                  {activeCall.callerUid === profile.uid
+                    ? activeCall.calleeUsername
+                    : activeCall.callerUsername}
                 </h3>
-                <span className="text-[10px] text-neutral-400 font-mono">
+                <span className="text-[11px] text-neutral-400 font-mono px-2 py-0.5 rounded bg-neutral-900 border border-neutral-800/80">
                   {formatTime(callDuration)}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
+              <button
+                id="voice-disconnect-header-btn"
+                onClick={() => handleEndCall("hangup")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold shadow transition-all cursor-pointer"
+                title="Disconnect from voice call"
+              >
+                <PhoneOff size={13} />
+                <span className="hidden sm:inline">Disconnect</span>
+              </button>
+
               {!isFullscreen && (
                 <button
                   onClick={() => setIsMinimized(!isMinimized)}
@@ -890,110 +987,218 @@ export default function PrivateCallManager({
             </div>
           </div>
 
-          {/* Main Video Stage */}
-          <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden min-h-0">
-            {/* Remote Peer Video */}
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="w-full h-full object-contain"
-            />
-
-            {/* Remote Avatar Fallback if remote video is off */}
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-neutral-950/90 pointer-events-none -z-0">
-              <div className="w-24 h-24 rounded-full overflow-hidden bg-neutral-900 border-2 border-neutral-800 shadow-2xl mb-3 flex items-center justify-center">
-                <img
-                  src={
-                    activeCall.callerUid === profile.uid
-                      ? activeCall.calleePhotoURL
-                      : activeCall.callerPhotoURL
-                  }
-                  alt=""
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <h3 className="text-base font-bold text-white">
-                {activeCall.callerUid === profile.uid
-                  ? activeCall.calleeUsername
-                  : activeCall.callerUsername}
-              </h3>
-              <p className="text-xs text-neutral-400 mt-1 font-mono">
-                {formatTime(callDuration)}
-              </p>
-            </div>
-
-            {/* Local Video Thumbnail (PiP in Corner) */}
-            {!isMinimized && (
-              <div className="absolute bottom-4 right-4 w-40 h-28 bg-neutral-900/90 border border-neutral-800 rounded-xl overflow-hidden shadow-2xl z-10">
+          {/* Main Stage */}
+          <div className="flex-1 bg-[#0f0f11] relative flex items-center justify-center p-4 overflow-hidden min-h-0">
+            {/* If video or screen share is enabled, show the video layout */}
+            {isVideoOn || isScreenSharing ? (
+              <div className="w-full h-full relative flex items-center justify-center bg-black rounded-2xl overflow-hidden border border-neutral-800">
+                {/* Remote video element - MUST BE MUTED to prevent echo loop with remoteAudioRef */}
                 <video
-                  ref={localVideoRef}
+                  ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  muted
-                  className="w-full h-full object-cover transform -scale-x-100"
+                  muted={true}
+                  className="w-full h-full object-contain"
                 />
-                {!isVideoOn && (
-                  <div className="absolute inset-0 bg-neutral-950 flex flex-col items-center justify-center text-[10px] text-neutral-500 font-bold">
-                    Camera Off
+
+                {/* Remote User Pill in Video Mode */}
+                <div className="absolute bottom-3 left-3 z-10 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-xl text-xs font-semibold text-white flex items-center gap-2 border border-white/10">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isRemoteSpeaking ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"
+                    }`}
+                  />
+                  <span>
+                    {activeCall.callerUid === profile.uid
+                      ? activeCall.calleeUsername
+                      : activeCall.callerUsername}
+                  </span>
+                </div>
+
+                {/* Local Camera Video Thumbnail (PiP) */}
+                {!isMinimized && (
+                  <div className="absolute bottom-4 right-4 w-44 h-32 bg-neutral-900/90 border border-neutral-700/80 rounded-2xl overflow-hidden shadow-2xl z-20">
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted={true}
+                      className="w-full h-full object-cover transform -scale-x-100"
+                    />
+                    {!isVideoOn && (
+                      <div className="absolute inset-0 bg-neutral-950 flex flex-col items-center justify-center text-xs text-neutral-400 font-bold">
+                        Camera Off
+                      </div>
+                    )}
+                    <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded-lg text-[10px] font-bold text-white flex items-center gap-1.5 border border-white/10">
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          isLocalSpeaking && !isMuted ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"
+                        }`}
+                      />
+                      <span>You {isMuted && "(Muted)"}</span>
+                    </div>
                   </div>
                 )}
-                <div className="absolute bottom-1 left-1.5 bg-black/60 px-1.5 py-0.5 rounded text-[9px] font-bold text-neutral-300">
-                  You {isMuted && "(Muted)"}
+              </div>
+            ) : (
+              /* VOICE CALL STAGE - Matches Discord General Voice Tiles */
+              <div className="w-full h-full max-w-4xl grid grid-cols-1 sm:grid-cols-2 gap-4 items-center justify-center">
+                {/* Tile 1: Remote Participant */}
+                <div className="h-full max-h-80 bg-[#1e1f22] border border-neutral-800 rounded-2xl flex flex-col items-center justify-center relative p-6 shadow-xl transition-all">
+                  <div
+                    className={`relative rounded-full p-1 transition-all duration-200 ${
+                      isRemoteSpeaking
+                        ? "ring-4 ring-emerald-500 shadow-lg shadow-emerald-500/20 scale-105"
+                        : "ring-2 ring-neutral-800"
+                    }`}
+                  >
+                    <div className="w-24 h-24 rounded-full overflow-hidden bg-neutral-900 border-2 border-neutral-800">
+                      <img
+                        src={
+                          activeCall.callerUid === profile.uid
+                            ? activeCall.calleePhotoURL
+                            : activeCall.callerPhotoURL
+                        }
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  </div>
+
+                  <h4 className="text-sm font-bold text-white mt-3 truncate max-w-[80%]">
+                    {activeCall.callerUid === profile.uid
+                      ? activeCall.calleeUsername
+                      : activeCall.callerUsername}
+                  </h4>
+
+                  {/* Floating username label bottom-left */}
+                  <div className="absolute bottom-3 left-3 bg-[#111214]/90 backdrop-blur-md px-2.5 py-1 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5 border border-neutral-800">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isRemoteSpeaking ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"
+                      }`}
+                    />
+                    <span className="truncate max-w-[120px]">
+                      {activeCall.callerUid === profile.uid
+                        ? activeCall.calleeUsername
+                        : activeCall.callerUsername}
+                    </span>
+                  </div>
+
+                  {/* Status Indicator bottom-right */}
+                  <div className="absolute bottom-3 right-3 w-7 h-7 rounded-full bg-[#111214]/90 border border-neutral-800 flex items-center justify-center text-neutral-300">
+                    <Mic size={13} className={isRemoteSpeaking ? "text-emerald-400" : "text-neutral-400"} />
+                  </div>
+                </div>
+
+                {/* Tile 2: Local User ("You") */}
+                <div className="h-full max-h-80 bg-[#1e1f22] border border-neutral-800 rounded-2xl flex flex-col items-center justify-center relative p-6 shadow-xl transition-all">
+                  <div
+                    className={`relative rounded-full p-1 transition-all duration-200 ${
+                      isLocalSpeaking && !isMuted
+                        ? "ring-4 ring-emerald-500 shadow-lg shadow-emerald-500/20 scale-105"
+                        : "ring-2 ring-neutral-800"
+                    }`}
+                  >
+                    <div className="w-24 h-24 rounded-full overflow-hidden bg-neutral-900 border-2 border-neutral-800">
+                      <img
+                        src={profile.photoURL}
+                        alt={profile.username}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  </div>
+
+                  <h4 className="text-sm font-bold text-white mt-3 truncate max-w-[80%]">
+                    {profile.username} (You)
+                  </h4>
+
+                  {/* Floating username label bottom-left */}
+                  <div className="absolute bottom-3 left-3 bg-[#111214]/90 backdrop-blur-md px-2.5 py-1 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5 border border-neutral-800">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isLocalSpeaking && !isMuted ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"
+                      }`}
+                    />
+                    <span>You</span>
+                  </div>
+
+                  {/* Mute/Mic Indicator bottom-right */}
+                  <div
+                    className={`absolute bottom-3 right-3 w-7 h-7 rounded-full border flex items-center justify-center ${
+                      isMuted
+                        ? "bg-rose-500/20 border-rose-500/40 text-rose-400"
+                        : "bg-[#111214]/90 border-neutral-800 text-neutral-300"
+                    }`}
+                  >
+                    {isMuted ? (
+                      <MicOff size={13} className="text-rose-400" />
+                    ) : (
+                      <Mic size={13} className={isLocalSpeaking ? "text-emerald-400" : "text-neutral-400"} />
+                    )}
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Bottom Call Controls Bar */}
-          <div className="p-3 bg-neutral-900/80 border-t border-neutral-800/80 flex items-center justify-center gap-3 flex-shrink-0">
+          {/* Bottom Call Controls Bar - Styled after Discord Voice Control Deck */}
+          <div className="p-3.5 bg-[#18191c] border-t border-neutral-800/90 flex items-center justify-center gap-3 flex-shrink-0">
             {/* Mic Mute Toggle */}
             <button
+              id="voice-toggle-mic-btn"
               onClick={toggleMute}
-              className={`p-3 rounded-full transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs transition-all cursor-pointer ${
                 isMuted
-                  ? "bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-950"
-                  : "bg-neutral-800 hover:bg-neutral-700 text-white"
+                  ? "bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-950/50"
+                  : "bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white"
               }`}
               title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
             >
-              {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+              {isMuted ? <MicOff size={16} /> : <Mic size={16} />}
+              <span className="hidden sm:inline">{isMuted ? "Unmute" : "Mute"}</span>
             </button>
 
-            {/* Video Toggle */}
+            {/* Video Camera Toggle */}
             <button
+              id="voice-toggle-camera-btn"
               onClick={toggleVideo}
-              className={`p-3 rounded-full transition-all cursor-pointer ${
-                !isVideoOn
-                  ? "bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-950"
-                  : "bg-neutral-800 hover:bg-neutral-700 text-white"
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs transition-all cursor-pointer ${
+                isVideoOn
+                  ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/50"
+                  : "bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white"
               }`}
               title={isVideoOn ? "Turn Camera Off" : "Turn Camera On"}
             >
-              {!isVideoOn ? <VideoOff size={18} /> : <Video size={18} />}
+              {!isVideoOn ? <VideoOff size={16} /> : <Video size={16} />}
+              <span className="hidden sm:inline">{isVideoOn ? "Camera On" : "Camera"}</span>
             </button>
 
             {/* Screen Share Toggle */}
             <button
+              id="voice-toggle-screenshare-btn"
               onClick={toggleScreenShare}
-              className={`p-3 rounded-full transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs transition-all cursor-pointer ${
                 isScreenSharing
-                  ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950"
-                  : "bg-neutral-800 hover:bg-neutral-700 text-white"
+                  ? "bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-950/50"
+                  : "bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white"
               }`}
               title={isScreenSharing ? "Stop Screen Share" : "Share Screen"}
             >
-              <MonitorUp size={18} />
+              <MonitorUp size={16} />
+              <span className="hidden sm:inline">{isScreenSharing ? "Sharing" : "Screen"}</span>
             </button>
 
-            {/* End Call / Hang Up */}
+            {/* End Call / Disconnect */}
             <button
               id="call-hangup-btn"
               onClick={() => handleEndCall("hangup")}
-              className="p-3 rounded-full bg-rose-600 hover:bg-rose-500 text-white shadow-xl shadow-rose-950 transition-all cursor-pointer active:scale-95 ml-2"
-              title="End Call"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-xl shadow-rose-950/60 transition-all cursor-pointer active:scale-95 ml-2"
+              title="Disconnect"
             >
-              <PhoneOff size={18} />
+              <PhoneOff size={16} />
+              <span>Disconnect</span>
             </button>
           </div>
         </div>

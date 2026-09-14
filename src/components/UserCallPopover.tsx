@@ -95,7 +95,7 @@ export default function UserCallPopover({
           {/* Call Actions */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider px-1">
-              Private Talk &amp; Video
+              Direct Voice &amp; Video
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -105,16 +105,16 @@ export default function UserCallPopover({
                 title="Start Video Call"
               >
                 <Video size={14} className="group-hover:scale-110 transition-transform" />
-                <span>Video Call</span>
+                <span>Video</span>
               </button>
 
               <button
                 onClick={() => handleStartCall("voice")}
-                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-neutral-900 hover:bg-cyan-600/90 text-neutral-200 hover:text-white text-xs font-bold transition-all border border-neutral-800/80 hover:border-cyan-500 cursor-pointer shadow-sm group"
+                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-neutral-900 hover:bg-emerald-600/90 text-neutral-200 hover:text-white text-xs font-bold transition-all border border-neutral-800/80 hover:border-emerald-500 cursor-pointer shadow-sm group"
                 title="Start Voice Call"
               >
                 <Phone size={13} className="group-hover:scale-110 transition-transform" />
-                <span>Call</span>
+                <span>Voice Call</span>
               </button>
             </div>
           </div>
