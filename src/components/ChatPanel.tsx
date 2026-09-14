@@ -104,6 +104,7 @@ const saveCachedMessages = (msgs: ChatMessage[]) => {
 export default function ChatPanel({
   profile,
   activeChannel = "general",
+  onSelectVoice,
   showMembersSidebar = true,
   setShowMembersSidebar,
 }: ChatPanelProps) {
@@ -1081,11 +1082,32 @@ export default function ChatPanel({
                     </span>
                   </div>
 
-                  {msg.text && (
+                  {msg.isVoiceInvite ? (
+                    <div className="mt-2 max-w-sm rounded-xl bg-neutral-900 border border-emerald-500/30 p-3.5 flex items-center justify-between gap-3 shadow-lg">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                          <Volume2 size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white">General Voice Invite</p>
+                          <p className="text-[11px] text-neutral-400 mt-0.5 truncate">{msg.text || "Invited to join General Voice"}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (onSelectVoice) onSelectVoice();
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer flex-shrink-0"
+                      >
+                        <Volume2 size={12} />
+                        Join
+                      </button>
+                    </div>
+                  ) : msg.text ? (
                     <p className="text-sm text-neutral-200 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
                       {msg.text}
                     </p>
-                  )}
+                  ) : null}
 
                   {msg.gif && (
                     <img
@@ -1406,17 +1428,48 @@ export default function ChatPanel({
 
                       {/* Username & Status Label */}
                       <div className="flex-1 min-w-0 flex flex-col">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-neutral-200 truncate">
-                            {user.username}
-                          </span>
-                          {isCurrentUser && (
-                            <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider">
-                              YOU
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-xs font-bold text-neutral-200 truncate">
+                              {user.username}
                             </span>
+                            {isCurrentUser && (
+                              <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider">
+                                YOU
+                              </span>
+                            )}
+                          </div>
+                          {!isCurrentUser && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+                                const now = Date.now();
+                                try {
+                                  await setDoc(doc(db, "messages", msgId), {
+                                    channelId: activeChannel,
+                                    uid: profile.uid,
+                                    username: profile.username,
+                                    photoURL: profile.photoURL || "",
+                                    text: `Invited @${user.username} to General Voice`,
+                                    isVoiceInvite: true,
+                                    voiceChannel: "General Voice",
+                                    timestamp: now,
+                                  });
+                                } catch (err) {
+                                  console.warn("Failed to send voice invite", err);
+                                }
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-emerald-600 text-neutral-300 hover:text-white text-[10px] font-bold transition-all border border-neutral-700/80 cursor-pointer flex items-center gap-1 flex-shrink-0"
+                              title={`Invite ${user.username} to General Voice`}
+                            >
+                              <Volume2 size={10} />
+                              Invite
+                            </button>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="text-[10px] text-neutral-500 font-medium">
                             Online
                           </span>

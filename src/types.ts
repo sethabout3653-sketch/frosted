@@ -39,6 +39,8 @@ export interface ChatMessage {
   attachmentType?: string;
   attachmentName?: string;
   attachmentSize?: number;
+  isVoiceInvite?: boolean;
+  voiceChannel?: string;
   timestamp: number;
   reactions?: Record<string, string[]>;
   _isOptimistic?: boolean;

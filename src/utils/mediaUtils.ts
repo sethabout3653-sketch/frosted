@@ -22,6 +22,15 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Extracts YouTube video ID from various YouTube URL formats.
+ */
+export function extractYouTubeVideoId(url: string = ""): string | null {
+  if (!url) return null;
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  return match ? match[1] : null;
+}
+
+/**
  * Extracts a clean lowercase file extension from a filename or URL (checking query params, JSON payloads, and paths).
  */
 export function getFileExtension(filenameOrUrl: string = ""): string {

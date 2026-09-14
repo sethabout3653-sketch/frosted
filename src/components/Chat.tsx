@@ -18,6 +18,7 @@ import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
 import { ChatProfile, ChatMessage } from "../types";
+import { playDiscordNotificationSound } from "../utils/audioNotification";
 import {
   collection,
   query,
@@ -284,14 +285,9 @@ export default function Chat({
                 msg.photoURL === currentProfile.photoURL));
 
           if (!isMe) {
-            try {
-              messageSoundRef.current ||= new Audio("/audio/discord_sound.mp3");
-              messageSoundRef.current.currentTime = 0;
-              messageSoundRef.current.volume = 0.8;
-              messageSoundRef.current.play().catch(() => {});
-            } catch (e) {}
+            playDiscordNotificationSound();
 
-            if (!isOpenRef.current) {
+            if (!isOpenRef.current || msg.isVoiceInvite) {
               if (notificationTimeoutRef.current) {
                 clearTimeout(notificationTimeoutRef.current);
               }
@@ -299,7 +295,7 @@ export default function Chat({
               notificationTimeoutRef.current = setTimeout(() => {
                 setNotification(null);
                 notificationTimeoutRef.current = null;
-              }, 4000);
+              }, 12000);
             }
           }
         });
@@ -673,40 +669,95 @@ export default function Chat({
     />
   )}
 
-  {/* 3. Toast notification when chat is closed */}
-  {!isOpen && notification && (
-    <div className="fixed top-6 right-6 z-50 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in hover:bg-neutral-800 transition-colors cursor-pointer">
+  {/* 3. Toast notification for incoming messages & voice channel invites */}
+  {notification && (
+    <div className="fixed top-6 right-6 z-[100] bg-neutral-900 border border-neutral-700/80 rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center gap-3.5 animate-in slide-in-from-top fade-in duration-200 hover:border-neutral-600 transition-colors max-w-sm w-full">
       <div
-        className="flex items-center gap-3"
+        className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
         onClick={() => {
-          setNotification(null);
-          onOpenVoiceChat?.();
+          if (notification.isVoiceInvite) {
+            setActiveTab("voice");
+            setIsInVoiceSession(true);
+            onOpenVoiceChat?.();
+            setNotification(null);
+          } else {
+            setNotification(null);
+            onOpenVoiceChat?.();
+          }
         }}
       >
-        <img
-          src={notification.photoURL}
-          alt=""
-          className="w-10 h-10 rounded-full object-cover"
-        />
-        <div className="flex flex-col">
-          <span className="text-xs font-bold text-white">
-            {notification.username} sent a message
+        <div className="relative flex-shrink-0">
+          <img
+            src={notification.photoURL || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop"}
+            alt={notification.username}
+            className="w-10 h-10 rounded-full object-cover border border-neutral-700"
+          />
+          {notification.isVoiceInvite && (
+            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-neutral-900 flex items-center justify-center text-black">
+              <Volume2 size={10} />
+            </span>
+          )}
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="text-xs font-bold text-white truncate">
+            {notification.username}
           </span>
-          <span className="text-sm text-neutral-400 line-clamp-1">
-            {notification.text ||
-              (notification.gif ? "Sent a GIF" : "Sent an attachment")}
+          <span className="text-xs text-neutral-300 font-medium line-clamp-1 mt-0.5">
+            {notification.isVoiceInvite
+              ? "Invited you to General Voice"
+              : notification.text || (notification.gif ? "Sent a GIF" : "Sent an attachment")}
           </span>
         </div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          setNotification(null);
-        }}
-        className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors cursor-pointer"
-      >
-        <X size={16} />
-      </button>
+
+      {notification.isVoiceInvite ? (
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end mt-1 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-neutral-800">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setNotification(null);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-semibold transition-colors border border-neutral-700 cursor-pointer flex-1 sm:flex-initial text-center"
+          >
+            Decline
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveTab("voice");
+              setIsInVoiceSession(true);
+              onOpenVoiceChat?.();
+              setNotification(null);
+            }}
+            className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex-1 sm:flex-initial text-center cursor-pointer flex items-center justify-center gap-1"
+          >
+            <Volume2 size={13} />
+            Join
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setNotification(null);
+              onOpenVoiceChat?.();
+            }}
+            className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+          >
+            Open
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setNotification(null);
+            }}
+            className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors cursor-pointer"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
     </div>
   )}
 </>

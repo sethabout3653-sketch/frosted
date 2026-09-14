@@ -69,13 +69,25 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun2.l.google.com:19302" },
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" },
-    { urls: "stun:global.stun.twilio.com:3478" },
-    { urls: "stun:stun.cloudflare.com:3478" },
     { urls: "stun:stun.nextcloud.com:443" },
+    { urls: "stun:stun.cloudflare.com:443" },
+    { urls: "stun:openrelay.metered.ca:80" },
+    { urls: "stun:openrelay.metered.ca:443" },
+    {
+      urls: [
+        "turn:openrelay.metered.ca:80?transport=udp",
+        "turn:openrelay.metered.ca:80?transport=tcp",
+        "turn:openrelay.metered.ca:443?transport=tcp",
+        "turns:openrelay.metered.ca:443?transport=tcp",
+      ],
+      username: "openrelay",
+      credential: "openrelay",
+    },
   ],
   iceCandidatePoolSize: 10,
   bundlePolicy: "balanced",
   rtcpMuxPolicy: "require",
+  iceTransportPolicy: "all",
 };
 
 // Studio quality Opus audio SDP optimizer:

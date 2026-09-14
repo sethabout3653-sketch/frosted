@@ -27,6 +27,7 @@ import {
   getFileName,
   getFileExtension,
   getFileTypeBadge,
+  extractYouTubeVideoId,
   MediaType,
 } from "../utils/mediaUtils";
 
@@ -225,6 +226,47 @@ export default function MediaAttachment({
           <p className="text-xs text-red-400 mt-0.5 font-medium truncate">
             File no longer available
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // YouTube Restricted Mode & Restricted Wi-Fi Bypass Player
+  const ytVideoId = extractYouTubeVideoId(initialUrl || displayUrl);
+  if (ytVideoId) {
+    const embedProxyUrl = `/api/youtube/embed?v=${ytVideoId}`;
+    return (
+      <div className="mt-2.5 max-w-md w-full rounded-2xl overflow-hidden border border-neutral-800/90 bg-neutral-950/80 shadow-xl group">
+        <div className="px-3.5 py-2 bg-neutral-900/90 border-b border-neutral-800/80 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-5 h-5 rounded-md bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
+              <Film size={12} />
+            </div>
+            <span className="text-xs font-semibold text-neutral-200 truncate" title={displayName || "YouTube Video"}>
+              {displayName || "YouTube Video"}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-red-950/80 text-[9px] font-mono font-bold text-red-400 border border-red-800/60">
+              UNRESTRICTED
+            </span>
+          </div>
+          <a
+            href={`https://www.youtube.com/watch?v=${ytVideoId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-colors border border-neutral-700/60"
+            title="Open in YouTube"
+          >
+            <ExternalLink size={13} />
+          </a>
+        </div>
+        <div className="relative bg-black w-full aspect-video">
+          <iframe
+            src={embedProxyUrl}
+            title="YouTube Video Player"
+            className="w-full h-full border-0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
         </div>
       </div>
     );
