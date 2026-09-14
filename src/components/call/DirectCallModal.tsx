@@ -8,6 +8,7 @@ import {
   Minimize2,
   ScreenShare,
   ScreenShareOff,
+  MonitorUp,
 } from "lucide-react";
 import { useCall } from "../../context/CallContext";
 
@@ -194,7 +195,7 @@ export default function DirectCallModal() {
           {callState === "connected" && (
             <div className="w-full h-full relative flex items-center justify-center">
               {/* Remote Video Stream Container */}
-              <div className={`w-full h-full relative ${hasRemoteVideo ? "flex" : "hidden"} items-center justify-center bg-black`}>
+              <div className={`w-full h-full relative ${hasRemoteVideo ? "flex" : "hidden"} items-center justify-center bg-black overflow-hidden`}>
                 <video
                   ref={(el) => {
                     remoteVideoRef.current = el;
@@ -205,10 +206,10 @@ export default function DirectCallModal() {
                   }}
                   autoPlay
                   playsInline
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain max-w-full max-h-full"
                 />
                 {peerMuted && (
-                  <div className="absolute top-4 left-4 bg-rose-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow backdrop-blur-md">
+                  <div className="absolute top-4 left-4 bg-rose-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow backdrop-blur-md z-10">
                     <MicOff size={12} />
                     <span>{peerName} is muted</span>
                   </div>
@@ -241,24 +242,32 @@ export default function DirectCallModal() {
                 </p>
               </div>
 
-              {/* Picture-in-Picture Local Video Preview (when camera is on) */}
-              {isVideoOn && localStream && (
+              {/* Picture-in-Picture Local Video Preview (when camera or screen sharing is on) */}
+              {(isVideoOn || isScreenSharing) && (
                 <div className="absolute top-4 right-4 w-32 sm:w-44 aspect-video rounded-xl overflow-hidden border border-neutral-700/80 bg-black/90 shadow-2xl z-20">
                   <video
                     ref={(el) => {
                       localVideoRef.current = el;
-                      if (el && localStream && el.srcObject !== localStream) {
-                        el.srcObject = localStream;
+                      const activeLocalStream = localStream;
+                      if (el && activeLocalStream && el.srcObject !== activeLocalStream) {
+                        el.srcObject = activeLocalStream;
                         el.play().catch(() => {});
                       }
                     }}
                     autoPlay
                     muted
                     playsInline
-                    className="w-full h-full object-cover scale-x-[-1]"
+                    className={`w-full h-full object-contain ${isScreenSharing ? "" : "scale-x-[-1] object-cover"}`}
                   />
-                  <span className="absolute bottom-1 left-2 text-[9px] font-bold text-white bg-black/60 px-1 py-0.5 rounded">
-                    You
+                  <span className="absolute bottom-1 left-2 text-[9px] font-bold text-white bg-black/70 px-1.5 py-0.5 rounded flex items-center gap-1">
+                    {isScreenSharing ? (
+                      <>
+                        <MonitorUp size={9} className="text-emerald-400" />
+                        <span>Screen</span>
+                      </>
+                    ) : (
+                      <span>You</span>
+                    )}
                   </span>
                 </div>
               )}

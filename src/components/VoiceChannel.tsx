@@ -282,7 +282,7 @@ export default function VoiceChannel({
 
   // Active Screen Share descriptor (local or remote)
   const activeScreenShare = useMemo(() => {
-    if (isScreenSharing && screenStreamRef.current && screenStreamRef.current.getVideoTracks().some((t) => t.readyState === "live")) {
+    if (isScreenSharing && screenStreamRef.current) {
       return {
         uid: profile.uid,
         username: profile.username,
@@ -290,12 +290,13 @@ export default function VoiceChannel({
         hasAudio: isScreenAudioOn,
       };
     }
+    // Check if any participant is marked as screen sharing
     const remoteSharer = activeParticipants.find(
       (p) =>
-        p.isScreenSharing === true &&
-        (!!remoteScreenSharersRef.current[p.uid] ||
-          (!!remoteScreenStreamsRef.current[p.uid] &&
-            remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled)))
+        p.isScreenSharing === true ||
+        !!remoteScreenSharersRef.current[p.uid] ||
+        (!!remoteScreenStreamsRef.current[p.uid] &&
+          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live"))
     );
     if (remoteSharer) {
       return {
@@ -303,6 +304,17 @@ export default function VoiceChannel({
         username: remoteSharer.username,
         isLocal: false,
         hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
+      };
+    }
+    // Fallback: check remoteScreenSharersRef or remoteScreenStreamsRef keys
+    const fallbackUid = Object.keys(remoteScreenSharersRef.current)[0] || Object.keys(remoteScreenStreamsRef.current)[0];
+    if (fallbackUid) {
+      const p = activeParticipants.find((u) => u.uid === fallbackUid);
+      return {
+        uid: fallbackUid,
+        username: p?.username || "Screen Share",
+        isLocal: false,
+        hasAudio: !!remoteScreenSharersRef.current[fallbackUid]?.hasAudio,
       };
     }
     return null;
@@ -1410,7 +1422,15 @@ export default function VoiceChannel({
 
           if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
             try {
-              const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              let offerInit: RTCSessionDescriptionInit;
+              if (typeof signal.sdp === "string" && (signal.sdp.trim().startsWith("{") || signal.sdp.trim().startsWith("["))) {
+                offerInit = JSON.parse(signal.sdp);
+              } else if (typeof signal.sdp === "object" && signal.sdp !== null) {
+                offerInit = signal.sdp;
+              } else {
+                offerInit = { type: "offer", sdp: signal.sdp };
+              }
+              const offerDescription = new RTCSessionDescription(offerInit);
               await pc.setRemoteDescription(offerDescription);
               await processCandidateQueue(partnerUid, pc);
 
@@ -1426,19 +1446,27 @@ export default function VoiceChannel({
 
               syncPeerTracks(partnerUid, pc);
             } catch (e) {
-              // Gracefully ignore state transitions
+              console.warn("[VoiceChannel] Offer handling warning:", e);
             }
           }
         } else if (signal.type === "answer") {
           const pc = peersRef.current[partnerUid];
           if (pc && pc.signalingState === "have-local-offer") {
             try {
-              const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
+              let answerInit: RTCSessionDescriptionInit;
+              if (typeof signal.sdp === "string" && (signal.sdp.trim().startsWith("{") || signal.sdp.trim().startsWith("["))) {
+                answerInit = JSON.parse(signal.sdp);
+              } else if (typeof signal.sdp === "object" && signal.sdp !== null) {
+                answerInit = signal.sdp;
+              } else {
+                answerInit = { type: "answer", sdp: signal.sdp };
+              }
+              const answerDescription = new RTCSessionDescription(answerInit);
               await pc.setRemoteDescription(answerDescription);
               await processCandidateQueue(partnerUid, pc);
               syncPeerTracks(partnerUid, pc);
             } catch (e) {
-              // Gracefully ignore stale/duplicate answer
+              console.warn("[VoiceChannel] Answer handling warning:", e);
             }
           }
         } else if (signal.type === "candidate") {
@@ -2467,8 +2495,9 @@ export default function VoiceChannel({
               try {
                 const offer = await pc.createOffer();
                 const optOffer = optimizeAudioSdp(offer.sdp || "");
-                await pc.setLocalDescription({ type: "offer", sdp: optOffer });
-                sendSignal(pUid, "offer", optOffer);
+                const offerDesc = new RTCSessionDescription({ type: "offer", sdp: optOffer });
+                await pc.setLocalDescription(offerDesc);
+                sendSignal(pUid, "offer", JSON.stringify(offerDesc));
               } catch (renegErr) {}
             }
 

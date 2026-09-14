@@ -901,7 +901,23 @@ export function CallProvider({
         await audioTransceiverRef.current.sender.replaceTrack(micTrack);
       } catch (e) {}
     }
-  }, []);
+
+    const call = activeCallRef.current || activeCall;
+    if (call && profile) {
+      const isCaller = call.callerUid === profile.uid;
+      const peerUid = isCaller ? call.targetUid : call.callerUid;
+      sendBroadcastSignal({
+        id: `sig_track_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        callId: call.id,
+        type: "call_track_state",
+        uid: profile.uid,
+        targetUid: peerUid,
+        isVideoOn,
+        isMuted: isMutedRef.current,
+        timestamp: Date.now(),
+      });
+    }
+  }, [activeCall, isVideoOn, profile]);
 
   // Set up Web Audio mixing node for combining mic and screen audio
   const setupMixedAudio = useCallback((micTrack: MediaStreamTrack | null, screenAudioTrack: MediaStreamTrack | null) => {
@@ -1031,6 +1047,23 @@ export function CallProvider({
 
         setIsScreenSharing(true);
 
+        const call = activeCallRef.current || activeCall;
+        if (call && profile) {
+          const isCaller = call.callerUid === profile.uid;
+          const peerUid = isCaller ? call.targetUid : call.callerUid;
+          sendBroadcastSignal({
+            id: `sig_track_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            callId: call.id,
+            type: "call_track_state",
+            uid: profile.uid,
+            targetUid: peerUid,
+            isVideoOn: true,
+            isScreenSharing: true,
+            isMuted: isMutedRef.current,
+            timestamp: Date.now(),
+          });
+        }
+
         screenVideoTrack.onended = () => {
           stopScreenShare();
         };
@@ -1045,7 +1078,7 @@ export function CallProvider({
     } catch (err) {
       console.warn("Screen share cancelled or failed:", err);
     }
-  }, [isScreenSharing, setupMixedAudio, stopScreenShare]);
+  }, [activeCall, isScreenSharing, profile, setupMixedAudio, stopScreenShare]);
 
   // Real-time signal subscriber for call invites, accepts, declines, cancels, ends, and WebRTC
   useEffect(() => {
