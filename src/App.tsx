@@ -97,34 +97,6 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, []);
 
-  useEffect(() => {
-    const checkClearTimestamp = async () => {
-      try {
-        const res = await fetch("/api/admin/clear-timestamp");
-        if (res.ok) {
-          const { timestamp } = await res.json();
-          if (timestamp > 0) {
-            const lastClearedSaved = parseInt(localStorage.getItem("frosted_last_clear") || "0", 10);
-            if (lastClearedSaved < timestamp) {
-              // Clear local session & cache to log out and clear messages
-              localStorage.removeItem("frosted_chat_profile");
-              sessionStorage.removeItem("frosted_chat_profile");
-              localStorage.removeItem("lumos_chat_messages_v3");
-              localStorage.removeItem("lumos_chat_messages_v2");
-              localStorage.removeItem("lumos_chat_messages_v1");
-              
-              localStorage.setItem("frosted_last_clear", timestamp.toString());
-              window.location.reload();
-            }
-          }
-        }
-      } catch (e) {
-        console.warn("Failed to check clear timestamp:", e);
-      }
-    };
-    checkClearTimestamp();
-  }, []);
-
   // Filter states
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearch = useDeferredValue(searchQuery);

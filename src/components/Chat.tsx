@@ -291,12 +291,7 @@ export default function Chat({
               messageSoundRef.current.play().catch(() => {});
             } catch (e) {}
 
-            // Show notification if chat is closed OR if it's a voice invite addressed to me/all
-            const isTargetedToMe =
-              !msg.inviteData?.targetUid ||
-              msg.inviteData?.targetUid === currentProfile?.uid;
-
-            if (!isOpenRef.current || (msg.isInvite && isTargetedToMe)) {
+            if (!isOpenRef.current) {
               if (notificationTimeoutRef.current) {
                 clearTimeout(notificationTimeoutRef.current);
               }
@@ -304,7 +299,7 @@ export default function Chat({
               notificationTimeoutRef.current = setTimeout(() => {
                 setNotification(null);
                 notificationTimeoutRef.current = null;
-              }, 6000);
+              }, 4000);
             }
           }
         });
@@ -641,7 +636,6 @@ export default function Chat({
             <ChatPanel
               profile={profile}
               activeChannel={activeChannel}
-              isInVoiceSession={isInVoiceSession}
               onSelectVoice={() => {
                 setActiveTab("voice");
                 setIsInVoiceSession(true);
@@ -660,6 +654,7 @@ export default function Chat({
     <VoiceChannel
       profile={profile}
       isPip={!isOpen || activeTab !== "voice"}
+      showMembersSidebar={showMembersSidebar}
       onExpand={() => {
         setActiveTab("voice");
         onOpenVoiceChat?.();
@@ -679,69 +674,37 @@ export default function Chat({
     />
   )}
 
-  {/* 3. Toast notification banner */}
-  {notification && (!isOpen || notification.isInvite) && (
-    <div className={`fixed top-6 right-6 z-50 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in backdrop-blur-md transition-all ${
-      notification.isInvite
-        ? "bg-neutral-950/95 border border-emerald-500/60 ring-1 ring-emerald-500/30"
-        : "bg-neutral-900 border border-neutral-800 hover:bg-neutral-800"
-    }`}>
-      {notification.isInvite ? (
-        <>
-          <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center flex-shrink-0">
-            <Volume2 size={20} className="animate-pulse" />
-          </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-[10px] font-extrabold text-emerald-400 uppercase tracking-wider">
-              Voice Channel Invite
-            </span>
-            <span className="text-xs font-bold text-white truncate max-w-xs">
-              {notification.inviteData?.inviterUsername || notification.username} invited you to join General Voice!
-            </span>
-          </div>
-          <button
-            onClick={() => {
-              setNotification(null);
-              setActiveTab("voice");
-              setIsInVoiceSession(true);
-              onOpenVoiceChat?.();
-            }}
-            className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1.5 flex-shrink-0"
-          >
-            <Volume2 size={13} />
-            <span>Join Voice</span>
-          </button>
-        </>
-      ) : (
-        <div
-          className="flex items-center gap-3 cursor-pointer"
-          onClick={() => {
-            setNotification(null);
-            onOpenVoiceChat?.();
-          }}
-        >
-          <img
-            src={notification.photoURL}
-            alt=""
-            className="w-10 h-10 rounded-full object-cover"
-          />
-          <div className="flex flex-col">
-            <span className="text-xs font-bold text-white">
-              {notification.username} sent a message
-            </span>
-            <span className="text-sm text-neutral-400 line-clamp-1">
-              {notification.text ||
-                (notification.gif ? "Sent a GIF" : "Sent an attachment")}
-            </span>
-          </div>
+  {/* 3. Toast notification when chat is closed */}
+  {!isOpen && notification && (
+    <div className="fixed top-6 right-6 z-50 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-in slide-in-from-top fade-in hover:bg-neutral-800 transition-colors cursor-pointer">
+      <div
+        className="flex items-center gap-3"
+        onClick={() => {
+          setNotification(null);
+          onOpenVoiceChat?.();
+        }}
+      >
+        <img
+          src={notification.photoURL}
+          alt=""
+          className="w-10 h-10 rounded-full object-cover"
+        />
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-white">
+            {notification.username} sent a message
+          </span>
+          <span className="text-sm text-neutral-400 line-clamp-1">
+            {notification.text ||
+              (notification.gif ? "Sent a GIF" : "Sent an attachment")}
+          </span>
         </div>
-      )}
+      </div>
       <button
         onClick={(e) => {
           e.stopPropagation();
           setNotification(null);
         }}
-        className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors cursor-pointer ml-1"
+        className="text-neutral-500 hover:text-white p-1 rounded-full transition-colors cursor-pointer"
       >
         <X size={16} />
       </button>

@@ -1,9 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type, ShieldCheck, Zap, Trash2, LogOut } from "lucide-react";
+import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type } from "lucide-react";
 import { TAB_CLOAKS, TabCloak, applyTabCloak, getSavedTabCloak, resetTabCloak, ActiveCloakState } from "../tabCloaks";
-import { WebRTCMode, getSavedWebRTCMode, setSavedWebRTCMode } from "../utils/webrtcConfig";
-import WebRTCInspectorModal from "./WebRTCInspectorModal";
-import { broadcastClearAll } from "../supabase-adapter";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -15,8 +12,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [customTitle, setCustomTitle] = useState("");
   const [customIconUrl, setCustomIconUrl] = useState("");
   const [isCustomOpen, setIsCustomOpen] = useState(false);
-  const [webrtcMode, setWebrtcMode] = useState<WebRTCMode>(() => getSavedWebRTCMode());
-  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
 
   // Sync state when modal opens
   useEffect(() => {
@@ -214,7 +209,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <div className="rounded-xl border border-neutral-800/90 bg-neutral-900/40 p-4">
             <button
               onClick={() => setIsCustomOpen(!isCustomOpen)}
-              className="w-full flex items-center justify-between text-left text-xs font-semibold text-neutral-300 hover:text-white transition-colors cursor-pointer"
+              className="w-full flex items-center justify-between text-left text-xs font-semibold text-neutral-300 hover:text-white transition-colors"
             >
               <span className="flex items-center gap-2">
                 <Sparkles size={14} className="text-neutral-400" />
@@ -266,106 +261,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               </form>
             )}
           </div>
-
-          {/* WebRTC & School Firewall Port Configuration Section */}
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={16} className="text-emerald-400" />
-                <span className="text-xs font-bold text-white uppercase tracking-wider">
-                  WebRTC School Firewall Bypass
-                </span>
-              </div>
-              <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase">
-                TCP 443 / 80 Active
-              </span>
-            </div>
-
-            <p className="text-xs text-neutral-300 leading-relaxed">
-              If your school or workplace network blocks random UDP ports used for WebRTC voice chat, our TCP 443 (HTTPS) and Port 80 (HTTP) fallback ensures voice streams stay connected.
-            </p>
-
-            <div className="flex items-center justify-between pt-1">
-              <div className="text-[11px] text-neutral-400">
-                Mode: <strong className="text-white capitalize">{webrtcMode.replace(/_/g, " ")}</strong>
-              </div>
-              <button
-                onClick={() => setIsInspectorOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition-colors cursor-pointer shadow-sm"
-              >
-                <Zap size={12} />
-                <span>Test & Configure Ports</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Database & Session Control Section */}
-          <div className="rounded-xl border border-red-500/30 bg-red-950/10 p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Trash2 size={16} className="text-red-400" />
-                <span className="text-xs font-bold text-white uppercase tracking-wider">
-                  Database & Session Control
-                </span>
-              </div>
-              <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 uppercase">
-                Danger Zone
-              </span>
-            </div>
-
-            <p className="text-xs text-neutral-300 leading-relaxed font-sans">
-              Delete all messages and users from the database. This action is irreversible, will wipe all chat history, clear active users, and log everyone out.
-            </p>
-
-            <div className="flex flex-wrap gap-2 pt-1">
-              <button
-                onClick={async () => {
-                  if (confirm("Are you absolutely sure you want to delete all messages and users? This will log everyone out and cannot be undone.")) {
-                    try {
-                      const res = await fetch("/api/admin/clear-all", { method: "POST" });
-                      if (res.ok) {
-                        // Clear local storage profile as well to log out
-                        localStorage.removeItem("frosted_chat_profile");
-                        sessionStorage.removeItem("frosted_chat_profile");
-                        localStorage.removeItem("lumos_chat_messages_v3");
-                        localStorage.removeItem("lumos_chat_messages_v2");
-                        localStorage.removeItem("lumos_chat_messages_v1");
-                        
-                        // Send real-time broadcast to log out all other active users
-                        broadcastClearAll();
-                        
-                        alert("Successfully deleted all messages and users! Refreshing the page...");
-                        window.location.reload();
-                      } else {
-                        alert("Failed to clear database.");
-                      }
-                    } catch (e: any) {
-                      alert("Error: " + e.message);
-                    }
-                  }
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition-colors cursor-pointer shadow-sm"
-              >
-                <Trash2 size={12} />
-                <span>Delete All Messages & Users</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  if (confirm("Are you sure you want to log out and clear your local session?")) {
-                    localStorage.removeItem("frosted_chat_profile");
-                    sessionStorage.removeItem("frosted_chat_profile");
-                    alert("Logged out successfully! Refreshing...");
-                    window.location.reload();
-                  }
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-sm border border-neutral-700"
-              >
-                <LogOut size={12} />
-                <span>Log Out</span>
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Footer info */}
@@ -373,21 +268,12 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <span>Preferences are automatically saved to your browser.</span>
           <button
             onClick={onClose}
-            className="px-3 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors cursor-pointer"
+            className="px-3 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors"
           >
             Done
           </button>
         </div>
       </div>
-
-      <WebRTCInspectorModal
-        isOpen={isInspectorOpen}
-        onClose={() => setIsInspectorOpen(false)}
-        onModeChanged={(mode) => {
-          setWebrtcMode(mode);
-          setSavedWebRTCMode(mode);
-        }}
-      />
     </div>
   );
 }

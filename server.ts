@@ -478,7 +478,6 @@ const PORT = 3000;
   // Distributed Postgres Engine & Storage
   // ==========================================
   
-  let lastClearTimestamp = Date.now();
   let dbInstance: any = null;
   async function getDb() {
     if (dbInstance) return dbInstance;
@@ -771,38 +770,6 @@ const PORT = 3000;
     res.json({ timestamp: Date.now(), changes: [] }); // deprecated
   });
 
-  // 4b. Clear All Database Data (Messages, Users, Presence)
-  app.post(["/api/cassandra/clear-all", "/api/admin/clear-all"], async (req, res) => {
-    try {
-      const db = await getDb();
-      await db.run("DELETE FROM records");
-      try {
-        await db.run("DELETE FROM webrtc_signals");
-      } catch (e) {}
-      
-      lastClearTimestamp = Date.now();
-      
-      const payload = JSON.stringify({
-        type: "clear_all",
-        timestamp: lastClearTimestamp,
-      });
-      sseClients.forEach((client) => {
-        try {
-          client.write(`data: ${payload}\n\n`);
-          (client as any).flush?.();
-        } catch (e) {}
-      });
-
-      res.json({ success: true, message: "All messages, presence, typing, and users deleted successfully." });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get("/api/admin/clear-timestamp", (req, res) => {
-    res.json({ timestamp: lastClearTimestamp });
-  });
-
   // 5. Cassandra Status & CQL Execution
   app.get("/api/cassandra/status", async (req, res) => {
     try {
@@ -949,6 +916,69 @@ const PORT = 3000;
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
+  });
+
+  // Dynamic LuminSDK Session & Image proxy
+  let cachedLuminSessionId: string | null = null;
+  let cachedLuminSessionExpiry = 0;
+
+  async function getLuminSessionId(): Promise<string> {
+    const now = Date.now();
+    if (cachedLuminSessionId && now < cachedLuminSessionExpiry) {
+      return cachedLuminSessionId;
+    }
+    
+    try {
+      const res = await fetch("https://a.luminsdk.com/api/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (res.ok) {
+        const data: any = await res.json();
+        if (data && data.session_id) {
+          cachedLuminSessionId = data.session_id;
+          cachedLuminSessionExpiry = now + 10 * 60 * 1000; // Cache for 10 minutes
+          return data.session_id;
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching Lumin session:", err);
+    }
+    
+    return cachedLuminSessionId || "60919094aa4265e2fd2bc9e9b1874e4e";
+  }
+
+  app.get("/api/lumin-icon/*", async (req, res) => {
+    try {
+      let token = (req.params as any)[0] || req.path.replace("/api/lumin-icon/", "");
+      if (!token) {
+        return res.status(400).send("Missing token");
+      }
+      
+      const sessionId = await getLuminSessionId();
+      const freshToken = token.replace(/^[^/]+/, sessionId);
+      const targetUrl = `https://a.luminsdk.com/api/v1/assets/${freshToken}`;
+      
+      const response = await fetch(targetUrl);
+      if (!response.ok) {
+        return res.status(response.status).send(`Failed to fetch from Lumin: ${response.statusText}`);
+      }
+      
+      const contentType = response.headers.get("content-type");
+      if (contentType) {
+        res.setHeader("Content-Type", contentType);
+      }
+      
+      res.setHeader("Cache-Control", "public, max-age=31536000"); // Cache for 1 year
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return res.send(buffer);
+    } catch (err: any) {
+      console.error("Error proxying lumin icon:", err);
+      return res.status(500).send(err.message);
+    }
   });
 
   // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)

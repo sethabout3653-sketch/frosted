@@ -1,6 +1,7 @@
 import React, { memo, useMemo, useState } from "react";
 import { Gamepad2 } from "lucide-react";
 import { formatCoverUrl } from "../utils";
+import luminGamesList from "../lumin-games.json";
 
 const PRESET_GRADIENTS = [
   "from-indigo-600 via-indigo-700 to-violet-800",
@@ -22,17 +23,58 @@ function initials(name: string) {
   return words.length > 1 ? `${words[0][0]}${words[1][0]}`.toUpperCase() : (words[0]?.slice(0, 2) || "G").toUpperCase();
 }
 
-export const getCoverSources = (cover: string) => {
-  const source = formatCoverUrl(cover);
-  if (!source) return [];
-  const sources = [source];
-  if (source.includes("raw.githubusercontent.com/")) {
-    const path = source.replace("https://raw.githubusercontent.com/", "");
-    const [owner, repo, branch, ...rest] = path.split("/");
-    sources.push(`https://raw.githack.com/${owner}/${repo}/${branch}/${rest.join("/")}`);
-    sources.push(`https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${rest.join("/")}`);
-    sources.push(`https://images.weserv.nl/?url=${encodeURIComponent(source)}`);
+function getCanonical(str: string) {
+  return str
+    .toLowerCase()
+    .trim()
+    .replace(/['’":.-]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+export function findLuminIconForGame(name: string): string | null {
+  if (!name) return null;
+  const canonName = getCanonical(name);
+  
+  // Try exact canonical match first
+  let matched = luminGamesList.find(g => getCanonical(g.name) === canonName);
+  
+  // If no exact match, try matching by checking if one contains the other
+  if (!matched) {
+    matched = luminGamesList.find(g => {
+      const gCanon = getCanonical(g.name);
+      return gCanon.includes(canonName) || canonName.includes(gCanon);
+    });
   }
+  
+  if (matched && matched.image_token) {
+    return matched.image_token;
+  }
+  return null;
+}
+
+export const getCoverSources = (cover: string, name?: string) => {
+  const source = formatCoverUrl(cover);
+  const sources: string[] = [];
+
+  if (source) {
+    sources.push(source);
+    if (source.includes("raw.githubusercontent.com/")) {
+      const path = source.replace("https://raw.githubusercontent.com/", "");
+      const [owner, repo, branch, ...rest] = path.split("/");
+      sources.push(`https://raw.githack.com/${owner}/${repo}/${branch}/${rest.join("/")}`);
+      sources.push(`https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${rest.join("/")}`);
+      sources.push(`https://images.weserv.nl/?url=${encodeURIComponent(source)}`);
+    }
+  }
+
+  // Inject LuminSDK proxy cover search as fallback/alternative source
+  if (name) {
+    const luminToken = findLuminIconForGame(name);
+    if (luminToken) {
+      sources.push(`/api/lumin-icon/${luminToken}`);
+    }
+  }
+
   return [...new Set(sources)];
 };
 
@@ -43,7 +85,7 @@ interface GameCoverProps {
 }
 
 const GameCover = memo(function GameCover({ name, cover, className = "" }: GameCoverProps) {
-  const sources = useMemo(() => getCoverSources(cover), [cover]);
+  const sources = useMemo(() => getCoverSources(cover, name), [cover, name]);
   const [index, setIndex] = useState(0);
   const failed = index >= sources.length;
 

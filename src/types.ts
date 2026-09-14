@@ -27,18 +27,6 @@ export interface ChatProfile {
   timestamp?: number;
 }
 
-export interface VoiceInviteData {
-  inviterUid: string;
-  inviterUsername: string;
-  inviterPhotoURL?: string;
-  targetUid?: string;
-  targetUsername?: string;
-  channelName: string;
-  channelId: string;
-  timestamp: number;
-  status?: "pending" | "accepted" | "declined";
-}
-
 export interface ChatMessage {
   id: string;
   channelId?: string;
@@ -54,8 +42,6 @@ export interface ChatMessage {
   timestamp: number;
   reactions?: Record<string, string[]>;
   _isOptimistic?: boolean;
-  isInvite?: boolean;
-  inviteData?: VoiceInviteData;
 }
 
 export interface VoiceSignal {

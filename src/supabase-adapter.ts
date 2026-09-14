@@ -244,12 +244,6 @@ export function where(field: string, op: string, value: any) { return { type: "w
 export function orderBy(field: string, direction: "asc" | "desc" = "asc") { return { type: "orderBy", field, direction }; }
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
 
-export function broadcastClearAll() {
-  try {
-    SupabaseRealtimeManager.getInstance().broadcastClearAll();
-  } catch (e) {}
-}
-
 // =========================================================
 // Real-Time Supabase Engine Manager (Broadcast + Realtime Postgres)
 // =========================================================
@@ -277,7 +271,7 @@ class SupabaseRealtimeManager {
     // High-performance unified Supabase Realtime Broadcast channel
     this.syncChannel = supabase.channel("supabase-realtime-sync", {
       config: {
-        broadcast: { ack: false, self: true },
+        broadcast: { ack: false, self: false },
         presence: { key: "client" },
       },
     });
@@ -286,16 +280,6 @@ class SupabaseRealtimeManager {
       .on("broadcast", { event: "change" }, ({ payload }: { payload: any }) => {
         if (!payload || !payload.collection || !payload.id) return;
         this.applyChange(payload.op || "set", payload.collection, payload.id, payload.data);
-      })
-      .on("broadcast", { event: "clear_all" }, () => {
-        try {
-          localStorage.removeItem("frosted_chat_profile");
-          sessionStorage.removeItem("frosted_chat_profile");
-          localStorage.removeItem("lumos_chat_messages_v3");
-          localStorage.removeItem("lumos_chat_messages_v2");
-          localStorage.removeItem("lumos_chat_messages_v1");
-        } catch (e) {}
-        window.location.reload();
       })
       .on(
         "postgres_changes",
@@ -319,16 +303,6 @@ class SupabaseRealtimeManager {
           this.isConnected = true;
         }
       });
-  }
-
-  public broadcastClearAll() {
-    try {
-      this.syncChannel.send({
-        type: "broadcast",
-        event: "clear_all",
-        payload: {},
-      });
-    } catch (e) {}
   }
 
   public applyChange(op: string, collection: string, id: string, data: any) {

@@ -25,8 +25,6 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
-  ShieldCheck,
-  UserPlus,
 } from "lucide-react";
 import {
   collection,
@@ -47,14 +45,13 @@ import {
 import { ChatProfile, VoiceSignal } from "../types";
 import { SmartVoiceDetector } from "../utils/audioVAD";
 import { extractDominantColor } from "../utils/colorExtractor";
-import { getRTCConfiguration, getSavedWebRTCMode, WebRTCMode } from "../utils/webrtcConfig";
-import WebRTCInspectorModal from "./WebRTCInspectorModal";
 
 interface VoiceChannelProps {
   profile: ChatProfile;
   onLeave: () => void;
   isPip?: boolean;
   onExpand?: () => void;
+  showMembersSidebar?: boolean;
 }
 
 interface Participant extends ChatProfile {
@@ -70,12 +67,16 @@ const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:stun3.l.google.com:19302" },
-    { urls: "stun:stun4.l.google.com:19302" },
-    { urls: "stun:global.stun.twilio.com:3478" },
     { urls: "stun:stun.cloudflare.com:3478" },
-    { urls: "stun:stun.nextcloud.com:443" },
+    {
+      urls: [
+        "turn:openrelay.metered.ca:80",
+        "turn:openrelay.metered.ca:443",
+        "turn:openrelay.metered.ca:443?transport=tcp",
+      ],
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ],
   iceCandidatePoolSize: 10,
   bundlePolicy: "balanced",
@@ -119,6 +120,7 @@ export default function VoiceChannel({
   onLeave,
   isPip = false,
   onExpand,
+  showMembersSidebar = false,
 }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
@@ -134,63 +136,6 @@ export default function VoiceChannel({
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
-  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
-  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
-  const [onlinePresenceUsers, setOnlinePresenceUsers] = useState<any[]>([]);
-  const [invitedUsersMap, setInvitedUsersMap] = useState<Record<string, boolean>>({});
-  const [webrtcMode, setWebrtcMode] = useState<WebRTCMode>(() => getSavedWebRTCMode());
-
-  useEffect(() => {
-    if (!isInviteModalOpen) return;
-    const q = query(collection(db, "presence"));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list: any[] = [];
-      const now = Date.now();
-      snapshot.docs.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        if (data.uid && data.uid !== profile.uid && (now - (data.lastSeen || 0) < 30000)) {
-          list.push(data);
-        }
-      });
-      setOnlinePresenceUsers(list);
-    });
-    return () => unsub();
-  }, [isInviteModalOpen, profile.uid]);
-
-  const handleSendVoiceInviteFromModal = async (targetUser?: any) => {
-    const targetUid = targetUser ? targetUser.uid : "everyone";
-    const targetName = targetUser ? `@${targetUser.username}` : "everyone";
-    const msgId = "invite_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-
-    const msgData = {
-      id: msgId,
-      channelId: "general",
-      uid: profile.uid,
-      username: profile.username,
-      photoURL: profile.photoURL,
-      text: `Invited ${targetName} to join General Voice 🔊`,
-      timestamp: Date.now(),
-      isInvite: true,
-      inviteData: {
-        inviterUid: profile.uid,
-        inviterUsername: profile.username,
-        inviterPhotoURL: profile.photoURL,
-        targetUid: targetUser?.uid,
-        targetUsername: targetUser?.username,
-        channelName: "General Voice",
-        channelId: "general",
-        timestamp: Date.now(),
-        status: "pending",
-      },
-    };
-
-    try {
-      await setDoc(doc(db, "messages", msgId), msgData);
-      setInvitedUsersMap((prev) => ({ ...prev, [targetUid]: true }));
-    } catch (e) {
-      console.error("Failed to send invite from voice modal:", e);
-    }
-  };
 
   // Audio level and smart speech detection states with AI VAD (whisper / normal talk / loud)
   const [audioLevel, setAudioLevel] = useState<number>(0);
@@ -1252,8 +1197,7 @@ export default function VoiceChannel({
         delete peersRef.current[partnerUid];
       }
 
-      const config = getRTCConfiguration(webrtcMode);
-      const pc = new RTCPeerConnection(config);
+      const pc = new RTCPeerConnection(ICE_SERVERS);
       peersRef.current[partnerUid] = pc;
       iceCandidateQueuesRef.current[partnerUid] = [];
 
@@ -3025,7 +2969,7 @@ export default function VoiceChannel({
         </div>
       </div>
     ) : (
-      <div className="fixed inset-y-0 right-0 left-16 sm:left-72 z-30 flex flex-col bg-black text-white min-h-0 overflow-hidden">
+      <div className={`fixed inset-y-0 ${showMembersSidebar ? 'right-0 lg:right-56' : 'right-0'} left-16 sm:left-72 z-30 flex flex-col bg-black text-white min-h-0 overflow-hidden`}>
         {/* Top Header Bar */}
         <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
@@ -3035,24 +2979,6 @@ export default function VoiceChannel({
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsInviteModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-extrabold transition-all cursor-pointer shadow active:scale-95"
-              title="Invite Members to General Voice"
-            >
-              <UserPlus size={14} />
-              <span>Invite Members</span>
-            </button>
-
-            <button
-              onClick={() => setIsInspectorOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-400 text-xs font-bold hover:bg-emerald-900/90 transition-all cursor-pointer shadow-sm"
-              title="WebRTC School Port & Firewall Settings"
-            >
-              <ShieldCheck size={14} />
-              <span className="hidden md:inline">TCP 443/80 Bypass</span>
-            </button>
-
             <span className="text-sm font-semibold text-neutral-400 hidden sm:inline">
               General Voice ({activeParticipants.length + 1})
             </span>
@@ -4217,102 +4143,6 @@ export default function VoiceChannel({
         </div>
       );
     })()}
-
-    {/* Invite Modal */}
-    {isInviteModalOpen && (
-      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                <UserPlus size={18} />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white">Invite to General Voice</h3>
-                <p className="text-xs text-neutral-400">Send an active voice invite to chat</p>
-              </div>
-            </div>
-            <button
-              onClick={() => setIsInviteModalOpen(false)}
-              className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 transition-colors"
-            >
-              <X size={18} />
-            </button>
-          </div>
-
-          <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-            <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/60">
-              <div>
-                <h4 className="text-xs font-bold text-emerald-300">Invite Everyone</h4>
-                <p className="text-[11px] text-neutral-400">Post a broadcast voice invite to General Chat</p>
-              </div>
-              <button
-                onClick={() => handleSendVoiceInviteFromModal()}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  invitedUsersMap["everyone"]
-                    ? "bg-emerald-900 text-emerald-300 border border-emerald-700"
-                    : "bg-emerald-500 hover:bg-emerald-400 text-black shadow"
-                }`}
-              >
-                {invitedUsersMap["everyone"] ? "Invite Sent! ✓" : "Broadcast"}
-              </button>
-            </div>
-
-            <div className="pt-2">
-              <h4 className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-2">
-                Online Users ({onlinePresenceUsers.length})
-              </h4>
-              {onlinePresenceUsers.length === 0 ? (
-                <p className="text-xs text-neutral-500 italic py-2">No other users online right now</p>
-              ) : (
-                <div className="space-y-2">
-                  {onlinePresenceUsers.map((u) => (
-                    <div
-                      key={u.uid}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-950 border border-neutral-800 hover:border-neutral-700 transition-all"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <img
-                          src={u.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${u.username}`}
-                          alt=""
-                          className="w-8 h-8 rounded-full object-cover bg-neutral-800"
-                        />
-                        <span className="text-xs font-bold text-white">{u.username}</span>
-                      </div>
-                      <button
-                        onClick={() => handleSendVoiceInviteFromModal(u)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          invitedUsersMap[u.uid]
-                            ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                            : "bg-emerald-500 hover:bg-emerald-400 text-black shadow"
-                        }`}
-                      >
-                        {invitedUsersMap[u.uid] ? "Sent ✓" : "Invite"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="pt-2 border-t border-neutral-800 flex justify-end">
-            <button
-              onClick={() => setIsInviteModalOpen(false)}
-              className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-bold transition-colors cursor-pointer"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-
-    <WebRTCInspectorModal
-      isOpen={isInspectorOpen}
-      onClose={() => setIsInspectorOpen(false)}
-      onModeChanged={(mode) => setWebrtcMode(mode)}
-    />
   </>
   );
 }
