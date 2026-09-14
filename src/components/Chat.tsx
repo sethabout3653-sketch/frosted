@@ -13,11 +13,16 @@ import {
   X,
   PhoneOff,
   User as UserIcon,
+  Phone,
+  PhoneCall,
 } from "lucide-react";
 import ProfileSetup from "./ProfileSetup";
 import ChatPanel from "./ChatPanel";
 import VoiceChannel from "./VoiceChannel";
 import { ChatProfile, ChatMessage } from "../types";
+import { useCall } from "../context/CallContext";
+import StartCallModal from "./call/StartCallModal";
+import { saveChatProfile } from "../utils/profile";
 import {
   collection,
   query,
@@ -89,6 +94,8 @@ export default function Chat({
   const messageSoundRef = useRef<HTMLAudioElement | null>(null);
 
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const { activeCall, callState, setIsPip, endCall } = useCall();
+  const [showCallModal, setShowCallModal] = useState(false);
   const [rawVoiceUsers, setRawVoiceUsers] = useState<
     Array<{
       uid: string;
@@ -328,10 +335,7 @@ export default function Chat({
       photoURL: p.photoURL,
     };
     setProfile(newProfile);
-    try {
-      localStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
-      sessionStorage.setItem("frosted_chat_profile", JSON.stringify(newProfile));
-    } catch (e) {}
+    saveChatProfile(newProfile);
     setActiveTab("chat");
 
     // Update previous messages
@@ -563,6 +567,53 @@ export default function Chat({
                   )}
                 </div>
               </div>
+
+              {/* DIRECT CALLS Section */}
+              <div className="mt-3 pt-2 border-t border-neutral-900/60">
+                <div className="flex items-center justify-between px-2.5 py-1.5 text-[10px] font-bold text-neutral-500 tracking-wider uppercase">
+                  <div className="flex items-center gap-1">
+                    <ChevronDown size={12} />
+                    <span>DIRECT CALLS</span>
+                  </div>
+                  <span className="text-[9px] text-emerald-400 bg-emerald-950/80 px-1.5 py-0.2 rounded font-semibold border border-emerald-800/50">
+                    Ringtone
+                  </span>
+                </div>
+
+                <div className="space-y-1 mt-0.5">
+                  <button
+                    onClick={() => setShowCallModal(true)}
+                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-semibold text-neutral-300 hover:text-white hover:bg-neutral-900/80 transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Phone size={14} className="text-emerald-400" />
+                      <span>Start Direct Call</span>
+                    </div>
+                  </button>
+
+                  {/* Active direct call pill if connected or calling */}
+                  {activeCall && (callState === "connected" || callState === "calling") && (
+                    <div className="px-2 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-800/80 flex items-center justify-between text-xs">
+                      <button
+                        onClick={() => setIsPip(false)}
+                        className="flex items-center gap-2 truncate text-left cursor-pointer flex-1 min-w-0"
+                      >
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping flex-shrink-0" />
+                        <span className="truncate font-bold text-emerald-300">
+                          {activeCall.targetName || "Call Active"}
+                        </span>
+                      </button>
+                      <button
+                        onClick={endCall}
+                        className="p-1 rounded text-rose-400 hover:bg-rose-950 transition-colors cursor-pointer ml-1"
+                        title="End Call"
+                      >
+                        <PhoneOff size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* Discord Voice Connected Bar in Left Sidebar when viewing text chat */}
@@ -709,6 +760,13 @@ export default function Chat({
       </button>
     </div>
   )}
+
+  {/* Direct Call Modal */}
+  <StartCallModal
+    isOpen={showCallModal}
+    onClose={() => setShowCallModal(false)}
+    currentUid={profile?.uid}
+  />
 </>
 );
 }

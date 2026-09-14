@@ -10,6 +10,13 @@ import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./component
 import SettingsModal from "./components/SettingsModal";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import localZones from "./zones.json";
+import { CallProvider } from "./context/CallContext";
+import IncomingCallModal from "./components/call/IncomingCallModal";
+import DirectCallModal from "./components/call/DirectCallModal";
+import CallPipWidget from "./components/call/CallPipWidget";
+import StartCallModal from "./components/call/StartCallModal";
+import { getSavedChatProfile, subscribeProfileUpdates } from "./utils/profile";
+import { ChatProfile } from "./types";
 
 const SOUNDBOARD_GAME: Game = {
   id: "soundboard",
@@ -83,6 +90,14 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [userProfile, setUserProfile] = useState<ChatProfile | null>(() => getSavedChatProfile());
+  const [isStartCallOpen, setIsStartCallOpen] = useState(false);
+
+  useEffect(() => {
+    return subscribeProfileUpdates((p) => {
+      setUserProfile(p);
+    });
+  }, []);
 
   useEffect(() => {
     // Automatically restore saved tab cloak on initial mount
@@ -228,6 +243,7 @@ export default function App() {
         <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
       <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+      <CallProvider profile={userProfile}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -239,6 +255,7 @@ export default function App() {
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenCall={() => setIsStartCallOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -304,10 +321,21 @@ export default function App() {
           </div>
         </footer>
       )}
-  <BackgroundEditor background={background} onChange={setBackground} />
-  <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
-  
-  </div>
+
+      {/* Calling & Ringtone Modals & PiP Widget */}
+      <IncomingCallModal />
+      <DirectCallModal />
+      <CallPipWidget />
+      <StartCallModal
+        isOpen={isStartCallOpen}
+        onClose={() => setIsStartCallOpen(false)}
+        currentUid={userProfile?.uid}
+      />
+
+      <BackgroundEditor background={background} onChange={setBackground} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      </CallProvider>
+      </div>
   </>
   );
 }

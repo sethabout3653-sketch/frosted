@@ -1,5 +1,5 @@
 import React, { useState, useEffect, memo } from "react";
-import { Search, Snowflake, MessageSquare, SlidersHorizontal } from "lucide-react";
+import { Search, Snowflake, MessageSquare, SlidersHorizontal, Phone } from "lucide-react";
 import { formatTagLabel } from "../utils";
 
 interface HeaderProps {
@@ -11,6 +11,7 @@ interface HeaderProps {
   onGoHome?: () => void;
   onChatClick?: () => void;
   onOpenSettings?: () => void;
+  onOpenCall?: () => void;
 }
 
 const Header = memo(function Header({
@@ -22,6 +23,7 @@ const Header = memo(function Header({
   onGoHome,
   onChatClick,
   onOpenSettings,
+  onOpenCall,
 }: HeaderProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
 
@@ -95,6 +97,17 @@ const Header = memo(function Header({
                 </option>
               ))}
             </select>
+            {onOpenCall && (
+              <button
+                id="frosted-call-header-btn"
+                onClick={onOpenCall}
+                className="h-9 rounded-full border border-emerald-800/80 bg-emerald-950/80 hover:bg-emerald-900 px-3.5 py-1 text-xs font-bold text-emerald-400 hover:text-white transition-all cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95"
+                title="Direct Calls & Ringtone"
+              >
+                <Phone size={14} />
+                <span className="hidden md:inline">Call</span>
+              </button>
+            )}
             <button
               id="frosted-chat-tab-btn"
               onClick={onChatClick}
