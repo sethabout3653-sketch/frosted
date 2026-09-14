@@ -2366,10 +2366,22 @@ export default function VoiceChannel({
       });
 
       // Connect screen audio to the live AudioContext mix if audio track is present
-      if (hasAudio && audioCtxRef.current && mixedDestinationRef.current) {
+      if (hasAudio && screenAudioTracks[0]) {
         try {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+            audioCtxRef.current = new AudioContextClass();
+          }
           if (audioCtxRef.current.state === "suspended") {
             await audioCtxRef.current.resume().catch(() => {});
+          }
+          if (!mixedDestinationRef.current) {
+            mixedDestinationRef.current = audioCtxRef.current.createMediaStreamDestination();
+          }
+          if (screenAudioSourceRef.current) {
+            try {
+              screenAudioSourceRef.current.disconnect();
+            } catch (e) {}
           }
           const screenAudioSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
           const screenGain = audioCtxRef.current.createGain();
@@ -2380,6 +2392,20 @@ export default function VoiceChannel({
           screenGainNodeRef.current = screenGain;
           setIsScreenAudioOn(true);
           isScreenAudioOnRef.current = true;
+
+          // Ensure all active peer audio senders are sending the mixed track
+          const mixedAudioTrack = mixedDestinationRef.current.stream.getAudioTracks()[0];
+          if (mixedAudioTrack) {
+            Object.keys(peersRef.current).forEach((pUid) => {
+              const pc = peersRef.current[pUid];
+              if (pc && pc.connectionState !== "closed") {
+                const audioSender = audioSendersRef.current[pUid] || pc.getSenders().find((s) => s.track?.kind === "audio");
+                if (audioSender) {
+                  audioSender.replaceTrack(mixedAudioTrack).catch(() => {});
+                }
+              }
+            });
+          }
         } catch (audioErr) {
           console.warn("Screen audio mixing note:", audioErr);
         }

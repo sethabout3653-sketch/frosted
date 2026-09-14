@@ -42,6 +42,8 @@ interface CallContextType {
   callDuration: number; // in seconds
   isMuted: boolean;
   isVideoOn: boolean;
+  peerVideoOn: boolean;
+  peerMuted: boolean;
   isScreenSharing: boolean;
   isPip: boolean;
   localStream: MediaStream | null;
@@ -85,6 +87,8 @@ export function CallProvider({
   const [callDuration, setCallDuration] = useState<number>(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(false);
+  const [peerVideoOn, setPeerVideoOn] = useState(false);
+  const [peerMuted, setPeerMuted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isPip, setIsPip] = useState(false);
 
@@ -95,6 +99,8 @@ export function CallProvider({
   const [isTestingRingtone, setIsTestingRingtone] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const audioTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
+  const videoTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const activeCallRef = useRef<DirectCallSession | null>(null);
@@ -103,6 +109,25 @@ export function CallProvider({
   const timeoutTimerRef = useRef<any>(null);
   const echoTimerRef = useRef<any>(null);
   const stopTestTimerRef = useRef<any>(null);
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const pendingOfferRef = useRef<{ sdp: string; callId: string; uid: string } | null>(null);
+
+  // Screen audio and mixer nodes
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micGainRef = useRef<GainNode | null>(null);
+  const screenAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const screenGainRef = useRef<GainNode | null>(null);
+  const mixedDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const isMutedRef = useRef(isMuted);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+    if (micGainRef.current) {
+      micGainRef.current.gain.value = isMuted ? 0 : 1.0;
+    }
+  }, [isMuted]);
 
   useEffect(() => {
     activeCallRef.current = activeCall;
@@ -111,6 +136,62 @@ export function CallProvider({
   useEffect(() => {
     callStateRef.current = callState;
   }, [callState]);
+
+  // Robust media acquisition helper with multi-tier fallbacks
+  const acquireMediaStream = useCallback(async (isVideo: boolean): Promise<MediaStream> => {
+    if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // 1. Try requested audio + video
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: isVideo ? { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" } : false,
+        });
+        return stream;
+      } catch (err1) {
+        console.warn("[Media] Full constraint failed, attempting audio-only:", err1);
+      }
+
+      // 2. Try audio-only if video failed
+      if (isVideo) {
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true },
+            video: false,
+          });
+          return audioStream;
+        } catch (err2) {
+          console.warn("[Media] Audio-only fallback failed:", err2);
+        }
+      }
+
+      // 3. Try standard basic audio constraint
+      try {
+        const basicAudio = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        return basicAudio;
+      } catch (err3) {
+        console.warn("[Media] Basic audio failed:", err3);
+      }
+    }
+
+    // 4. Fallback: Generate synthetic silent audio stream to keep WebRTC pipeline unbroken
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const dst = ctx.createMediaStreamDestination();
+        osc.connect(dst);
+        osc.start();
+        const track = dst.stream.getAudioTracks()[0];
+        if (track) track.enabled = false;
+        return dst.stream;
+      }
+    } catch (e) {
+      console.warn("[Media] Synthetic audio stream fallback error:", e);
+    }
+
+    return new MediaStream();
+  }, []);
 
   // Clean up streams on unmount
   const stopLocalMedia = useCallback(() => {
@@ -139,6 +220,10 @@ export function CallProvider({
       } catch (e) {}
       pcRef.current = null;
     }
+    audioTransceiverRef.current = null;
+    videoTransceiverRef.current = null;
+    pendingIceCandidatesRef.current = [];
+    pendingOfferRef.current = null;
   }, []);
 
   const resetCallState = useCallback(() => {
@@ -158,12 +243,55 @@ export function CallProvider({
     stopLocalMedia();
     cleanupPeerConnection();
 
+    if (screenAudioSourceRef.current) {
+      try {
+        screenAudioSourceRef.current.disconnect();
+      } catch (e) {}
+      screenAudioSourceRef.current = null;
+    }
+    if (screenGainRef.current) {
+      try {
+        screenGainRef.current.disconnect();
+      } catch (e) {}
+      screenGainRef.current = null;
+    }
+    if (micSourceRef.current) {
+      try {
+        micSourceRef.current.disconnect();
+      } catch (e) {}
+      micSourceRef.current = null;
+    }
+    if (micGainRef.current) {
+      try {
+        micGainRef.current.disconnect();
+      } catch (e) {}
+      micGainRef.current = null;
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      try {
+        audioCtxRef.current.close();
+      } catch (e) {}
+      audioCtxRef.current = null;
+    }
+    mixedDestRef.current = null;
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch (e) {}
+      });
+      screenStreamRef.current = null;
+    }
+
     setActiveCall(null);
     setCallState("idle");
     setCallRole(null);
     setCallDuration(0);
     setIsMuted(false);
     setIsVideoOn(false);
+    setPeerVideoOn(false);
+    setPeerMuted(false);
     setIsScreenSharing(false);
     setIsPip(false);
   }, [stopLocalMedia, cleanupPeerConnection]);
@@ -202,17 +330,89 @@ export function CallProvider({
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
 
-      // Add local tracks
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
+      // Add transceivers upfront so both audio and video m-lines are negotiated in SDP
+      try {
+        const audioTrans = pc.addTransceiver("audio", { direction: "sendrecv" });
+        audioTransceiverRef.current = audioTrans;
+      } catch (e) {
+        console.warn("[WebRTC] audio transceiver error:", e);
+      }
 
-      // Handle incoming remote track
-      pc.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
-          setRemoteStream(event.streams[0]);
+      try {
+        const videoTrans = pc.addTransceiver("video", { direction: "sendrecv" });
+        videoTransceiverRef.current = videoTrans;
+      } catch (e) {
+        console.warn("[WebRTC] video transceiver error:", e);
+      }
+
+      // Attach initial local audio track
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack && audioTransceiverRef.current?.sender) {
+        try {
+          await audioTransceiverRef.current.sender.replaceTrack(audioTrack);
+        } catch (e) {
+          try { pc.addTrack(audioTrack, stream); } catch (e2) {}
         }
+      }
+
+      // Attach initial local video track if present
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack && videoTransceiverRef.current?.sender) {
+        try {
+          await videoTransceiverRef.current.sender.replaceTrack(videoTrack);
+        } catch (e) {
+          try { pc.addTrack(videoTrack, stream); } catch (e2) {}
+        }
+      }
+
+      // Handle incoming remote tracks (audio and/or video)
+      pc.ontrack = (event) => {
+        console.log("[WebRTC] ontrack received:", event.track.kind, event.track.id);
+        let curr = remoteStreamRef.current;
+        if (!curr) {
+          curr = new MediaStream();
+          remoteStreamRef.current = curr;
+        }
+
+        // Replace existing track of same kind if present
+        curr.getTracks().filter((t) => t.kind === event.track.kind).forEach((t) => {
+          try { curr?.removeTrack(t); } catch (e) {}
+        });
+        curr.addTrack(event.track);
+
+        if (event.track.kind === "video") {
+          setPeerVideoOn(true);
+        }
+
+        const freshStream = new MediaStream(curr.getTracks());
+        setRemoteStream(freshStream);
+
+        event.track.onmute = () => {
+          if (event.track.kind === "video") {
+            setPeerVideoOn(false);
+          }
+          if (remoteStreamRef.current) {
+            setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
+          }
+        };
+
+        event.track.onunmute = () => {
+          if (event.track.kind === "video") {
+            setPeerVideoOn(true);
+          }
+          if (remoteStreamRef.current) {
+            setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
+          }
+        };
+
+        event.track.onended = () => {
+          if (event.track.kind === "video") {
+            setPeerVideoOn(false);
+          }
+          if (remoteStreamRef.current) {
+            setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
+          }
+        };
       };
 
       // Handle ICE candidates
@@ -230,6 +430,17 @@ export function CallProvider({
         }
       };
 
+      // Handle ICE connection state changes
+      pc.oniceconnectionstatechange = () => {
+        console.log("[WebRTC] ICE state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+          try {
+            pc.restartIce();
+          } catch (e) {}
+        }
+      };
+
+      // If initiator, create offer
       if (isInitiator) {
         try {
           const offer = await pc.createOffer({
@@ -250,6 +461,39 @@ export function CallProvider({
           }
         } catch (err) {
           console.warn("[WebRTC] Error creating offer:", err);
+        }
+      } else if (pendingOfferRef.current) {
+        // If receiver had an offer queued before connection setup finished, drain it immediately
+        const queued = pendingOfferRef.current;
+        pendingOfferRef.current = null;
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: queued.sdp }));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          if (profile) {
+            sendBroadcastSignal({
+              id: `ans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              callId: queued.callId,
+              type: "call_webrtc_answer",
+              uid: profile.uid,
+              targetUid: queued.uid,
+              sdp: answer.sdp,
+              timestamp: Date.now(),
+            });
+          }
+
+          // Apply any buffered ICE candidates
+          while (pendingIceCandidatesRef.current.length > 0) {
+            const cand = pendingIceCandidatesRef.current.shift();
+            if (cand) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (e) {}
+            }
+          }
+        } catch (e) {
+          console.warn("[WebRTC] Error handling queued offer:", e);
         }
       }
 
@@ -360,10 +604,7 @@ export function CallProvider({
 
         // Acquire mic and camera
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-            video: isVideo,
-          });
+          const stream = await acquireMediaStream(isVideo);
           localStreamRef.current = stream;
           setLocalStream(stream);
 
@@ -381,7 +622,7 @@ export function CallProvider({
         }, 1000);
       }, 2500);
     },
-    [profile]
+    [profile, acquireMediaStream]
   );
 
   // Accept incoming call
@@ -394,6 +635,7 @@ export function CallProvider({
       timeoutTimerRef.current = null;
     }
 
+    // Instantly stop ringtone and switch to connected state
     callAudio.playCallConnected();
     setCallState("connected");
     setIsVideoOn(call.isVideoCall);
@@ -415,16 +657,13 @@ export function CallProvider({
       timestamp: Date.now(),
     });
 
-    // Acquire media
+    // Acquire media with automatic fallback
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-        video: call.isVideoCall,
-      });
+      const stream = await acquireMediaStream(call.isVideoCall);
       localStreamRef.current = stream;
       setLocalStream(stream);
 
-      // Set up peer connection as receiver (waits for offer)
+      // Set up peer connection as receiver (waits for offer or drains queued offer)
       await setupPeerConnection(stream, false, call.id, call.callerUid);
     } catch (err) {
       console.warn("Failed to get user media for call:", err);
@@ -435,7 +674,7 @@ export function CallProvider({
     durationIntervalRef.current = setInterval(() => {
       setCallDuration((prev) => prev + 1);
     }, 1000);
-  }, [profile, setupPeerConnection]);
+  }, [profile, acquireMediaStream, setupPeerConnection]);
 
   // Decline incoming call
   const declineCall = useCallback(async () => {
@@ -505,81 +744,308 @@ export function CallProvider({
 
   // Toggle microphone
   const toggleMute = useCallback(() => {
+    const call = activeCallRef.current;
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+
     if (localStreamRef.current) {
       const audioTracks = localStreamRef.current.getAudioTracks();
-      if (audioTracks.length > 0) {
-        const nextEnabled = !audioTracks[0].enabled;
-        audioTracks.forEach((t) => {
-          t.enabled = nextEnabled;
-        });
-        setIsMuted(!nextEnabled);
-      }
+      audioTracks.forEach((t) => {
+        t.enabled = !nextMuted;
+      });
     }
-  }, []);
+
+    if (call && profile) {
+      const isCaller = call.callerUid === profile.uid;
+      const peerUid = isCaller ? call.targetUid : call.callerUid;
+      sendBroadcastSignal({
+        id: `sig_track_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        callId: call.id,
+        type: "call_track_state",
+        uid: profile.uid,
+        targetUid: peerUid,
+        isVideoOn,
+        isMuted: nextMuted,
+        timestamp: Date.now(),
+      });
+    }
+  }, [isMuted, isVideoOn, profile]);
 
   // Toggle camera
   const toggleVideo = useCallback(async () => {
-    if (!localStreamRef.current) return;
+    const call = activeCallRef.current;
+    const isCurrentlyOn = isVideoOn;
 
-    const videoTracks = localStreamRef.current.getVideoTracks();
-    if (videoTracks.length > 0) {
-      const nextEnabled = !videoTracks[0].enabled;
-      videoTracks.forEach((t) => {
-        t.enabled = nextEnabled;
-      });
-      setIsVideoOn(nextEnabled);
+    if (isCurrentlyOn) {
+      // Turn video off
+      if (localStreamRef.current) {
+        const vTracks = localStreamRef.current.getVideoTracks();
+        vTracks.forEach((t) => {
+          try {
+            t.stop();
+            localStreamRef.current?.removeTrack(t);
+          } catch (e) {}
+        });
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      }
+
+      if (videoTransceiverRef.current?.sender) {
+        try {
+          await videoTransceiverRef.current.sender.replaceTrack(null);
+        } catch (e) {
+          console.warn("[WebRTC] replaceTrack null error:", e);
+        }
+      }
+
+      setIsVideoOn(false);
+
+      if (call && profile) {
+        const isCaller = call.callerUid === profile.uid;
+        const peerUid = isCaller ? call.targetUid : call.callerUid;
+        sendBroadcastSignal({
+          id: `sig_track_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          callId: call.id,
+          type: "call_track_state",
+          uid: profile.uid,
+          targetUid: peerUid,
+          isVideoOn: false,
+          isMuted,
+          timestamp: Date.now(),
+        });
+      }
     } else {
-      // Add video track
+      // Turn video on
       try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        });
         const newTrack = videoStream.getVideoTracks()[0];
         if (newTrack) {
-          localStreamRef.current.addTrack(newTrack);
-          if (pcRef.current) {
-            pcRef.current.addTrack(newTrack, localStreamRef.current);
+          let curr = localStreamRef.current;
+          if (!curr) {
+            curr = new MediaStream();
+            localStreamRef.current = curr;
           }
+          curr.getVideoTracks().forEach((t) => curr?.removeTrack(t));
+          curr.addTrack(newTrack);
+          setLocalStream(new MediaStream(curr.getTracks()));
+
+          if (videoTransceiverRef.current?.sender) {
+            await videoTransceiverRef.current.sender.replaceTrack(newTrack);
+          } else if (pcRef.current) {
+            try {
+              pcRef.current.addTrack(newTrack, curr);
+            } catch (e) {}
+          }
+
           setIsVideoOn(true);
+
+          if (call && profile) {
+            const isCaller = call.callerUid === profile.uid;
+            const peerUid = isCaller ? call.targetUid : call.callerUid;
+            sendBroadcastSignal({
+              id: `sig_track_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              callId: call.id,
+              type: "call_track_state",
+              uid: profile.uid,
+              targetUid: peerUid,
+              isVideoOn: true,
+              isMuted,
+              timestamp: Date.now(),
+            });
+          }
         }
       } catch (err) {
         console.warn("Cannot enable camera:", err);
       }
     }
+  }, [isVideoOn, isMuted, profile]);
+
+  const stopScreenShare = useCallback(async () => {
+    setIsScreenSharing(false);
+
+    if (screenAudioSourceRef.current) {
+      try {
+        screenAudioSourceRef.current.disconnect();
+      } catch (e) {}
+      screenAudioSourceRef.current = null;
+    }
+    if (screenGainRef.current) {
+      try {
+        screenGainRef.current.disconnect();
+      } catch (e) {}
+      screenGainRef.current = null;
+    }
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch (e) {}
+      });
+      screenStreamRef.current = null;
+    }
+
+    // Restore video track back to camera if enabled or null
+    const camTrack = localStreamRef.current?.getVideoTracks()[0] || null;
+    if (videoTransceiverRef.current?.sender) {
+      try {
+        await videoTransceiverRef.current.sender.replaceTrack(camTrack);
+      } catch (e) {}
+    }
+
+    // Restore audio track back to direct mic stream or mixed mic
+    const micTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+    if (micTrack && audioTransceiverRef.current?.sender) {
+      try {
+        await audioTransceiverRef.current.sender.replaceTrack(micTrack);
+      } catch (e) {}
+    }
   }, []);
 
-  // Toggle screen share
+  // Set up Web Audio mixing node for combining mic and screen audio
+  const setupMixedAudio = useCallback((micTrack: MediaStreamTrack | null, screenAudioTrack: MediaStreamTrack | null) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+        audioCtxRef.current = new AudioCtx();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+
+      if (!mixedDestRef.current) {
+        mixedDestRef.current = ctx.createMediaStreamDestination();
+      }
+
+      if (micTrack) {
+        if (micSourceRef.current) {
+          try {
+            micSourceRef.current.disconnect();
+          } catch (e) {}
+        }
+        const micSource = ctx.createMediaStreamSource(new MediaStream([micTrack]));
+        const micGain = ctx.createGain();
+        micGain.gain.value = isMutedRef.current ? 0 : 1.0;
+        micSource.connect(micGain);
+        micGain.connect(mixedDestRef.current);
+        micSourceRef.current = micSource;
+        micGainRef.current = micGain;
+      }
+
+      if (screenAudioTrack) {
+        if (screenAudioSourceRef.current) {
+          try {
+            screenAudioSourceRef.current.disconnect();
+          } catch (e) {}
+        }
+        const screenSource = ctx.createMediaStreamSource(new MediaStream([screenAudioTrack]));
+        const screenGain = ctx.createGain();
+        screenGain.gain.value = 1.0;
+        screenSource.connect(screenGain);
+        screenGain.connect(mixedDestRef.current);
+        screenAudioSourceRef.current = screenSource;
+        screenGainRef.current = screenGain;
+      }
+
+      const mixedTrack = mixedDestRef.current.stream.getAudioTracks()[0];
+      return mixedTrack || micTrack;
+    } catch (err) {
+      console.warn("[WebAudio] Mixer error, falling back to direct tracks:", err);
+      return micTrack;
+    }
+  }, []);
+
+  // Toggle screen share with high-fidelity system/tab audio capture and Web Audio mixing
   const toggleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
-      // Revert to camera / no screen
-      setIsScreenSharing(false);
+      await stopScreenShare();
       return;
     }
 
     try {
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
-      const screenTrack = displayStream.getVideoTracks()[0];
+      let displayStream: MediaStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            frameRate: { ideal: 30, max: 60 },
+            width: { max: 1920 },
+            height: { max: 1080 },
+          },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: { ideal: 2 },
+            sampleRate: { ideal: 48000 },
+            ...({
+              suppressLocalAudioPlayback: false,
+              systemAudio: "include",
+              selfBrowserSurface: "exclude",
+              surfaceSwitching: "include",
+            } as any),
+          },
+        });
+      } catch (errAudio: any) {
+        if (errAudio?.name === "NotAllowedError" || errAudio?.name === "AbortError" || errAudio?.name === "PermissionDeniedError") {
+          throw errAudio;
+        }
+        try {
+          displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          });
+        } catch (errAudio2: any) {
+          if (errAudio2?.name === "NotAllowedError" || errAudio2?.name === "AbortError" || errAudio2?.name === "PermissionDeniedError") {
+            throw errAudio2;
+          }
+          displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false,
+          });
+        }
+      }
 
-      if (screenTrack && pcRef.current && localStreamRef.current) {
-        const senders = pcRef.current.getSenders();
-        const videoSender = senders.find((s) => s.track && s.track.kind === "video");
-        if (videoSender) {
-          videoSender.replaceTrack(screenTrack);
-        } else {
-          pcRef.current.addTrack(screenTrack, localStreamRef.current);
+      screenStreamRef.current = displayStream;
+      const screenVideoTrack = displayStream.getVideoTracks()[0];
+      const screenAudioTracks = displayStream.getAudioTracks();
+
+      if (screenVideoTrack) {
+        if (videoTransceiverRef.current?.sender) {
+          await videoTransceiverRef.current.sender.replaceTrack(screenVideoTrack);
+        } else if (pcRef.current && localStreamRef.current) {
+          pcRef.current.addTrack(screenVideoTrack, localStreamRef.current);
+        }
+
+        // Mix screen audio into the active WebRTC audio sender so the peer hears the screen audio
+        const micTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+        if (screenAudioTracks.length > 0 && micTrack) {
+          const mixedTrack = setupMixedAudio(micTrack, screenAudioTracks[0]);
+          if (mixedTrack && audioTransceiverRef.current?.sender) {
+            await audioTransceiverRef.current.sender.replaceTrack(mixedTrack);
+          }
+        } else if (screenAudioTracks.length > 0 && audioTransceiverRef.current?.sender) {
+          await audioTransceiverRef.current.sender.replaceTrack(screenAudioTracks[0]);
         }
 
         setIsScreenSharing(true);
 
-        screenTrack.onended = () => {
-          setIsScreenSharing(false);
+        screenVideoTrack.onended = () => {
+          stopScreenShare();
         };
+        screenAudioTracks.forEach((at) => {
+          at.onended = () => {
+            if (!screenStreamRef.current || screenStreamRef.current.getVideoTracks().every((v) => v.readyState === "ended")) {
+              stopScreenShare();
+            }
+          };
+        });
       }
     } catch (err) {
       console.warn("Screen share cancelled or failed:", err);
     }
-  }, [isScreenSharing]);
+  }, [isScreenSharing, setupMixedAudio, stopScreenShare]);
 
   // Real-time signal subscriber for call invites, accepts, declines, cancels, ends, and WebRTC
   useEffect(() => {
@@ -587,6 +1053,16 @@ export function CallProvider({
 
     const unsubscribeSignals = subscribeBroadcastSignals(profile.uid, async (sig: any) => {
       if (!sig || !sig.type) return;
+
+      // Track state update from remote peer (camera toggle, mic mute)
+      if (sig.type === "call_track_state") {
+        if (typeof sig.isVideoOn === "boolean") {
+          setPeerVideoOn(sig.isVideoOn);
+        }
+        if (typeof sig.isMuted === "boolean") {
+          setPeerMuted(sig.isMuted);
+        }
+      }
 
       // 1. Incoming Call Invite
       if (sig.type === "call_invite") {
@@ -644,10 +1120,7 @@ export function CallProvider({
 
           // Caller acquires media and sends WebRTC offer
           try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-              audio: { echoCancellation: true, noiseSuppression: true },
-              video: current.isVideoCall,
-            });
+            const stream = await acquireMediaStream(current.isVideoCall);
             localStreamRef.current = stream;
             setLocalStream(stream);
 
@@ -696,25 +1169,40 @@ export function CallProvider({
 
       // 6. WebRTC Offer
       if (sig.type === "call_webrtc_offer") {
-        if (pcRef.current && sig.sdp) {
-          try {
-            await pcRef.current.setRemoteDescription(
-              new RTCSessionDescription({ type: "offer", sdp: sig.sdp })
-            );
-            const answer = await pcRef.current.createAnswer();
-            await pcRef.current.setLocalDescription(answer);
+        if (sig.sdp) {
+          if (pcRef.current) {
+            try {
+              await pcRef.current.setRemoteDescription(
+                new RTCSessionDescription({ type: "offer", sdp: sig.sdp })
+              );
+              const answer = await pcRef.current.createAnswer();
+              await pcRef.current.setLocalDescription(answer);
 
-            sendBroadcastSignal({
-              id: `ans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-              callId: sig.callId,
-              type: "call_webrtc_answer",
-              uid: profile.uid,
-              targetUid: sig.uid,
-              sdp: answer.sdp,
-              timestamp: Date.now(),
-            });
-          } catch (e) {
-            console.warn("[WebRTC] Error handling offer:", e);
+              sendBroadcastSignal({
+                id: `ans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                callId: sig.callId,
+                type: "call_webrtc_answer",
+                uid: profile.uid,
+                targetUid: sig.uid,
+                sdp: answer.sdp,
+                timestamp: Date.now(),
+              });
+
+              // Apply buffered ICE candidates
+              while (pendingIceCandidatesRef.current.length > 0) {
+                const cand = pendingIceCandidatesRef.current.shift();
+                if (cand) {
+                  try {
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(cand));
+                  } catch (e) {}
+                }
+              }
+            } catch (e) {
+              console.warn("[WebRTC] Error handling offer:", e);
+            }
+          } else {
+            // Queue pending offer if receiver connection is still bootstrapping
+            pendingOfferRef.current = { sdp: sig.sdp, callId: sig.callId, uid: sig.uid };
           }
         }
       }
@@ -723,9 +1211,21 @@ export function CallProvider({
       if (sig.type === "call_webrtc_answer") {
         if (pcRef.current && sig.sdp) {
           try {
-            await pcRef.current.setRemoteDescription(
-              new RTCSessionDescription({ type: "answer", sdp: sig.sdp })
-            );
+            if (pcRef.current.signalingState === "have-local-offer") {
+              await pcRef.current.setRemoteDescription(
+                new RTCSessionDescription({ type: "answer", sdp: sig.sdp })
+              );
+
+              // Apply buffered ICE candidates
+              while (pendingIceCandidatesRef.current.length > 0) {
+                const cand = pendingIceCandidatesRef.current.shift();
+                if (cand) {
+                  try {
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(cand));
+                  } catch (e) {}
+                }
+              }
+            }
           } catch (e) {
             console.warn("[WebRTC] Error handling answer:", e);
           }
@@ -734,11 +1234,15 @@ export function CallProvider({
 
       // 8. WebRTC Candidate
       if (sig.type === "call_webrtc_candidate") {
-        if (pcRef.current && sig.candidate) {
-          try {
-            await pcRef.current.addIceCandidate(new RTCIceCandidate(sig.candidate));
-          } catch (e) {
-            console.warn("[WebRTC] Error adding ICE candidate:", e);
+        if (sig.candidate) {
+          if (pcRef.current && pcRef.current.remoteDescription && pcRef.current.remoteDescription.type) {
+            try {
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(sig.candidate));
+            } catch (e) {
+              console.warn("[WebRTC] Error adding ICE candidate:", e);
+            }
+          } else {
+            pendingIceCandidatesRef.current.push(sig.candidate);
           }
         }
       }
@@ -806,6 +1310,8 @@ export function CallProvider({
         callDuration,
         isMuted,
         isVideoOn,
+        peerVideoOn,
+        peerMuted,
         isScreenSharing,
         isPip,
         localStream,
@@ -827,6 +1333,26 @@ export function CallProvider({
       }}
     >
       {children}
+      {/* Persistent global audio element for remote WebRTC audio */}
+      <audio
+        id="persistent-direct-call-audio"
+        ref={(el) => {
+          if (el && remoteStream && callState === "connected") {
+            if (el.srcObject !== remoteStream) {
+              el.srcObject = remoteStream;
+            }
+            el.volume = 1.0;
+            el.muted = false;
+            el.play().catch((err) => {
+              console.warn("[CallAudio] Autoplay interaction required:", err);
+            });
+          } else if (el && callState !== "connected") {
+            el.srcObject = null;
+          }
+        }}
+        autoPlay
+        playsInline
+      />
     </CallContext.Provider>
   );
 }

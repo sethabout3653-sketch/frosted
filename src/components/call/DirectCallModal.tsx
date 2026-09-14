@@ -8,8 +8,6 @@ import {
   Minimize2,
   ScreenShare,
   ScreenShareOff,
-  Volume2,
-  Sparkles,
 } from "lucide-react";
 import { useCall } from "../../context/CallContext";
 
@@ -21,6 +19,8 @@ export default function DirectCallModal() {
     callDuration,
     isMuted,
     isVideoOn,
+    peerVideoOn,
+    peerMuted,
     isScreenSharing,
     isPip,
     localStream,
@@ -36,25 +36,29 @@ export default function DirectCallModal() {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Attach local stream to local video
+  // Sync streams whenever localStream, remoteStream or video states change
   useEffect(() => {
     if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
     }
   }, [localStream, isVideoOn]);
 
-  // Attach remote stream to remote video and audio
   useEffect(() => {
     if (remoteStream) {
-      if (remoteVideoRef.current) {
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStream) {
         remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play().catch(() => {});
       }
-      if (remoteAudioRef.current) {
+      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== remoteStream) {
         remoteAudioRef.current.srcObject = remoteStream;
+        remoteAudioRef.current.volume = 1.0;
+        remoteAudioRef.current.muted = false;
         remoteAudioRef.current.play().catch(() => {});
       }
     }
-  }, [remoteStream]);
+  }, [remoteStream, peerVideoOn]);
 
   // Format call duration (e.g. 02:45)
   const formatTime = (seconds: number) => {
@@ -77,13 +81,32 @@ export default function DirectCallModal() {
   const peerName = isCaller ? activeCall.targetName : activeCall.callerName;
   const peerPhoto = isCaller ? activeCall.targetPhoto : activeCall.callerPhoto;
 
+  const hasRemoteVideo =
+    peerVideoOn ||
+    (remoteStream &&
+      remoteStream.getVideoTracks().some(
+        (t) => t.readyState === "live" && t.enabled
+      ));
+
   return (
     <div
       id="direct-call-overlay"
       className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200"
     >
       {/* Hidden audio element for remote WebRTC audio */}
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+      <audio
+        ref={(el) => {
+          remoteAudioRef.current = el;
+          if (el && remoteStream && el.srcObject !== remoteStream) {
+            el.srcObject = remoteStream;
+            el.volume = 1.0;
+            el.muted = false;
+            el.play().catch(() => {});
+          }
+        }}
+        autoPlay
+        playsInline
+      />
 
       <div
         id="direct-call-card"
@@ -132,7 +155,7 @@ export default function DirectCallModal() {
             {callState === "connected" && (
               <button
                 onClick={() => setIsPip(true)}
-                className="p-2 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+                className="p-2 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
                 title="Minimize (Picture-in-Picture)"
               >
                 <Minimize2 size={16} />
@@ -170,40 +193,65 @@ export default function DirectCallModal() {
           {/* State 2: Connected Active Call */}
           {callState === "connected" && (
             <div className="w-full h-full relative flex items-center justify-center">
-              {/* Remote Video Stream if active */}
-              {remoteStream && remoteStream.getVideoTracks().length > 0 ? (
+              {/* Remote Video Stream Container */}
+              <div className={`w-full h-full relative ${hasRemoteVideo ? "flex" : "hidden"} items-center justify-center bg-black`}>
                 <video
-                  ref={remoteVideoRef}
+                  ref={(el) => {
+                    remoteVideoRef.current = el;
+                    if (el && remoteStream && el.srcObject !== remoteStream) {
+                      el.srcObject = remoteStream;
+                      el.play().catch(() => {});
+                    }
+                  }}
                   autoPlay
                   playsInline
                   className="w-full h-full object-cover"
                 />
-              ) : (
-                /* Avatar Card if no video */
-                <div className="flex flex-col items-center justify-center text-center p-6">
-                  <div className="relative mb-4">
-                    <div className="w-28 h-28 rounded-full overflow-hidden border-2 border-emerald-500/80 bg-neutral-800 shadow-2xl flex items-center justify-center text-3xl font-bold text-white">
-                      {peerPhoto ? (
-                        <img src={peerPhoto} alt={peerName} className="w-full h-full object-cover" />
-                      ) : (
-                        <span>{peerName?.charAt(0).toUpperCase() || "?"}</span>
-                      )}
-                    </div>
-                    <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-[#0a0a0d]" />
+                {peerMuted && (
+                  <div className="absolute top-4 left-4 bg-rose-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow backdrop-blur-md">
+                    <MicOff size={12} />
+                    <span>{peerName} is muted</span>
                   </div>
+                )}
+              </div>
 
-                  <h3 className="text-xl font-bold text-white">{peerName}</h3>
-                  <p className="text-xs text-emerald-400 font-semibold mt-1">
-                    Call in progress • {formatTime(callDuration)}
-                  </p>
+              {/* Avatar Card when video is off */}
+              <div className={`flex flex-col items-center justify-center text-center p-6 ${hasRemoteVideo ? "hidden" : "flex"}`}>
+                <div className="relative mb-4">
+                  <div className="w-28 h-28 rounded-full overflow-hidden border-2 border-emerald-500/80 bg-neutral-800 shadow-2xl flex items-center justify-center text-3xl font-bold text-white">
+                    {peerPhoto ? (
+                      <img src={peerPhoto} alt={peerName} className="w-full h-full object-cover" />
+                    ) : (
+                      <span>{peerName?.charAt(0).toUpperCase() || "?"}</span>
+                    )}
+                  </div>
+                  <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-[#0a0a0d]" />
                 </div>
-              )}
+
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <span>{peerName}</span>
+                  {peerMuted && (
+                    <span title="Muted" className="inline-flex text-rose-400">
+                      <MicOff size={15} />
+                    </span>
+                  )}
+                </h3>
+                <p className="text-xs text-emerald-400 font-semibold mt-1">
+                  Connected • {formatTime(callDuration)}
+                </p>
+              </div>
 
               {/* Picture-in-Picture Local Video Preview (when camera is on) */}
               {isVideoOn && localStream && (
                 <div className="absolute top-4 right-4 w-32 sm:w-44 aspect-video rounded-xl overflow-hidden border border-neutral-700/80 bg-black/90 shadow-2xl z-20">
                   <video
-                    ref={localVideoRef}
+                    ref={(el) => {
+                      localVideoRef.current = el;
+                      if (el && localStream && el.srcObject !== localStream) {
+                        el.srcObject = localStream;
+                        el.play().catch(() => {});
+                      }
+                    }}
                     autoPlay
                     muted
                     playsInline
