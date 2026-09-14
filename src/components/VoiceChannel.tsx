@@ -261,7 +261,8 @@ export default function VoiceChannel({
       .filter((p) => {
         if (!p || !p.uid) return false;
         const uName = (p.username || "").trim();
-        if (!uName) {
+        // Strictly ban Anonymous or empty users from appearing in voice chat
+        if (!uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
           return false;
         }
         // If we have an active, healthy WebRTC peer connection, they are 100% active and connected!
@@ -281,7 +282,7 @@ export default function VoiceChannel({
 
   // Active Screen Share descriptor (local or remote)
   const activeScreenShare = useMemo(() => {
-    if (isScreenSharing && screenStreamRef.current) {
+    if (isScreenSharing && screenStreamRef.current && screenStreamRef.current.getVideoTracks().some((t) => t.readyState === "live")) {
       return {
         uid: profile.uid,
         username: profile.username,
@@ -289,13 +290,12 @@ export default function VoiceChannel({
         hasAudio: isScreenAudioOn,
       };
     }
-    // Check if any participant is marked as screen sharing
     const remoteSharer = activeParticipants.find(
       (p) =>
-        p.isScreenSharing === true ||
-        !!remoteScreenSharersRef.current[p.uid] ||
-        (!!remoteScreenStreamsRef.current[p.uid] &&
-          remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live"))
+        p.isScreenSharing === true &&
+        (!!remoteScreenSharersRef.current[p.uid] ||
+          (!!remoteScreenStreamsRef.current[p.uid] &&
+            remoteScreenStreamsRef.current[p.uid].getVideoTracks().some((t) => t.readyState === "live" && t.enabled)))
     );
     if (remoteSharer) {
       return {
@@ -303,17 +303,6 @@ export default function VoiceChannel({
         username: remoteSharer.username,
         isLocal: false,
         hasAudio: !!remoteSharer.isScreenAudioOn || !!remoteScreenSharersRef.current[remoteSharer.uid]?.hasAudio,
-      };
-    }
-    // Fallback: check remoteScreenSharersRef or remoteScreenStreamsRef keys
-    const fallbackUid = Object.keys(remoteScreenSharersRef.current)[0] || Object.keys(remoteScreenStreamsRef.current)[0];
-    if (fallbackUid) {
-      const p = activeParticipants.find((u) => u.uid === fallbackUid);
-      return {
-        uid: fallbackUid,
-        username: p?.username || "Screen Share",
-        isLocal: false,
-        hasAudio: !!remoteScreenSharersRef.current[fallbackUid]?.hasAudio,
       };
     }
     return null;
@@ -531,76 +520,44 @@ export default function VoiceChannel({
 
   // Acquire studio microphone stream with hardware/browser noise suppression, acoustic echo cancellation, and auto gain
   const acquireMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
-    if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        const constraints: MediaStreamConstraints = {
-          audio: {
-            echoCancellation: { ideal: true },
-            noiseSuppression: { ideal: true },
-            autoGainControl: { ideal: true },
-            channelCount: { ideal: 1 },
-            sampleRate: { ideal: 48000 },
-            sampleSize: { ideal: 16 },
-            // Enhanced noise suppression & acoustic echo cancellation flags for Chromium/WebKit/Blink
-            ...({
-              echoCancellationType: "system",
-              googEchoCancellation: true,
-              googExperimentalEchoCancellation: true,
-              googAutoGainControl: true,
-              googExperimentalAutoGainControl: true,
-              googNoiseSuppression: true,
-              googExperimentalNoiseSuppression: true,
-              googHighpassFilter: true,
-              googNoiseReduction: true,
-              googTypingNoiseDetection: true,
-              googAudioMirroring: false,
-            } as any),
-          },
-          video: false,
-        };
-        return await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (err) {
-        console.warn("Standard mic constraints failed, using fallback:", err);
-      }
-
-      try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: false,
-        });
-      } catch (err2) {
-        console.warn("Basic mic constraints failed:", err2);
-      }
-
-      try {
-        return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      } catch (err3) {
-        console.warn("Audio=true failed:", err3);
-      }
-    }
-
-    // Fallback: Generate synthetic silent audio stream to keep WebRTC pipeline unbroken
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioCtx) {
-        const ctx = new AudioCtx();
-        const osc = ctx.createOscillator();
-        const dst = ctx.createMediaStreamDestination();
-        osc.connect(dst);
-        osc.start();
-        const track = dst.stream.getAudioTracks()[0];
-        if (track) track.enabled = false;
-        return dst.stream;
-      }
-    } catch (e) {
-      console.warn("[VoiceChannel] Synthetic audio fallback error:", e);
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          sampleSize: { ideal: 16 },
+          // Enhanced noise suppression & acoustic echo cancellation flags for Chromium/WebKit/Blink
+          ...({
+            echoCancellationType: "system",
+            googEchoCancellation: true,
+            googExperimentalEchoCancellation: true,
+            googAutoGainControl: true,
+            googExperimentalAutoGainControl: true,
+            googNoiseSuppression: true,
+            googExperimentalNoiseSuppression: true,
+            googHighpassFilter: true,
+            googNoiseReduction: true,
+            googTypingNoiseDetection: true,
+            googAudioMirroring: false,
+          } as any),
+        },
+        video: false,
+      };
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      console.warn("Standard mic constraints failed, using fallback:", err);
+      return await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
     }
-
-    return new MediaStream();
   }, []);
 
   // Connect microphone to live Web Audio pipeline for speech/sound analysis, noise cleanup & visual VAD
@@ -1453,15 +1410,7 @@ export default function VoiceChannel({
 
           if (pc.signalingState === "stable" || pc.signalingState === "have-local-offer") {
             try {
-              let offerInit: RTCSessionDescriptionInit;
-              if (typeof signal.sdp === "string" && (signal.sdp.trim().startsWith("{") || signal.sdp.trim().startsWith("["))) {
-                offerInit = JSON.parse(signal.sdp);
-              } else if (typeof signal.sdp === "object" && signal.sdp !== null) {
-                offerInit = signal.sdp;
-              } else {
-                offerInit = { type: "offer", sdp: signal.sdp };
-              }
-              const offerDescription = new RTCSessionDescription(offerInit);
+              const offerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
               await pc.setRemoteDescription(offerDescription);
               await processCandidateQueue(partnerUid, pc);
 
@@ -1477,27 +1426,19 @@ export default function VoiceChannel({
 
               syncPeerTracks(partnerUid, pc);
             } catch (e) {
-              console.warn("[VoiceChannel] Offer handling warning:", e);
+              // Gracefully ignore state transitions
             }
           }
         } else if (signal.type === "answer") {
           const pc = peersRef.current[partnerUid];
           if (pc && pc.signalingState === "have-local-offer") {
             try {
-              let answerInit: RTCSessionDescriptionInit;
-              if (typeof signal.sdp === "string" && (signal.sdp.trim().startsWith("{") || signal.sdp.trim().startsWith("["))) {
-                answerInit = JSON.parse(signal.sdp);
-              } else if (typeof signal.sdp === "object" && signal.sdp !== null) {
-                answerInit = signal.sdp;
-              } else {
-                answerInit = { type: "answer", sdp: signal.sdp };
-              }
-              const answerDescription = new RTCSessionDescription(answerInit);
+              const answerDescription = new RTCSessionDescription(JSON.parse(signal.sdp));
               await pc.setRemoteDescription(answerDescription);
               await processCandidateQueue(partnerUid, pc);
               syncPeerTracks(partnerUid, pc);
             } catch (e) {
-              console.warn("[VoiceChannel] Answer handling warning:", e);
+              // Gracefully ignore stale/duplicate answer
             }
           }
         } else if (signal.type === "candidate") {
@@ -1676,8 +1617,13 @@ export default function VoiceChannel({
 
         localStreamRef.current = stream;
 
-        // Register self as active participant
-        const myCleanUsername = (profile.username || "").trim() || `User_${profile.uid.slice(-4)}`;
+        // Register self as active participant (strictly reject anonymous/empty username)
+        const myCleanUsername = (profile.username || "").trim();
+        if (!myCleanUsername || myCleanUsername.toLowerCase() === "anonymous" || myCleanUsername.toLowerCase() === "guest") {
+          console.warn("Cannot join voice channel with anonymous username.");
+          stopAllMediaTracks();
+          return;
+        }
 
         await setDoc(doc(db, "voice_users", profile.uid), {
           uid: profile.uid,
@@ -1722,22 +1668,22 @@ export default function VoiceChannel({
           // 1. Process voice_users collection
           latestVoiceDocs.forEach((d) => {
             const u = d.data() as Participant;
-            const uName = (u?.username || "").trim() || (u?.uid ? `User_${u.uid.slice(-4)}` : "");
-            if (!u?.uid || !uName) {
+            const uName = (u?.username || "").trim();
+            if (!u?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
               return;
             }
             let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
             if (ts <= 0) ts = now;
             if (now - ts <= 120000) {
-              userMap.set(u.uid, { ...u, username: uName, timestamp: ts });
+              userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
 
           // 2. Process presence collection for any user marked inVoice
           latestPresenceDocs.forEach((d) => {
             const pData = d.data();
-            const uName = (pData?.username || "").trim() || (pData?.uid ? `User_${pData.uid.slice(-4)}` : "");
-            if (!pData?.uid || !uName) {
+            const uName = (pData?.username || "").trim();
+            if (!pData?.uid || !uName || uName.toLowerCase() === "anonymous" || uName.toLowerCase() === "guest") {
               return;
             }
             if (pData.inVoice) {
@@ -2420,22 +2366,10 @@ export default function VoiceChannel({
       });
 
       // Connect screen audio to the live AudioContext mix if audio track is present
-      if (hasAudio && screenAudioTracks[0]) {
+      if (hasAudio && audioCtxRef.current && mixedDestinationRef.current) {
         try {
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
-            audioCtxRef.current = new AudioContextClass();
-          }
           if (audioCtxRef.current.state === "suspended") {
             await audioCtxRef.current.resume().catch(() => {});
-          }
-          if (!mixedDestinationRef.current) {
-            mixedDestinationRef.current = audioCtxRef.current.createMediaStreamDestination();
-          }
-          if (screenAudioSourceRef.current) {
-            try {
-              screenAudioSourceRef.current.disconnect();
-            } catch (e) {}
           }
           const screenAudioSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
           const screenGain = audioCtxRef.current.createGain();
@@ -2446,20 +2380,6 @@ export default function VoiceChannel({
           screenGainNodeRef.current = screenGain;
           setIsScreenAudioOn(true);
           isScreenAudioOnRef.current = true;
-
-          // Ensure all active peer audio senders are sending the mixed track
-          const mixedAudioTrack = mixedDestinationRef.current.stream.getAudioTracks()[0];
-          if (mixedAudioTrack) {
-            Object.keys(peersRef.current).forEach((pUid) => {
-              const pc = peersRef.current[pUid];
-              if (pc && pc.connectionState !== "closed") {
-                const audioSender = audioSendersRef.current[pUid] || pc.getSenders().find((s) => s.track?.kind === "audio");
-                if (audioSender) {
-                  audioSender.replaceTrack(mixedAudioTrack).catch(() => {});
-                }
-              }
-            });
-          }
         } catch (audioErr) {
           console.warn("Screen audio mixing note:", audioErr);
         }
@@ -2521,9 +2441,8 @@ export default function VoiceChannel({
               try {
                 const offer = await pc.createOffer();
                 const optOffer = optimizeAudioSdp(offer.sdp || "");
-                const offerDesc = new RTCSessionDescription({ type: "offer", sdp: optOffer });
-                await pc.setLocalDescription(offerDesc);
-                sendSignal(pUid, "offer", JSON.stringify(offerDesc));
+                await pc.setLocalDescription({ type: "offer", sdp: optOffer });
+                sendSignal(pUid, "offer", optOffer);
               } catch (renegErr) {}
             }
 

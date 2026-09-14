@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } fr
 import { Game } from "./types";
 import { fetchGamesList, getUniqueTags, isFnfGame, isFnfMod, deduplicateGames } from "./utils";
 import { fetchLuminGames, getLocalLuminGames, fetchLuminSessionId, getLocalLuminGamesWithSession } from "./lumin";
-import Header, { OnlineUser } from "./components/Header";
+import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
@@ -10,14 +10,6 @@ import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./component
 import SettingsModal from "./components/SettingsModal";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import localZones from "./zones.json";
-import { CallProvider } from "./context/CallContext";
-import IncomingCallModal from "./components/call/IncomingCallModal";
-import DirectCallModal from "./components/call/DirectCallModal";
-import CallPipWidget from "./components/call/CallPipWidget";
-import StartCallModal from "./components/call/StartCallModal";
-import { getOrCreateChatProfile, subscribeProfileUpdates } from "./utils/profile";
-import { ChatProfile } from "./types";
-import { db, doc, setDoc, deleteDoc, serverTimestamp, collection, onSnapshot, toTimestampMs } from "./supabase-adapter";
 
 const SOUNDBOARD_GAME: Game = {
   id: "soundboard",
@@ -91,113 +83,6 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [userProfile, setUserProfile] = useState<ChatProfile>(() => getOrCreateChatProfile());
-  const [isStartCallOpen, setIsStartCallOpen] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
-
-  useEffect(() => {
-    return subscribeProfileUpdates((p) => {
-      if (p) {
-        setUserProfile(p);
-      }
-    });
-  }, []);
-
-  // Global Real-time Presence Subscription
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "presence"),
-      (snapshot) => {
-        const now = Date.now();
-        const userMap = new Map<string, OnlineUser>();
-
-        snapshot.docs.forEach((docSnap: any) => {
-          const data = docSnap.data();
-          const uname = (data.username || "").trim();
-          if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") return;
-
-          const ts = toTimestampMs(data.lastSeen || data.timestamp);
-          const isMe = userProfile?.uid && (data.uid === userProfile.uid || docSnap.id === userProfile.uid);
-          const isRecent = ts > 0 && now - ts <= 60000;
-          const isOnline = isMe || (isRecent && data.status !== "left");
-
-          if (isOnline) {
-            const uid = data.uid || docSnap.id;
-            const existing = userMap.get(uid);
-            if (!existing || (ts || 0) > (existing.lastSeen || 0) || isMe) {
-              userMap.set(uid, {
-                uid,
-                username: uname,
-                photoURL: data.photoURL || "",
-                activity: data.activity || (data.currentGame ? `Playing ${data.currentGame}` : data.currentView === "chat" ? "In Chat" : "Browsing Games"),
-                currentGame: data.currentGame || null,
-                currentView: data.currentView || undefined,
-                lastSeen: ts,
-              });
-            }
-          }
-        });
-
-        setOnlineUsers(Array.from(userMap.values()));
-      },
-      (err) => {
-        console.warn("Global presence listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, [userProfile?.uid]);
-
-  // Global Presence Heartbeat: Keeps user reachable for direct calls across Games, Home, and Chat
-  useEffect(() => {
-    if (!userProfile?.uid) return;
-
-    const presenceRef = doc(db, "presence", userProfile.uid);
-
-    const updatePresence = async () => {
-      try {
-        let activity = "Browsing Games";
-        if (selectedGame) {
-          activity = `Playing ${selectedGame.name}`;
-        } else if (currentView === "chat") {
-          activity = "In Chat";
-        }
-
-        await setDoc(
-          presenceRef,
-          {
-            uid: userProfile.uid,
-            username: userProfile.username,
-            photoURL: userProfile.photoURL || "",
-            status: "online",
-            activity,
-            currentGame: selectedGame?.name || null,
-            currentView,
-            lastSeen: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } catch (err) {
-        console.warn("Global presence update error:", err);
-      }
-    };
-
-    updatePresence();
-    const interval = setInterval(updatePresence, 12000); // 12-second periodic heartbeat
-
-    const handleUnload = () => {
-      deleteDoc(presenceRef).catch(() => {});
-    };
-
-    window.addEventListener("beforeunload", handleUnload);
-    window.addEventListener("pagehide", handleUnload);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("beforeunload", handleUnload);
-      window.removeEventListener("pagehide", handleUnload);
-    };
-  }, [userProfile, selectedGame, currentView]);
 
   useEffect(() => {
     // Automatically restore saved tab cloak on initial mount
@@ -343,7 +228,6 @@ export default function App() {
         <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
       </div>
       <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
-      <CallProvider profile={userProfile}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -352,12 +236,9 @@ export default function App() {
         selectedTag={selectedTag}
         setSelectedTag={setSelectedTag}
         tags={tags}
-        onlineUsers={onlineUsers}
-        currentUid={userProfile?.uid}
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenCall={() => setIsStartCallOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -367,7 +248,6 @@ export default function App() {
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
-              onOpenCall={() => setIsStartCallOpen(true)}
             />
           )}
         </div>
@@ -424,22 +304,10 @@ export default function App() {
           </div>
         </footer>
       )}
-
-      {/* Calling & Ringtone Modals & PiP Widget */}
-      <IncomingCallModal />
-      <DirectCallModal />
-      <CallPipWidget />
-      <StartCallModal
-        isOpen={isStartCallOpen}
-        onClose={() => setIsStartCallOpen(false)}
-        onlineUsers={onlineUsers}
-        currentUid={userProfile?.uid}
-      />
-
-      <BackgroundEditor background={background} onChange={setBackground} />
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
-      </CallProvider>
-      </div>
+  <BackgroundEditor background={background} onChange={setBackground} />
+  <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+  
+  </div>
   </>
   );
 }

@@ -1,22 +1,6 @@
 import React, { useState, useEffect } from "react";
-import {
-  X,
-  Check,
-  RotateCcw,
-  SlidersHorizontal,
-  Sparkles,
-  Globe,
-  Link2,
-  Type,
-  Volume2,
-  VolumeX,
-  Phone,
-  Play,
-  Square,
-  Music,
-} from "lucide-react";
+import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type } from "lucide-react";
 import { TAB_CLOAKS, TabCloak, applyTabCloak, getSavedTabCloak, resetTabCloak, ActiveCloakState } from "../tabCloaks";
-import { useCall } from "../context/CallContext";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -28,14 +12,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [customTitle, setCustomTitle] = useState("");
   const [customIconUrl, setCustomIconUrl] = useState("");
   const [isCustomOpen, setIsCustomOpen] = useState(false);
-  const {
-    ringtoneVolume,
-    setRingtoneVolume,
-    isTestingRingtone,
-    testRingtone,
-    stopTestRingtone,
-    startEchoCall,
-  } = useCall();
 
   // Sync state when modal opens
   useEffect(() => {
@@ -284,91 +260,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </div>
               </form>
             )}
-          </div>
-
-          {/* Call Ringtone & Audio Settings Section */}
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Music size={15} className="text-emerald-400" />
-                <span className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
-                  Call Ringtone & Audio
-                </span>
-              </div>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-full">
-                ACTIVE
-              </span>
-            </div>
-
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              When someone calls you or you place a direct call, your custom ringtone will play continuously until answered or declined.
-            </p>
-
-            <div className="p-3.5 rounded-xl border border-neutral-800 bg-neutral-950/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                  <Volume2 size={18} />
-                </div>
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <span>ringtone.mp3</span>
-                    <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.2 rounded font-normal">
-                      audio/mpeg
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-neutral-400">Default Call Ringtone File</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 self-end sm:self-center">
-                <button
-                  onClick={testRingtone}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    isTestingRingtone
-                      ? "bg-rose-600 hover:bg-rose-500 text-white animate-pulse"
-                      : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm shadow-emerald-600/20"
-                  }`}
-                  title={isTestingRingtone ? "Stop Ringtone" : "Preview Ringtone"}
-                >
-                  {isTestingRingtone ? <Square size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
-                  <span>{isTestingRingtone ? "Stop Ringtone" : "Test Ringtone"}</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    onClose();
-                    startEchoCall(false);
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-neutral-800 hover:bg-neutral-700 text-white transition-colors cursor-pointer"
-                  title="Make a test call with Echo Bot"
-                >
-                  <Phone size={13} />
-                  <span>Test Call</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Volume Slider */}
-            <div className="space-y-1.5 pt-1">
-              <div className="flex items-center justify-between text-xs text-neutral-400">
-                <span className="flex items-center gap-1.5">
-                  <Volume2 size={13} />
-                  <span>Ringtone Volume</span>
-                </span>
-                <span className="font-mono text-white text-[11px]">
-                  {Math.round(ringtoneVolume * 100)}%
-                </span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={ringtoneVolume}
-                onChange={(e) => setRingtoneVolume(parseFloat(e.target.value))}
-                className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-              />
-            </div>
           </div>
         </div>
 

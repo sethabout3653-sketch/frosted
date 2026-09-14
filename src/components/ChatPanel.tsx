@@ -32,14 +32,11 @@ import {
   Volume2,
   Video,
   MonitorUp,
-  Phone,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
 import MediaAttachment from "./MediaAttachment";
 import { detectMediaType, formatFileSize } from "../utils/mediaUtils";
-import { useCall } from "../context/CallContext";
-import StartCallModal from "./call/StartCallModal";
 
 interface ChatPanelProps {
   profile: ChatProfile;
@@ -55,9 +52,6 @@ interface MemberUser {
   photoURL: string;
   lastSeen?: number;
   status?: "online" | "left" | "offline";
-  activity?: string;
-  currentGame?: string | null;
-  currentView?: string;
   isMuted?: boolean;
   inVoice?: boolean;
 }
@@ -122,8 +116,6 @@ export default function ChatPanel({
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
   >({});
-  const { startCall } = useCall();
-  const [showStartCall, setShowStartCall] = useState(false);
   const [text, setText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showGiphy, setShowGiphy] = useState(false);
@@ -337,9 +329,6 @@ export default function ChatPanel({
             photoURL: data.photoURL || "",
             status: data.status || "online",
             lastSeen: toTimestampMs(data.lastSeen),
-            activity: (data as any).activity || ((data as any).currentGame ? `Playing ${(data as any).currentGame}` : (data as any).currentView === "chat" ? "In Chat" : "Browsing Games"),
-            currentGame: (data as any).currentGame || null,
-            currentView: (data as any).currentView || undefined,
             isMuted: data.isMuted || false,
             inVoice: data.inVoice || false,
           });
@@ -987,16 +976,6 @@ export default function ChatPanel({
               />
             </div>
 
-            {/* Start Call Button */}
-            <button
-              onClick={() => setShowStartCall(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/80 text-emerald-400 hover:text-white transition-all text-xs font-semibold cursor-pointer shadow-sm"
-              title="Start Direct Call (plays ringtone)"
-            >
-              <Phone size={14} />
-              <span className="hidden sm:inline">Call</span>
-            </button>
-
             {/* Toggle Member Sidebar Button */}
             {setShowMembersSidebar && (
               <button
@@ -1437,9 +1416,9 @@ export default function ChatPanel({
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[10px] text-neutral-400 font-medium truncate max-w-[120px]" title={user.activity || (user.currentGame ? `Playing ${user.currentGame}` : "Online")}>
-                            {user.activity || (user.currentGame ? `Playing ${user.currentGame}` : "Online")}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-neutral-500 font-medium">
+                            Online
                           </span>
                           {isInVoice && (
                             <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-1 py-0.2 rounded">
@@ -1458,26 +1437,6 @@ export default function ChatPanel({
                           )}
                         </div>
                       </div>
-
-                      {/* Direct Call Action Buttons */}
-                      {!isCurrentUser && (
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => startCall(user, false)}
-                            className="p-1 rounded-md bg-neutral-800/80 hover:bg-emerald-600 text-neutral-400 hover:text-white transition-all cursor-pointer"
-                            title={`Voice Call ${user.username} (plays ringtone)`}
-                          >
-                            <Phone size={12} />
-                          </button>
-                          <button
-                            onClick={() => startCall(user, true)}
-                            className="p-1 rounded-md bg-neutral-800/80 hover:bg-indigo-600 text-neutral-400 hover:text-white transition-all cursor-pointer"
-                            title={`Video Call ${user.username}`}
-                          >
-                            <Video size={12} />
-                          </button>
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -1486,14 +1445,6 @@ export default function ChatPanel({
           </div>
         </aside>
       )}
-
-      {/* Start Direct Call Modal */}
-      <StartCallModal
-        isOpen={showStartCall}
-        onClose={() => setShowStartCall(false)}
-        onlineUsers={activeOnlineUsers}
-        currentUid={profile.uid}
-      />
     </div>
   );
 }

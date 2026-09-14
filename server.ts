@@ -479,37 +479,11 @@ const PORT = 3000;
   // ==========================================
   
   let dbInstance: any = null;
-  const inMemorySignalStore: any[] = [];
-
   async function getDb() {
     if (dbInstance) return dbInstance;
     
     const { createPool } = await import("./src/db/index.js");
     const pool = createPool();
-
-    // Auto-create essential tables if they don't exist yet
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS records (
-          collection TEXT NOT NULL,
-          id TEXT NOT NULL,
-          data TEXT NOT NULL,
-          timestamp BIGINT NOT NULL,
-          PRIMARY KEY (collection, id)
-        );
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS webrtc_signals (
-          id TEXT PRIMARY KEY,
-          target_uid TEXT NOT NULL,
-          uid TEXT NOT NULL,
-          payload TEXT NOT NULL,
-          timestamp BIGINT NOT NULL
-        );
-      `);
-    } catch (tblErr) {
-      console.warn("[DB] Note on table creation:", tblErr);
-    }
     
     dbInstance = {
       run: async (sql: string, params: any[] = []) => {
@@ -644,43 +618,30 @@ const PORT = 3000;
   // Dedicated WebRTC Signaling Endpoints (Zero-delay P2P negotiation)
   app.post("/api/webrtc/signal", async (req, res) => {
     try {
-      const body = req.body || {};
-      const uid = body.uid || body.caller?.uid;
-      const targetUid = body.targetUid || body.target?.uid || "all";
-      const type = body.type;
-
-      if (!uid || !type) {
+      const { uid, targetUid, type, sdp, candidate, timestamp } = req.body || {};
+      if (!uid || !targetUid || !type) {
         return res.status(400).json({ error: "Missing required signal fields" });
       }
 
       const sigObj = {
-        ...body,
-        id: body.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
+        id: req.body?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
         uid,
         targetUid,
         type,
-        timestamp: body.timestamp || Date.now(),
+        sdp: sdp || undefined,
+        candidate: candidate || undefined,
+        timestamp: timestamp || Date.now(),
       };
 
-      // Keep in-memory store for instant zero-latency retrieval
-      inMemorySignalStore.push(sigObj);
-      if (inMemorySignalStore.length > 500) {
-        inMemorySignalStore.splice(0, inMemorySignalStore.length - 500);
-      }
-
-      try {
-        const db = await getDb();
-        await db.run(
-          "INSERT INTO webrtc_signals (id, target_uid, uid, payload, timestamp) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, timestamp = EXCLUDED.timestamp",
-          [sigObj.id, sigObj.targetUid, sigObj.uid, JSON.stringify(sigObj), sigObj.timestamp]
-        );
-        
-        // Cleanup old signals
-        const cutoff = Date.now() - 30000;
-        await db.run("DELETE FROM webrtc_signals WHERE timestamp < ?", [cutoff]);
-      } catch (dbErr) {
-        console.warn("[WebRTC] DB signal persistence fallback:", dbErr);
-      }
+      const db = await getDb();
+      await db.run(
+        "INSERT INTO webrtc_signals (id, target_uid, uid, payload, timestamp) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, timestamp = EXCLUDED.timestamp",
+        [sigObj.id, sigObj.targetUid, sigObj.uid, JSON.stringify(sigObj), sigObj.timestamp]
+      );
+      
+      // Cleanup old signals
+      const cutoff = Date.now() - 30000;
+      await db.run("DELETE FROM webrtc_signals WHERE timestamp < ?", [cutoff]);
 
       // Broadcast immediately via SSE
       broadcastWebRTCSignal(sigObj);
@@ -699,36 +660,21 @@ const PORT = 3000;
         return res.json({ signals: [] });
       }
 
-      let dbSignals: any[] = [];
-      try {
-        const db = await getDb();
-        const rows = await db.all(
-          "SELECT payload FROM webrtc_signals WHERE (target_uid = ? OR target_uid = 'all') AND timestamp > ? AND uid != ?",
-          [targetUid, since, targetUid]
-        );
-        
-        dbSignals = rows.map((r: any) => {
-          try {
-            return JSON.parse(r.payload);
-          } catch {
-            return null;
-          }
-        }).filter(Boolean);
-      } catch (dbErr) {}
-
-      // Combine with in-memory store
-      const memSignals = inMemorySignalStore.filter(
-        (s) =>
-          (s.targetUid === targetUid || s.targetUid === "all") &&
-          s.timestamp > since &&
-          s.uid !== targetUid
+      const db = await getDb();
+      const rows = await db.all(
+        "SELECT payload FROM webrtc_signals WHERE (target_uid = ? OR target_uid = 'all') AND timestamp > ? AND uid != ?",
+        [targetUid, since, targetUid]
       );
+      
+      const signals = rows.map((r: any) => {
+        try {
+          return JSON.parse(r.payload);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
 
-      const combinedMap = new Map<string, any>();
-      dbSignals.forEach((s) => combinedMap.set(s.id, s));
-      memSignals.forEach((s) => combinedMap.set(s.id, s));
-
-      res.json({ signals: Array.from(combinedMap.values()), timestamp: Date.now() });
+      res.json({ signals, timestamp: Date.now() });
     } catch (e) {
       res.json({ signals: [], timestamp: Date.now() });
     }
