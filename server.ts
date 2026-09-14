@@ -478,6 +478,7 @@ const PORT = 3000;
   // Distributed Postgres Engine & Storage
   // ==========================================
   
+  let lastClearTimestamp = Date.now();
   let dbInstance: any = null;
   async function getDb() {
     if (dbInstance) return dbInstance;
@@ -768,6 +769,38 @@ const PORT = 3000;
   // 4. Cassandra Poll Endpoint
   app.get("/api/cassandra/poll", (req, res) => {
     res.json({ timestamp: Date.now(), changes: [] }); // deprecated
+  });
+
+  // 4b. Clear All Database Data (Messages, Users, Presence)
+  app.post(["/api/cassandra/clear-all", "/api/admin/clear-all"], async (req, res) => {
+    try {
+      const db = await getDb();
+      await db.run("DELETE FROM records");
+      try {
+        await db.run("DELETE FROM webrtc_signals");
+      } catch (e) {}
+      
+      lastClearTimestamp = Date.now();
+      
+      const payload = JSON.stringify({
+        type: "clear_all",
+        timestamp: lastClearTimestamp,
+      });
+      sseClients.forEach((client) => {
+        try {
+          client.write(`data: ${payload}\n\n`);
+          (client as any).flush?.();
+        } catch (e) {}
+      });
+
+      res.json({ success: true, message: "All messages, presence, typing, and users deleted successfully." });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/clear-timestamp", (req, res) => {
+    res.json({ timestamp: lastClearTimestamp });
   });
 
   // 5. Cassandra Status & CQL Execution

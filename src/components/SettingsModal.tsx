@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type, ShieldCheck, Zap } from "lucide-react";
+import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type, ShieldCheck, Zap, Trash2, LogOut } from "lucide-react";
 import { TAB_CLOAKS, TabCloak, applyTabCloak, getSavedTabCloak, resetTabCloak, ActiveCloakState } from "../tabCloaks";
 import { WebRTCMode, getSavedWebRTCMode, setSavedWebRTCMode } from "../utils/webrtcConfig";
 import WebRTCInspectorModal from "./WebRTCInspectorModal";
+import { broadcastClearAll } from "../supabase-adapter";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -294,6 +295,74 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               >
                 <Zap size={12} />
                 <span>Test & Configure Ports</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Database & Session Control Section */}
+          <div className="rounded-xl border border-red-500/30 bg-red-950/10 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Trash2 size={16} className="text-red-400" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Database & Session Control
+                </span>
+              </div>
+              <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 uppercase">
+                Danger Zone
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-300 leading-relaxed font-sans">
+              Delete all messages and users from the database. This action is irreversible, will wipe all chat history, clear active users, and log everyone out.
+            </p>
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                onClick={async () => {
+                  if (confirm("Are you absolutely sure you want to delete all messages and users? This will log everyone out and cannot be undone.")) {
+                    try {
+                      const res = await fetch("/api/admin/clear-all", { method: "POST" });
+                      if (res.ok) {
+                        // Clear local storage profile as well to log out
+                        localStorage.removeItem("frosted_chat_profile");
+                        sessionStorage.removeItem("frosted_chat_profile");
+                        localStorage.removeItem("lumos_chat_messages_v3");
+                        localStorage.removeItem("lumos_chat_messages_v2");
+                        localStorage.removeItem("lumos_chat_messages_v1");
+                        
+                        // Send real-time broadcast to log out all other active users
+                        broadcastClearAll();
+                        
+                        alert("Successfully deleted all messages and users! Refreshing the page...");
+                        window.location.reload();
+                      } else {
+                        alert("Failed to clear database.");
+                      }
+                    } catch (e: any) {
+                      alert("Error: " + e.message);
+                    }
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition-colors cursor-pointer shadow-sm"
+              >
+                <Trash2 size={12} />
+                <span>Delete All Messages & Users</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (confirm("Are you sure you want to log out and clear your local session?")) {
+                    localStorage.removeItem("frosted_chat_profile");
+                    sessionStorage.removeItem("frosted_chat_profile");
+                    alert("Logged out successfully! Refreshing...");
+                    window.location.reload();
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-sm border border-neutral-700"
+              >
+                <LogOut size={12} />
+                <span>Log Out</span>
               </button>
             </div>
           </div>
