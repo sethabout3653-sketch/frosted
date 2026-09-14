@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type } from "lucide-react";
+import { X, Check, RotateCcw, SlidersHorizontal, Sparkles, Globe, Link2, Type, ShieldCheck, Zap } from "lucide-react";
 import { TAB_CLOAKS, TabCloak, applyTabCloak, getSavedTabCloak, resetTabCloak, ActiveCloakState } from "../tabCloaks";
+import { WebRTCMode, getSavedWebRTCMode, setSavedWebRTCMode } from "../utils/webrtcConfig";
+import WebRTCInspectorModal from "./WebRTCInspectorModal";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -12,6 +14,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [customTitle, setCustomTitle] = useState("");
   const [customIconUrl, setCustomIconUrl] = useState("");
   const [isCustomOpen, setIsCustomOpen] = useState(false);
+  const [webrtcMode, setWebrtcMode] = useState<WebRTCMode>(() => getSavedWebRTCMode());
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
 
   // Sync state when modal opens
   useEffect(() => {
@@ -209,7 +213,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <div className="rounded-xl border border-neutral-800/90 bg-neutral-900/40 p-4">
             <button
               onClick={() => setIsCustomOpen(!isCustomOpen)}
-              className="w-full flex items-center justify-between text-left text-xs font-semibold text-neutral-300 hover:text-white transition-colors"
+              className="w-full flex items-center justify-between text-left text-xs font-semibold text-neutral-300 hover:text-white transition-colors cursor-pointer"
             >
               <span className="flex items-center gap-2">
                 <Sparkles size={14} className="text-neutral-400" />
@@ -261,6 +265,38 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               </form>
             )}
           </div>
+
+          {/* WebRTC & School Firewall Port Configuration Section */}
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={16} className="text-emerald-400" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  WebRTC School Firewall Bypass
+                </span>
+              </div>
+              <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase">
+                TCP 443 / 80 Active
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-300 leading-relaxed">
+              If your school or workplace network blocks random UDP ports used for WebRTC voice chat, our TCP 443 (HTTPS) and Port 80 (HTTP) fallback ensures voice streams stay connected.
+            </p>
+
+            <div className="flex items-center justify-between pt-1">
+              <div className="text-[11px] text-neutral-400">
+                Mode: <strong className="text-white capitalize">{webrtcMode.replace(/_/g, " ")}</strong>
+              </div>
+              <button
+                onClick={() => setIsInspectorOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition-colors cursor-pointer shadow-sm"
+              >
+                <Zap size={12} />
+                <span>Test & Configure Ports</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Footer info */}
@@ -268,12 +304,21 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <span>Preferences are automatically saved to your browser.</span>
           <button
             onClick={onClose}
-            className="px-3 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors"
+            className="px-3 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors cursor-pointer"
           >
             Done
           </button>
         </div>
       </div>
+
+      <WebRTCInspectorModal
+        isOpen={isInspectorOpen}
+        onClose={() => setIsInspectorOpen(false)}
+        onModeChanged={(mode) => {
+          setWebrtcMode(mode);
+          setSavedWebRTCMode(mode);
+        }}
+      />
     </div>
   );
 }

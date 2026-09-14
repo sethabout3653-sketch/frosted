@@ -32,6 +32,10 @@ import {
   Volume2,
   Video,
   MonitorUp,
+  UserPlus,
+  Check,
+  AlertCircle,
+  Radio,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
@@ -44,6 +48,7 @@ interface ChatPanelProps {
   onSelectVoice?: () => void;
   showMembersSidebar?: boolean;
   setShowMembersSidebar?: (show: boolean | ((prev: boolean) => boolean)) => void;
+  isInVoiceSession?: boolean;
 }
 
 interface MemberUser {
@@ -107,9 +112,53 @@ export default function ChatPanel({
   onSelectVoice,
   showMembersSidebar = true,
   setShowMembersSidebar,
+  isInVoiceSession = false,
 }: ChatPanelProps) {
   const initialCache = getCachedMessages();
   const [messages, setMessages] = useState<ChatMessage[]>(initialCache);
+  const [inviteStatusToast, setInviteStatusToast] = useState<string | null>(null);
+
+  const handleSendVoiceInvite = async (targetUser?: { uid: string; username: string }) => {
+    if (!isInVoiceSession) {
+      setInviteStatusToast("You must join General Voice first to send invites!");
+      setTimeout(() => setInviteStatusToast(null), 3500);
+      return;
+    }
+
+    const msgId = "invite_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const targetLabel = targetUser ? `@${targetUser.username}` : "everyone";
+
+    const msgData: ChatMessage = {
+      id: msgId,
+      channelId: activeChannel || "general",
+      uid: profile.uid,
+      username: profile.username,
+      photoURL: profile.photoURL,
+      text: `Invited ${targetLabel} to join General Voice 🔊`,
+      timestamp: Date.now(),
+      isInvite: true,
+      inviteData: {
+        inviterUid: profile.uid,
+        inviterUsername: profile.username,
+        inviterPhotoURL: profile.photoURL,
+        targetUid: targetUser?.uid,
+        targetUsername: targetUser?.username,
+        channelName: "General Voice",
+        channelId: "general",
+        timestamp: Date.now(),
+        status: "pending",
+      },
+    };
+
+    try {
+      setMessages((prev) => [...prev, msgData]);
+      await setDoc(doc(db, "messages", msgId), msgData);
+      setInviteStatusToast(`Voice invite sent to ${targetLabel}!`);
+      setTimeout(() => setInviteStatusToast(null), 3500);
+    } catch (err) {
+      console.error("Failed sending voice invite:", err);
+    }
+  };
   const [messageLimit, setMessageLimit] = useState(50);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -1082,32 +1131,61 @@ export default function ChatPanel({
                     </span>
                   </div>
 
-                  {msg.isVoiceInvite ? (
-                    <div className="mt-2 max-w-sm rounded-xl bg-neutral-900 border border-emerald-500/30 p-3.5 flex items-center justify-between gap-3 shadow-lg">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                          <Volume2 size={18} />
+                  {msg.isInvite && msg.inviteData ? (
+                    <div className="mt-2.5 p-3.5 rounded-xl border border-emerald-500/50 bg-gradient-to-r from-emerald-950/40 via-neutral-900 to-[#0c0d0e] shadow-lg space-y-3 max-w-sm">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center flex-shrink-0">
+                            <Volume2 size={16} className="animate-pulse" />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-extrabold text-emerald-400 uppercase tracking-wider block">
+                              Voice Channel Invite
+                            </span>
+                            <h4 className="text-xs font-bold text-white">
+                              General Voice
+                            </h4>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-white">General Voice Invite</p>
-                          <p className="text-[11px] text-neutral-400 mt-0.5 truncate">{msg.text || "Invited to join General Voice"}</p>
-                        </div>
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 uppercase">
+                          LIVE ROOM
+                        </span>
                       </div>
-                      <button
-                        onClick={() => {
-                          if (onSelectVoice) onSelectVoice();
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer flex-shrink-0"
-                      >
-                        <Volume2 size={12} />
-                        Join
-                      </button>
+
+                      <p className="text-xs text-neutral-300 font-medium leading-relaxed">
+                        <strong className="text-white">{msg.inviteData.inviterUsername}</strong> invited{" "}
+                        <span className="text-emerald-300 font-bold">
+                          {msg.inviteData.targetUsername ? `@${msg.inviteData.targetUsername}` : "everyone"}
+                        </span>{" "}
+                        to join General Voice chat!
+                      </p>
+
+                      <div className="pt-1">
+                        {isInVoiceSession ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/80 border border-emerald-800 text-emerald-400 text-xs font-bold w-fit">
+                            <Check size={14} />
+                            <span>Connected to Voice</span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => onSelectVoice?.()}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs transition-all shadow-md cursor-pointer hover:scale-[1.02] active:scale-95"
+                          >
+                            <Volume2 size={14} />
+                            <span>Join General Voice</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  ) : msg.text ? (
-                    <p className="text-sm text-neutral-200 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
-                      {msg.text}
-                    </p>
-                  ) : null}
+                  ) : (
+                    <>
+                      {msg.text && (
+                        <p className="text-sm text-neutral-200 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
+                          {msg.text}
+                        </p>
+                      )}
+                    </>
+                  )}
 
                   {msg.gif && (
                     <img
@@ -1294,7 +1372,19 @@ export default function ChatPanel({
         )}
 
         {/* Bottom Message Input Bar matching Image 2 */}
-        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
+        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0 relative">
+          {inviteStatusToast && (
+            <div className="mb-2.5 px-3 py-1.5 rounded-lg bg-neutral-900 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center justify-between shadow-lg animate-in slide-in-from-bottom-2 fade-in">
+              <span>{inviteStatusToast}</span>
+              <button
+                onClick={() => setInviteStatusToast(null)}
+                className="text-neutral-400 hover:text-white ml-2 p-0.5"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
           {typingUsers.length > 0 && (
             <div className="flex items-center gap-2 text-xs text-neutral-400 mb-2 pl-2 animate-in fade-in duration-200">
               <div className="flex items-center gap-1">
@@ -1428,48 +1518,17 @@ export default function ChatPanel({
 
                       {/* Username & Status Label */}
                       <div className="flex-1 min-w-0 flex flex-col">
-                        <div className="flex items-center justify-between gap-1">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="text-xs font-bold text-neutral-200 truncate">
-                              {user.username}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-neutral-200 truncate">
+                            {user.username}
+                          </span>
+                          {isCurrentUser && (
+                            <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider">
+                              YOU
                             </span>
-                            {isCurrentUser && (
-                              <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider">
-                                YOU
-                              </span>
-                            )}
-                          </div>
-                          {!isCurrentUser && (
-                            <button
-                              type="button"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-                                const now = Date.now();
-                                try {
-                                  await setDoc(doc(db, "messages", msgId), {
-                                    channelId: activeChannel,
-                                    uid: profile.uid,
-                                    username: profile.username,
-                                    photoURL: profile.photoURL || "",
-                                    text: `Invited @${user.username} to General Voice`,
-                                    isVoiceInvite: true,
-                                    voiceChannel: "General Voice",
-                                    timestamp: now,
-                                  });
-                                } catch (err) {
-                                  console.warn("Failed to send voice invite", err);
-                                }
-                              }}
-                              className="px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-emerald-600 text-neutral-300 hover:text-white text-[10px] font-bold transition-all border border-neutral-700/80 cursor-pointer flex items-center gap-1 flex-shrink-0"
-                              title={`Invite ${user.username} to General Voice`}
-                            >
-                              <Volume2 size={10} />
-                              Invite
-                            </button>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
+                        <div className="flex items-center gap-1.5">
                           <span className="text-[10px] text-neutral-500 font-medium">
                             Online
                           </span>
@@ -1490,6 +1549,26 @@ export default function ChatPanel({
                           )}
                         </div>
                       </div>
+
+                      {/* Invite to Voice Button (Only functional when in General Voice) */}
+                      {!isCurrentUser && !isInVoice && (
+                        <button
+                          onClick={() => handleSendVoiceInvite(user)}
+                          className={`px-1.5 py-1 rounded text-[10px] font-bold flex items-center gap-1 border transition-all cursor-pointer flex-shrink-0 ${
+                            isInVoiceSession
+                              ? "bg-emerald-950/80 hover:bg-emerald-900 border-emerald-600/70 text-emerald-400 shadow-sm"
+                              : "bg-neutral-900 hover:bg-neutral-850 border-neutral-800 text-neutral-500 hover:text-neutral-400 opacity-70"
+                          }`}
+                          title={
+                            isInVoiceSession
+                              ? `Invite @${user.username} to General Voice`
+                              : "Connect to General Voice first to invite users"
+                          }
+                        >
+                          <UserPlus size={11} />
+                          <span>Invite</span>
+                        </button>
+                      )}
                     </div>
                   );
                 })}
