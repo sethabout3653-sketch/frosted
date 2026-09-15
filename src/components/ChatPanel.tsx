@@ -119,7 +119,6 @@ export default function ChatPanel({
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
-  const [invitedUsers, setInvitedUsers] = useState<Set<string>>(new Set());
   const [activeVoiceUsers, setActiveVoiceUsers] = useState<
     Record<string, { isMuted?: boolean; isVideoOn?: boolean }>
   >({});
@@ -1511,22 +1510,6 @@ export default function ChatPanel({
                             </span>
                           )}
                         </div>
-                        {!isCurrentUser && !isInVoice && (
-                          <div className="mt-1.5">
-                            {invitedUsers.has(user.uid) ? (
-                              <span className="text-[9px] text-indigo-300/80 italic line-clamp-2 leading-tight">
-                                Invited person, just wait for an answer or something
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => setInvitedUsers(prev => new Set(prev).add(user.uid))}
-                                className="text-[9px] font-bold bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2 py-1 rounded transition-colors w-full text-left"
-                              >
-                                Invite to Voice
-                              </button>
-                            )}
-                          </div>
-                        )}
                       </div>
                     </div>
                   );

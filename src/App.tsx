@@ -10,7 +10,6 @@ import Chat from "./components/Chat";
 import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
 import SettingsModal from "./components/SettingsModal";
 import LoadingScreen from "./components/LoadingScreen";
-import AdsterraBanner from "./components/AdsterraBanner";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import { useActivityTracker } from "./lib/activity-tracker";
 import localZones from "./zones.json";
@@ -326,11 +325,6 @@ export default function App() {
                   </span>
                 )}
               </div>
-            </div>
-            
-            <div className="mb-6 hidden md:block">
-              {/* Desktop Leaderboard Banner */}
-              <AdsterraBanner placementKey="f4febb6b5335b956b710646e18e583e4" width={468} height={60} className="mx-auto" />
             </div>
 
             <GameGrid
