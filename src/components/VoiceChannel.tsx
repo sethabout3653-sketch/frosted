@@ -45,6 +45,8 @@ import {
 import { ChatProfile, VoiceSignal } from "../types";
 import { SmartVoiceDetector } from "../utils/audioVAD";
 import { extractDominantColor } from "../utils/colorExtractor";
+import { getCurrentActivity, onActivityChanged } from "../lib/activity-tracker";
+import ActivityBadge from "./ActivityBadge";
 
 interface VoiceChannelProps {
   profile: ChatProfile;
@@ -213,6 +215,13 @@ export default function VoiceChannel({
   const [zoomLayoutMode, setZoomLayoutMode] = useState<"side-by-side" | "gallery-strip">("side-by-side");
   const [screenZoom, setScreenZoom] = useState<number>(1.0);
   const [screenFitMode, setScreenFitMode] = useState<"contain" | "cover">("contain");
+  const [localActivity, setLocalActivity] = useState<any>(() => getCurrentActivity());
+
+  useEffect(() => {
+    return onActivityChanged((act) => {
+      setLocalActivity(act);
+    });
+  }, []);
 
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localScreenVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -297,6 +306,13 @@ export default function VoiceChannel({
         if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
           return true;
         }
+
+        // If the user hasn't sent a heartbeat in the last 12 seconds, consider them disconnected
+        const ts = toTimestampMs(p.timestamp);
+        if (ts > 0 && currentTime - ts > 12000) {
+          return false;
+        }
+
         return true;
       })
       .sort((a, b) => {
@@ -1701,7 +1717,7 @@ export default function VoiceChannel({
             }
             let ts = toTimestampMs(u.timestamp || (u as any).lastSeen);
             if (ts <= 0) ts = now;
-            if (now - ts <= 120000) {
+            if (now - ts <= 12000) {
               userMap.set(u.uid, { ...u, timestamp: ts });
             }
           });
@@ -1716,7 +1732,7 @@ export default function VoiceChannel({
             if (pData.inVoice) {
               let ts = toTimestampMs(pData.lastSeen || pData.timestamp);
               if (ts <= 0) ts = now;
-              if (now - ts <= 120000) {
+              if (now - ts <= 12000) {
                 const existing = userMap.get(pData.uid);
                 userMap.set(pData.uid, {
                   uid: pData.uid,
@@ -1728,6 +1744,7 @@ export default function VoiceChannel({
                   isVideoLoading: pData.isVideoLoading !== undefined ? pData.isVideoLoading : existing?.isVideoLoading ?? false,
                   isScreenSharing: pData.isScreenSharing !== undefined ? pData.isScreenSharing : existing?.isScreenSharing ?? false,
                   isScreenAudioOn: pData.isScreenAudioOn !== undefined ? pData.isScreenAudioOn : existing?.isScreenAudioOn ?? false,
+                  activity: pData.activity || existing?.activity,
                   timestamp: Math.max(ts, existing?.timestamp || 0),
                 });
               }
@@ -3167,20 +3184,25 @@ export default function VoiceChannel({
                 </div>
               )}
 
-              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20">
-                <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>
-                  {profile.username} (You)
-                </span>
-                {isScreenSharing && (
-                  <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
-                    <MonitorUp size={9} />
-                    <span>LIVE</span>
+              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-1 rounded-lg border border-indigo-900/60 flex flex-col gap-1 z-20 max-w-[85%]">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>
+                    {profile.username} (You)
                   </span>
-                )}
-                {isMuted && (
-                  <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
-                    Muted
-                  </span>
+                  {isScreenSharing && (
+                    <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
+                      <MonitorUp size={9} />
+                      <span>LIVE</span>
+                    </span>
+                  )}
+                  {isMuted && (
+                    <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
+                      Muted
+                    </span>
+                  )}
+                </div>
+                {localActivity && (
+                  <ActivityBadge activity={localActivity} compact />
                 )}
               </div>
             </div>
@@ -3333,18 +3355,23 @@ export default function VoiceChannel({
                 </div>
               )}
 
-              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20">
-                <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
-                {p.isScreenSharing === true && (
-                  <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
-                    <MonitorUp size={9} />
-                    <span>LIVE</span>
-                  </span>
-                )}
-                {p.isMuted && (
-                  <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
-                    Muted
-                  </span>
+              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-1 rounded-lg border border-indigo-900/60 flex flex-col gap-1 z-20 max-w-[85%]">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
+                  {p.isScreenSharing === true && (
+                    <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
+                      <MonitorUp size={9} />
+                      <span>LIVE</span>
+                    </span>
+                  )}
+                  {p.isMuted && (
+                    <span className="text-[9px] text-red-400 font-bold uppercase tracking-wider bg-red-950/80 px-1 py-0.2 rounded border border-red-800/60">
+                      Muted
+                    </span>
+                  )}
+                </div>
+                {p.activity && (
+                  <ActivityBadge activity={p.activity} compact />
                 )}
               </div>
             </div>

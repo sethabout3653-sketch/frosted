@@ -18,7 +18,10 @@ import {
   toTimestampMs,
   compareMessagesChronological,
 } from "../supabase-adapter";
-import { ChatMessage, ChatProfile } from "../types";
+import { ChatMessage, ChatProfile, UserActivity } from "../types";
+import { wsClient } from "../lib/websocket-client";
+import { getCurrentActivity, onActivityChanged } from "../lib/activity-tracker";
+import ActivityBadge from "./ActivityBadge";
 import {
   Send,
   Image as ImageIcon,
@@ -54,6 +57,7 @@ interface MemberUser {
   status?: "online" | "left" | "offline";
   isMuted?: boolean;
   inVoice?: boolean;
+  activity?: UserActivity;
 }
 
 let globalMessagesCache: ChatMessage[] = [];
@@ -260,19 +264,30 @@ export default function ChatPanel({
     return () => unsub();
   }, []);
 
-  // Presence & Left Website tracking with fast 2.5s heartbeat
+  const [localActivity, setLocalActivity] = useState<UserActivity>(() => getCurrentActivity());
+
+  useEffect(() => {
+    return onActivityChanged((act) => {
+      setLocalActivity(act);
+    });
+  }, []);
+
+  // Presence & Left Website tracking with fast 2.5s heartbeat + real-time activity
   useEffect(() => {
     if (!profile) return;
     const presenceRef = doc(db, "presence", profile.uid);
 
     const markOnline = async () => {
       try {
+        const act = getCurrentActivity();
         await setDoc(presenceRef, {
           uid: profile.uid,
           username: profile.username,
           photoURL: profile.photoURL || "",
           status: "online",
           lastSeen: Date.now(),
+          timestamp: Date.now(),
+          activity: act,
         }, { merge: true });
       } catch (e) {}
     };
@@ -285,6 +300,7 @@ export default function ChatPanel({
           photoURL: profile.photoURL || "",
           status: "left",
           lastSeen: Date.now(),
+          timestamp: Date.now(),
           inVoice: false,
         }, { merge: true }).catch(() => {});
       } catch (e) {}
@@ -304,12 +320,45 @@ export default function ChatPanel({
       clearInterval(interval);
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
-      // Do not mark as left on component unmount; heartbeat timeout and beforeunload handle real disconnects
     };
   }, [profile]);
 
-  // Real-time member presence listener
+  // Real-time member presence listener (WebSocket 0ms + Firestore/Database fallback)
   useEffect(() => {
+    // 1. Instant WebSocket listener for 0ms presence changes
+    const unsubWs = wsClient.onCollectionChange("presence", (change) => {
+      if (!change || !change.data) return;
+      const data = change.data as any;
+      if (!data.uid) return;
+
+      setMemberUsers((prev) => {
+        const existingIdx = prev.findIndex((u) => u.uid === data.uid);
+        const updatedUser: MemberUser = {
+          uid: data.uid,
+          username: data.username || "User",
+          photoURL: data.photoURL || "",
+          status: data.status || "online",
+          lastSeen: toTimestampMs(data.lastSeen || data.timestamp || Date.now()),
+          isMuted: data.isMuted || false,
+          inVoice: data.inVoice || false,
+          activity: data.activity,
+        };
+
+        if (change.op === "delete" || data.status === "left") {
+          return prev.map((u) => (u.uid === data.uid ? { ...u, status: "left" } : u));
+        }
+
+        if (existingIdx >= 0) {
+          const next = [...prev];
+          next[existingIdx] = { ...next[existingIdx], ...updatedUser };
+          return next;
+        } else {
+          return [updatedUser, ...prev];
+        }
+      });
+    });
+
+    // 2. Snapshot listener for database sync
     const q = query(
       collection(db, "presence"),
       orderBy("lastSeen", "desc"),
@@ -320,7 +369,7 @@ export default function ChatPanel({
       (snapshot: any) => {
         const users: MemberUser[] = [];
         snapshot.forEach((docSnap: any) => {
-          const data = docSnap.data() as MemberUser;
+          const data = docSnap.data() as any;
           const uname = (data.username || "").trim();
           if (!uname || uname.toLowerCase() === "anonymous" || uname.toLowerCase() === "guest") {
             deleteDoc(doc(db, "presence", docSnap.id)).catch(() => {});
@@ -334,6 +383,7 @@ export default function ChatPanel({
             lastSeen: toTimestampMs(data.lastSeen),
             isMuted: data.isMuted || false,
             inVoice: data.inVoice || false,
+            activity: data.activity,
           });
         });
 
@@ -346,6 +396,7 @@ export default function ChatPanel({
             photoURL: profile.photoURL,
             status: "online",
             lastSeen: Date.now(),
+            activity: getCurrentActivity(),
           });
         }
 
@@ -355,7 +406,11 @@ export default function ChatPanel({
         console.warn("ChatPanel presence listener error:", error);
       }
     );
-    return () => unsub();
+
+    return () => {
+      unsubWs();
+      unsub();
+    };
   }, [profile]);
 
   // Real-time message subscription with instant local rendering and fast pagination
@@ -1389,14 +1444,15 @@ export default function ChatPanel({
                   const isCurrentUser = user.uid === profile.uid;
                   const voiceInfo = activeVoiceUsers[user.uid];
                   const isInVoice = !!voiceInfo;
+                  const userActivity = isCurrentUser ? (localActivity || user.activity) : user.activity;
 
                   return (
                     <div
                       key={`${user.uid || "online"}-${uIdx}`}
-                      className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-neutral-900/60 transition-colors"
+                      className="flex items-start gap-2.5 p-1.5 rounded-lg hover:bg-neutral-900/60 transition-colors"
                     >
                       {/* Avatar with Green Online Dot Badge */}
-                      <div className="relative">
+                      <div className="relative mt-0.5">
                         <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex items-center justify-center text-xs font-bold text-white">
                           {user.photoURL ? (
                             <img
@@ -1408,10 +1464,10 @@ export default function ChatPanel({
                             <span>{(user.username || "?").charAt(0).toUpperCase()}</span>
                           )}
                         </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-indigo-500 border-2 border-[#030514]" />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#030514]" />
                       </div>
 
-                      {/* Username & Status Label */}
+                      {/* Username & Status Label & Activity */}
                       <div className="flex-1 min-w-0 flex flex-col">
                         <div className="flex items-center justify-between gap-1.5">
                           <div className="flex items-center gap-1.5 min-w-0">
@@ -1425,10 +1481,20 @@ export default function ChatPanel({
                             )}
                           </div>
                         </div>
+
+                        {/* Real-Time Activity Badge */}
+                        {userActivity && (
+                          <div className="mt-0.5">
+                            <ActivityBadge activity={userActivity} compact />
+                          </div>
+                        )}
+
                         <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                          <span className="text-[10px] text-indigo-300/50 font-medium">
-                            Online
-                          </span>
+                          {!userActivity && (
+                            <span className="text-[10px] text-indigo-300/50 font-medium">
+                              Online
+                            </span>
+                          )}
                           {isInVoice && (
                             <span className="flex items-center gap-1 text-[9px] font-bold text-indigo-300 bg-[#0a1236] border border-indigo-700/60 px-1 py-0.2 rounded">
                               <Volume2 size={9} /> In Voice

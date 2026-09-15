@@ -15,6 +15,18 @@ export interface Game {
 
 export type SortOption = "name" | "id" | "popular";
 
+export interface UserActivity {
+  type: "playing" | "searching" | "scrolling" | "chatting" | "idle";
+  gameName?: string;
+  gameCover?: string;
+  query?: string;
+  tag?: string;
+  channel?: string;
+  text?: string;
+  startedAt?: number;
+  timestamp?: number;
+}
+
 export interface ChatProfile {
   uid: string;
   username: string;
@@ -25,6 +37,7 @@ export interface ChatProfile {
   status?: "online" | "left" | "offline";
   lastSeen?: number;
   timestamp?: number;
+  activity?: UserActivity;
 }
 
 export interface ChatMessage {

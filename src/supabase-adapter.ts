@@ -424,6 +424,19 @@ class SupabaseRealtimeManager {
     };
   }
 
+  public httpSend(endpoint: string, payload: any) {
+    try {
+      fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) {
+      console.warn("[httpSend] Error:", e);
+    }
+  }
+
   public async write(op: string, colName: string, id: string, data?: any) {
     const ts = Date.now();
     const recordPayload = data ? { ...data, id } : { id };
@@ -431,21 +444,10 @@ class SupabaseRealtimeManager {
     // 1. Optimistic instant local update
     this.applyChange(op, colName, id, recordPayload);
 
-    // 2. Instant 0ms WebSocket Delivery to connected peers
-    try {
-      wsClient.sendChange(op as any, colName, id, recordPayload);
-    } catch (e) {}
+    // 2. Explicit REST delivery using httpSend
+    this.httpSend("/api/cassandra/write", { op, collection: colName, id, data: recordPayload });
 
-    // 3. Supabase Realtime Broadcast
-    try {
-      this.syncChannel?.send({
-        type: "broadcast",
-        event: "change",
-        payload: { op, collection: colName, id, data: recordPayload, timestamp: ts },
-      });
-    } catch (e) {}
-
-    // 4. Persist to Supabase Postgres 'records' table
+    // 3. Database: Persist to Supabase Postgres 'records' table
     try {
       if (op === "delete") {
         await supabase
@@ -465,14 +467,17 @@ class SupabaseRealtimeManager {
       // Supabase table not created yet or RLS restriction, handled gracefully below
     }
 
-    // 5. Also mirror write to persistent storage server to guarantee zero data loss
+    // 4. WebSockets: Instant 0ms WebSocket Delivery to native WebSockets & Supabase Realtime
     try {
-      fetch("/api/cassandra/write", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ op, collection: colName, id, data: recordPayload }),
-        keepalive: true,
-      }).catch(() => {});
+      wsClient.sendChange(op as any, colName, id, recordPayload);
+    } catch (e) {}
+
+    try {
+      this.syncChannel?.send({
+        type: "broadcast",
+        event: "change",
+        payload: { op, collection: colName, id, data: recordPayload, timestamp: ts },
+      });
     } catch (e) {}
   }
 }

@@ -11,6 +11,7 @@ import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./component
 import SettingsModal from "./components/SettingsModal";
 import LoadingScreen from "./components/LoadingScreen";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
+import { useActivityTracker } from "./lib/activity-tracker";
 import localZones from "./zones.json";
 
 const SOUNDBOARD_GAME: Game = {
@@ -119,6 +120,14 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearch = useDeferredValue(searchQuery);
   const [selectedTag, setSelectedTag] = useState("all");
+
+  // Real-Time Activity & Status Synchronization over WebSockets
+  useActivityTracker({
+    currentView,
+    selectedGame,
+    searchQuery: deferredSearch,
+    selectedTag,
+  });
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
