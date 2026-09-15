@@ -5,7 +5,7 @@ import luminGamesList from "../lumin-games.json";
 
 const PRESET_GRADIENTS = [
   "from-indigo-600 via-indigo-700 to-violet-800",
-  "from-cyan-600 via-teal-700 to-emerald-800",
+  "from-blue-600 via-indigo-700 to-[#0c1642]",
   "from-rose-500 via-pink-600 to-purple-700",
   "from-amber-500 via-orange-600 to-rose-700",
   "from-blue-600 via-blue-700 to-indigo-800",

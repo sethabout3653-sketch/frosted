@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Game } from "../types";
 import { formatGameUrl, getRawGameUrl, isFnfGame, isFnfMod } from "../utils";
 import { getLuminGameUrl, embedLuminGame, closeLuminGame } from "../lumin";
@@ -8,6 +9,7 @@ import {
   RefreshCw,
   ExternalLink,
   RotateCcw,
+  Gamepad2,
 } from "lucide-react";
 
 interface GamePlayerProps {
@@ -22,6 +24,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   const [rawGameUrl, setRawGameUrl] = useState<string>("");
   const [usingDirectUrl, setUsingDirectUrl] = useState(false);
   const [gameLoadError, setGameLoadError] = useState(false);
+  const [isGameLoading, setIsGameLoading] = useState(true);
 
   // Load preferences from localStorage or default to automatic optimal fit
   const [fitMode, setFitMode] = useState<FitMode>(() => {
@@ -186,19 +189,21 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       document.body.style.overflow = "auto";
       document.documentElement.style.overflow = "auto";
       return () => {
+        document.body.style.removeProperty("overflow");
+        document.documentElement.style.removeProperty("overflow");
         document.body.style.overflow = "";
         document.documentElement.style.overflow = "";
       };
     }
 
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousRootOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = "hidden";
     document.documentElement.style.overflow = "hidden";
 
     return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousRootOverflow;
+      document.body.style.removeProperty("overflow");
+      document.documentElement.style.removeProperty("overflow");
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
     };
   }, [isSoundboard]);
 
@@ -235,6 +240,11 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   // Initialize and load game normally
   useEffect(() => {
     let isCancelled = false;
+    setIsGameLoading(true);
+
+    const safetyTimer = setTimeout(() => {
+      if (!isCancelled) setIsGameLoading(false);
+    }, 4000);
 
     async function loadGame() {
       if (isLuminGame && game.luminId) {
@@ -273,6 +283,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
 
     return () => {
       isCancelled = true;
+      clearTimeout(safetyTimer);
       if (isLuminGame) {
         closeLuminGame();
       }
@@ -283,6 +294,10 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
     if (isLuminGame) {
       closeLuminGame();
     }
+    document.body.style.removeProperty("overflow");
+    document.documentElement.style.removeProperty("overflow");
+    document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
     onBack();
   };
 
@@ -303,6 +318,8 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   };
 
   const handleReload = () => {
+    setIsGameLoading(true);
+    setTimeout(() => setIsGameLoading(false), 3500);
     if (isLuminGame && game.luminId) {
       if (gameUrl && iframeRef.current) {
         iframeRef.current.src = gameUrl;
@@ -359,7 +376,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
   return (
     <div
       id="game-player-wrapper"
-      className={`flex flex-col w-full bg-black transition-all duration-300 ${
+      className={`flex flex-col w-full bg-transparent transition-all duration-300 ${
         isSoundboard
           ? "allow-scroll min-h-[calc(100vh-5rem)] h-auto overflow-visible pb-10"
           : "h-[calc(100vh-5rem)] overflow-hidden"
@@ -370,32 +387,32 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
       {/* Top Controls Action Bar */}
       <div
         id="player-action-bar"
-        className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5 rounded-xl border border-neutral-800/90 bg-[#0c0c0c] px-3.5 py-2 backdrop-blur-md flex-shrink-0"
+        className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5 rounded-xl border border-white/5 bg-black/40 px-3.5 py-2 backdrop-blur-xl flex-shrink-0"
       >
         <div className="flex items-center gap-3">
           <button
             id="player-back-btn"
             onClick={handleBack}
-            className="flex items-center justify-center h-8 px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs transition-all border border-neutral-700/80 hover:border-neutral-600 cursor-pointer"
+            className="flex items-center justify-center h-8 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold text-xs transition-all border border-white/10 cursor-pointer"
           >
             <ArrowLeft size={14} className="mr-1.5" />
             Back
           </button>
 
-          <div className="h-5 w-[1px] bg-neutral-800 hidden sm:block"></div>
+          <div className="h-5 w-[1px] bg-white/10 hidden sm:block"></div>
 
           <div>
-            <h1 className="text-sm md:text-base font-bold text-white truncate max-w-[150px] sm:max-w-[280px] md:max-w-[400px]">
+            <h1 className="text-sm md:text-base font-extrabold text-white truncate max-w-[150px] sm:max-w-[280px] md:max-w-[400px]">
               {game.name}
             </h1>
-            <p className="text-[10px] text-neutral-400 font-medium flex items-center gap-1.5">
+            <p className="text-[10px] text-neutral-300 font-medium flex items-center gap-1.5">
               <span>{game.author ? `by ${game.author}` : "Classic"}</span>
               {isMod ? (
-                <span className="px-1.5 py-0.2 rounded bg-white text-black font-bold text-[8px] uppercase tracking-wider">
+                <span className="px-1.5 py-0.2 rounded bg-indigo-500 text-white font-extrabold text-[8px] uppercase tracking-wider">
                   FNF Mod
                 </span>
               ) : isFnf ? (
-                <span className="px-1.5 py-0.2 rounded bg-black text-white border border-neutral-600 font-bold text-[8px] uppercase tracking-wider">
+                <span className="px-1.5 py-0.2 rounded bg-black/50 text-indigo-200 border border-white/10 font-extrabold text-[8px] uppercase tracking-wider">
                   FNF
                 </span>
               ) : null}
@@ -405,15 +422,15 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
 
   <div className="ml-auto flex items-center gap-2">
   {rawGameUrl && (
-            <button id="player-external-btn" onClick={handleOpenInNewTab} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Open game in a new tab">
+            <button id="player-external-btn" onClick={handleOpenInNewTab} className="flex h-8 items-center justify-center rounded-lg border border-white/5 bg-white/[0.05] px-2 text-xs font-semibold text-neutral-200 transition-all hover:bg-white/[0.1] hover:text-white" title="Open game in a new tab">
               <ExternalLink size={14} />
             </button>
           )}
-          <button id="player-reload-btn" onClick={handleReload} className="flex h-8 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 text-xs font-medium text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white" title="Reload game">
+          <button id="player-reload-btn" onClick={handleReload} className="flex h-8 items-center justify-center rounded-lg border border-white/5 bg-white/[0.05] px-2.5 text-xs font-semibold text-neutral-200 transition-all hover:bg-white/[0.1] hover:text-white" title="Reload game">
             <RefreshCw size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Reload</span>
           </button>
-          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-white px-3 text-xs font-bold text-black shadow-md transition-all hover:bg-neutral-200" title="Fullscreen">
+          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-indigo-500 hover:bg-indigo-600 px-3 text-xs font-extrabold text-white shadow-md transition-all" title="Fullscreen">
             <Maximize2 size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Fullscreen</span>
           </button>
@@ -426,7 +443,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
         ref={containerRef}
         onClick={focusGame}
         onMouseDown={focusGame}
-        className={`relative w-full bg-black rounded-2xl border border-neutral-800/90 shadow-2xl transition-all duration-300 ${
+        className={`relative w-full bg-black rounded-2xl border border-white/5 shadow-2xl transition-all duration-300 ${
           isTheaterMode ? "max-w-none" : "max-w-6xl mx-auto"
         } ${
           isSoundboard
@@ -459,12 +476,48 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
               title={`${game.name} game`}
               width="100%"
               height="100%"
+              onLoad={() => setIsGameLoading(false)}
               className="w-full h-full flex-1 border-0 rounded-2xl"
               style={{ width: "100%", height: "100%", minHeight: "100%", display: "block" }}
               scrolling="yes"
               allow="autoplay; encrypted-media; fullscreen"
             />
           )}
+
+          {/* Futuristic Game Loading Transition Overlay */}
+          <AnimatePresence>
+            {isGameLoading && !gameLoadError && (
+              <motion.div
+                key="game-loading-overlay"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{
+                  opacity: 0,
+                  scale: 1.04,
+                  filter: "blur(10px)",
+                  transition: { duration: 0.35, ease: "easeInOut" },
+                }}
+                className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#020410]/95 backdrop-blur-md rounded-2xl select-none"
+              >
+                <div className="relative flex items-center justify-center w-20 h-20 mb-4">
+                  <div className="absolute inset-0 rounded-full border border-indigo-500/30 border-t-cyan-400 animate-spin" />
+                  <div className="absolute inset-1.5 rounded-full border border-dashed border-indigo-400/40 animate-spin [animation-duration:5s] [animation-direction:reverse]" />
+                  <div className="w-12 h-12 rounded-2xl bg-[#091238] border border-indigo-500/50 flex items-center justify-center shadow-xl shadow-indigo-950/80">
+                    <Gamepad2 size={24} className="text-cyan-300 animate-pulse" />
+                  </div>
+                </div>
+                <h3 className="text-sm font-extrabold tracking-wider uppercase text-white drop-shadow-md">
+                  Launching {game.name}
+                </h3>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+                  <span className="text-[10px] font-mono text-indigo-300/80 tracking-widest uppercase">
+                    ESTABLISHING SESSION • SYNCING
+                  </span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
           {gameLoadError && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 p-6 text-center">
               <p className="text-sm font-semibold text-white">This game could not be embedded here.</p>

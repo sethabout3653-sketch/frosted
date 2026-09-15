@@ -303,7 +303,7 @@ export function getFileTypeBadge(filenameOrUrl: string = ""): {
     return { label: "Source Code", color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20", category: "code" };
   }
   if (["xls", "xlsx", "csv", "tsv", "ods"].includes(ext)) {
-    return { label: "Spreadsheet", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20", category: "sheet" };
+    return { label: "Spreadsheet", color: "text-indigo-300 bg-[#0c1642] border-indigo-700/60", category: "sheet" };
   }
   if (["ppt", "pptx", "odp", "key"].includes(ext)) {
     return { label: "Presentation", color: "text-orange-400 bg-orange-500/10 border-orange-500/20", category: "presentation" };
@@ -315,7 +315,7 @@ export function getFileTypeBadge(filenameOrUrl: string = ""): {
     return { label: "Video", color: "text-indigo-400 bg-indigo-500/10 border-indigo-500/20", category: "video" };
   }
   if (AUDIO_EXTENSIONS.has(ext)) {
-    return { label: "Audio", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20", category: "audio" };
+    return { label: "Audio", color: "text-indigo-300 bg-[#0c1642] border-indigo-700/60", category: "audio" };
   }
   if (IMAGE_EXTENSIONS.has(ext)) {
     return { label: "Image", color: "text-purple-400 bg-purple-500/10 border-purple-500/20", category: "image" };

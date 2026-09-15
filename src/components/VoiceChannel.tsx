@@ -2322,12 +2322,12 @@ export default function VoiceChannel({
       try {
         displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 30, max: 60 },
-            width: { max: 1920 },
-            height: { max: 1080 },
+            frameRate: { ideal: 60, max: 60 },
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 },
           },
           audio: {
-            echoCancellation: true,
+            echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
             channelCount: { ideal: 2 },
@@ -2346,15 +2346,27 @@ export default function VoiceChannel({
         }
         try {
           displayStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: true,
+            video: {
+              frameRate: { ideal: 60, max: 60 },
+              width: { ideal: 1920, max: 1920 },
+              height: { ideal: 1080, max: 1080 },
+            },
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            }
           });
         } catch (errAudio2: any) {
           if (errAudio2?.name === "NotAllowedError" || errAudio2?.name === "AbortError" || errAudio2?.name === "PermissionDeniedError") {
             throw errAudio2;
           }
           displayStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
+            video: {
+              frameRate: { ideal: 60, max: 60 },
+              width: { ideal: 1920, max: 1920 },
+              height: { ideal: 1080, max: 1080 },
+            },
             audio: false,
           });
         }
@@ -2376,7 +2388,7 @@ export default function VoiceChannel({
 
       if (screenVideoTrack && "contentHint" in screenVideoTrack) {
         try {
-          (screenVideoTrack as any).contentHint = "detail";
+          (screenVideoTrack as any).contentHint = "motion";
         } catch (e) {}
       }
 
@@ -2453,7 +2465,7 @@ export default function VoiceChannel({
                 params.encodings[0].priority = "high";
                 params.encodings[0].networkPriority = "high";
                 params.encodings[0].maxFramerate = 60;
-                (params as any).degradationPreference = "maintain-resolution";
+                (params as any).degradationPreference = "balanced";
                 await screenSender.setParameters(params).catch(() => {});
               } catch (e) {}
             } else {
@@ -2603,8 +2615,8 @@ export default function VoiceChannel({
           {/* Top Header Bar */}
           <div className="h-9 px-3 bg-[#1e1f22] border-b border-[#2b2d31] flex items-center justify-between">
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
-              <span className="text-[11px] font-bold text-emerald-400 tracking-wide truncate">
+              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse flex-shrink-0" />
+              <span className="text-[11px] font-bold text-indigo-400 tracking-wide truncate">
                 Voice Connected
               </span>
               <span className="text-[10px] text-neutral-400 truncate">
@@ -2674,7 +2686,7 @@ export default function VoiceChannel({
                   />
                 )}
                 <div className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-semibold text-white flex items-center gap-1">
-                  <MonitorUp size={11} className="text-emerald-400" />
+                  <MonitorUp size={11} className="text-indigo-400" />
                   <span className="truncate max-w-[120px]">{activeScreenShare.username}</span>
                   {activeScreenShare.hasAudio && (
                     <Volume2 size={10} className="text-sky-300 ml-0.5" />
@@ -2972,7 +2984,7 @@ export default function VoiceChannel({
             onClick={toggleScreenShare}
             className={`p-2 rounded-xl transition-all cursor-pointer ${
               isScreenSharing
-                ? "bg-emerald-600 text-white font-bold"
+                ? "bg-[#0e1b52] border border-indigo-600/70 text-white font-bold"
                 : "bg-[#2b2d31] text-white hover:bg-[#35373c]"
             }`}
             title={isScreenSharing ? "Stop sharing screen" : "Share your screen"}
@@ -2990,17 +3002,17 @@ export default function VoiceChannel({
         </div>
       </div>
     ) : (
-      <div className={`fixed inset-y-0 ${showMembersSidebar ? 'right-0 lg:right-56' : 'right-0'} left-16 sm:left-72 z-30 flex flex-col bg-black text-white min-h-0 overflow-hidden`}>
+      <div className={`fixed inset-y-0 ${showMembersSidebar ? 'right-0 lg:right-56' : 'right-0'} left-16 sm:left-72 z-30 flex flex-col bg-[#020410] text-white min-h-0 overflow-hidden`}>
         {/* Top Header Bar */}
-        <div className="h-12 px-6 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
+        <div className="h-12 px-6 border-b border-indigo-950/60 bg-[#03061a] flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-sm font-extrabold text-emerald-400 tracking-wide">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
+            <span className="text-sm font-extrabold text-indigo-400 tracking-wide">
               Voice Connected
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-sm font-semibold text-neutral-400 hidden sm:inline">
+            <span className="text-sm font-semibold text-indigo-300/70 hidden sm:inline">
               General Voice ({activeParticipants.length + 1})
             </span>
             <button
@@ -3036,14 +3048,14 @@ export default function VoiceChannel({
           return (
             <div
               key="local-user-tile"
-              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
+              className={`relative aspect-video rounded-2xl bg-[#060c24] border border-indigo-950/80 overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
                 compact ? "h-full flex-shrink-0" : "w-full"
               }`}
               style={{
-                borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(38, 38, 38, 0.9)",
+                borderColor: isLocalSpeaking && !isMuted ? localColor.border : "rgba(30, 41, 89, 0.8)",
                 boxShadow: isLocalSpeaking && !isMuted 
                   ? `0 0 24px ${localColor.glow}`
-                  : "0 4px 12px rgba(0,0,0,0.5)",
+                  : "0 4px 14px rgba(2, 6, 23, 0.7)",
               }}
               onDoubleClick={() => {
                 if (isVideoOn) {
@@ -3060,7 +3072,7 @@ export default function VoiceChannel({
                     setFullscreenUid(profile.uid);
                     setFullscreenType("camera");
                   }}
-                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-[#030617]/85 hover:bg-[#060c24] text-indigo-200 hover:text-white backdrop-blur-md border border-indigo-900/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
                   title="Full screen your video"
                 >
                   <Maximize2 size={compact ? 13 : 15} />
@@ -3069,7 +3081,7 @@ export default function VoiceChannel({
 
               {/* Audio Status Badge */}
               {(isMuted || isLocalSpeaking) && (
-                <div className="absolute top-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                <div className="absolute top-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
                   <div
                     className="w-1.5 h-1.5 rounded-full transition-colors"
                     style={{
@@ -3155,12 +3167,12 @@ export default function VoiceChannel({
                 </div>
               )}
 
-              <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>
                   {profile.username} (You)
                 </span>
                 {isScreenSharing && (
-                  <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
+                  <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
                     <MonitorUp size={9} />
                     <span>LIVE</span>
                   </span>
@@ -3189,14 +3201,14 @@ export default function VoiceChannel({
           return (
             <div
               key={`${p.uid || "remote"}-${compact ? "compact" : "grid"}-${idx}`}
-              className={`relative aspect-video rounded-2xl bg-[#0f0f0f] border overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
+              className={`relative aspect-video rounded-2xl bg-[#060c24] border border-indigo-950/80 overflow-hidden flex flex-col items-center justify-center shadow-lg group transition-all duration-200 ${
                 compact ? "h-full flex-shrink-0" : "w-full"
               }`}
               style={{
-                borderColor: isSpeaking ? pColor.border : "rgba(38, 38, 38, 0.9)",
+                borderColor: isSpeaking ? pColor.border : "rgba(30, 41, 89, 0.8)",
                 boxShadow: isSpeaking 
                   ? `0 0 24px ${pColor.glow}`
-                  : "0 4px 12px rgba(0,0,0,0.5)",
+                  : "0 4px 14px rgba(2, 6, 23, 0.7)",
               }}
               onDoubleClick={() => {
                 if (isCameraShowing) {
@@ -3213,7 +3225,7 @@ export default function VoiceChannel({
                     setFullscreenUid(p.uid);
                     setFullscreenType("camera");
                   }}
-                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/75 hover:bg-black/95 text-white/80 hover:text-white backdrop-blur-md border border-neutral-700/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
+                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-[#030617]/85 hover:bg-[#060c24] text-indigo-200 hover:text-white backdrop-blur-md border border-indigo-900/60 shadow-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer z-30 hover:scale-105"
                   title={`Full screen ${p.username}'s video`}
                 >
                   <Maximize2 size={compact ? 13 : 15} />
@@ -3222,7 +3234,7 @@ export default function VoiceChannel({
 
               {/* Audio Status Badge */}
               {(p.isMuted || isSpeaking) && (
-                <div className="absolute top-2 left-2 bg-black/80 backdrop-blur-md px-2 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
+                <div className="absolute top-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20 animate-in fade-in duration-150">
                   <div
                     className="w-1.5 h-1.5 rounded-full transition-colors"
                     style={{
@@ -3321,10 +3333,10 @@ export default function VoiceChannel({
                 </div>
               )}
 
-              <div className="absolute bottom-2 left-2 bg-black/75 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-neutral-800 flex items-center gap-1.5 z-20">
+              <div className="absolute bottom-2 left-2 bg-[#030617]/90 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-indigo-900/60 flex items-center gap-1.5 z-20">
                 <span className={`${compact ? "text-[11px]" : "text-xs"} font-bold text-white`}>{p.username}</span>
                 {p.isScreenSharing === true && (
-                  <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-700/80 flex items-center gap-0.5 animate-pulse">
+                  <span className="text-[9px] text-indigo-200 font-extrabold uppercase tracking-wider bg-[#0c1642] px-1.5 py-0.2 rounded border border-indigo-600/80 flex items-center gap-0.5 animate-pulse">
                     <MonitorUp size={9} />
                     <span>LIVE</span>
                   </span>
@@ -3398,11 +3410,11 @@ export default function VoiceChannel({
                     {/* Stage Header Badge */}
                     <div className="absolute top-3 left-3 flex items-center gap-2 z-20">
                       <div className="bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2 shadow-lg">
-                        <MonitorUp size={15} className="text-emerald-400 animate-pulse flex-shrink-0" />
+                        <MonitorUp size={15} className="text-indigo-400 animate-pulse flex-shrink-0" />
                         <span className="text-xs font-bold text-white tracking-wide truncate max-w-[140px] sm:max-w-[220px]">
                           {activeScreenShare.username}'s Screen
                         </span>
-                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
+                        <span className="text-[10px] bg-[#0c1642] text-indigo-300 border border-indigo-700/60 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
                           LIVE
                         </span>
                         {activeScreenShare.hasAudio && (
@@ -3558,11 +3570,11 @@ export default function VoiceChannel({
                     {/* Stage Header Badge */}
                     <div className="absolute top-3 left-3 flex items-center gap-2 z-20">
                       <div className="bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-neutral-800 flex items-center gap-2 shadow-lg">
-                        <MonitorUp size={15} className="text-emerald-400 animate-pulse flex-shrink-0" />
+                        <MonitorUp size={15} className="text-indigo-400 animate-pulse flex-shrink-0" />
                         <span className="text-xs font-bold text-white tracking-wide truncate max-w-[140px] sm:max-w-[220px]">
                           {activeScreenShare.username}'s Screen
                         </span>
-                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
+                        <span className="text-[10px] bg-[#0c1642] text-indigo-300 border border-indigo-700/60 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider">
                           LIVE
                         </span>
                         {activeScreenShare.hasAudio && (
@@ -3672,13 +3684,13 @@ export default function VoiceChannel({
       })()}
 
       {/* Bottom Controls Bar */}
-      <div className="p-6 bg-black border-t border-neutral-900 flex justify-center items-center gap-4 flex-shrink-0 relative">
+      <div className="p-6 bg-[#03061a] border-t border-indigo-950/60 flex justify-center items-center gap-4 flex-shrink-0 relative">
         <button
           onClick={toggleMute}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isMuted
-              ? "bg-red-600/20 text-red-500 border border-red-800/80 hover:bg-red-600/30"
-              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+              ? "bg-red-950/60 text-red-400 border border-red-800/80 hover:bg-red-900/60"
+              : "bg-[#0b143c] text-indigo-100 border border-indigo-900/70 hover:bg-[#12205a] hover:border-indigo-600/80 shadow-md shadow-indigo-950/30"
           }`}
           title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
         >
@@ -3690,10 +3702,10 @@ export default function VoiceChannel({
           disabled={isCameraLoading}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isCameraLoading
-              ? "bg-neutral-800 text-cyan-400 border border-cyan-500/40 animate-pulse cursor-wait"
+              ? "bg-[#0b143c] text-indigo-400 border border-indigo-700/60 animate-pulse cursor-wait"
               : isVideoOn
-              ? "bg-white text-black font-bold shadow-lg"
-              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+              ? "bg-[#0e1b52] hover:bg-[#15256e] border-2 border-indigo-500/80 text-white font-bold shadow-lg shadow-indigo-950/50"
+              : "bg-[#0b143c] text-indigo-100 border border-indigo-900/70 hover:bg-[#12205a] hover:border-indigo-600/80 shadow-md shadow-indigo-950/30"
           }`}
           title={
             isCameraLoading
@@ -3717,8 +3729,8 @@ export default function VoiceChannel({
           onClick={toggleScreenShare}
           className={`p-3.5 rounded-2xl transition-all cursor-pointer ${
             isScreenSharing
-              ? "bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40"
-              : "bg-neutral-900 text-white border border-neutral-800 hover:bg-neutral-800"
+              ? "bg-[#0e1b52] hover:bg-[#15256e] border-2 border-indigo-500/80 text-white font-bold shadow-lg shadow-indigo-950/50"
+              : "bg-[#0b143c] text-indigo-100 border border-indigo-900/70 hover:bg-[#12205a] hover:border-indigo-600/80 shadow-md shadow-indigo-950/30"
           }`}
           title={
             isScreenSharing
@@ -3735,8 +3747,8 @@ export default function VoiceChannel({
 
         {/* Screen Audio Volume Control when local screen audio is active */}
         {isScreenSharing && isScreenAudioOn && (
-          <div className="hidden lg:flex items-center gap-2 bg-neutral-900/90 border border-neutral-800 px-3 py-2 rounded-2xl animate-in fade-in duration-200">
-            <Volume2 size={16} className="text-sky-400 flex-shrink-0" />
+          <div className="hidden lg:flex items-center gap-2 bg-[#0b143c]/90 border border-indigo-900/70 px-3 py-2 rounded-2xl animate-in fade-in duration-200">
+            <Volume2 size={16} className="text-indigo-400 flex-shrink-0" />
             <input
               type="range"
               min="0"
@@ -3744,10 +3756,10 @@ export default function VoiceChannel({
               step="0.05"
               value={screenAudioVolume}
               onChange={(e) => setScreenAudioVolume(parseFloat(e.target.value))}
-              className="w-16 sm:w-20 accent-sky-400 cursor-pointer"
+              className="w-16 sm:w-20 accent-indigo-400 cursor-pointer"
               title={`Screen Audio Volume: ${Math.round(screenAudioVolume * 100)}%`}
             />
-            <span className="text-[10px] font-bold text-neutral-400 w-7">
+            <span className="text-[10px] font-bold text-indigo-300 w-7">
               {Math.round(screenAudioVolume * 100)}%
             </span>
           </div>
@@ -3838,7 +3850,7 @@ export default function VoiceChannel({
                   </div>
                 )}
                 {targetIsSpeaking && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border border-black animate-pulse" />
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-indigo-500 border border-black animate-pulse" />
                 )}
               </div>
               <div className="flex items-center gap-2">
@@ -3846,7 +3858,7 @@ export default function VoiceChannel({
                   {targetUsername}
                 </span>
                 {isTargetScreen ? (
-                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-extrabold flex items-center gap-1">
+                  <span className="text-[10px] bg-[#0c1642] text-indigo-200 border border-indigo-600/60 px-2 py-0.5 rounded font-extrabold flex items-center gap-1">
                     <MonitorUp size={11} /> SCREEN SHARE
                   </span>
                 ) : targetIsVideo ? (
@@ -3864,7 +3876,7 @@ export default function VoiceChannel({
                     MUTED
                   </span>
                 ) : targetIsSpeaking ? (
-                  <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                  <span className="text-[10px] bg-[#0c1642] text-indigo-300 border border-indigo-700/60 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
                     <Radio size={10} className="animate-pulse" /> SPEAKING
                   </span>
                 ) : null}
@@ -4111,7 +4123,7 @@ export default function VoiceChannel({
                 onClick={toggleScreenShare}
                 className={`p-3 rounded-xl transition-all cursor-pointer ${
                   isScreenSharing
-                    ? "bg-emerald-600 text-white font-bold shadow-lg"
+                    ? "bg-[#0e1b52] border border-indigo-600/70 text-white font-bold shadow-lg shadow-indigo-950/50"
                     : "bg-neutral-800 text-white hover:bg-neutral-700"
                 }`}
                 title={isScreenSharing ? "Stop Screen Sharing" : "Share Screen"}

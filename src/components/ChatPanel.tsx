@@ -937,7 +937,7 @@ export default function ChatPanel({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`flex-1 flex w-full h-full min-h-0 bg-black text-white overflow-hidden relative ${
+      className={`flex-1 flex w-full h-full min-h-0 bg-[#03040c] text-white overflow-hidden relative ${
         isDragging ? "ring-2 ring-indigo-500 ring-inset bg-neutral-950/90" : ""
       }`}
     >
@@ -953,15 +953,15 @@ export default function ChatPanel({
         </div>
       )}
       {/* Center Chat View matching Image 2 */}
-      <div className="flex-1 flex flex-col min-w-0 h-full bg-black">
+      <div className="flex-1 flex flex-col min-w-0 h-full bg-[#03040c]">
         {/* Chat Header Bar */}
-        <div className="h-12 px-4 border-b border-neutral-900 bg-black flex items-center justify-between flex-shrink-0">
+        <div className="h-12 px-4 border-b border-indigo-950/50 bg-[#04071c] flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-neutral-400">#</span>
+            <span className="text-xl font-bold text-indigo-400">#</span>
             <span className="text-sm font-bold text-white tracking-wide">
               {activeChannel}
             </span>
-            <span className="text-xs text-neutral-500 font-normal hidden sm:inline ml-1">
+            <span className="text-xs text-indigo-300/60 font-normal hidden sm:inline ml-1">
               main room
             </span>
           </div>
@@ -969,13 +969,13 @@ export default function ChatPanel({
           <div className="flex items-center gap-2">
             {/* Search Bar */}
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-neutral-500" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-indigo-400/60" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search messages"
-                className="h-8 w-32 sm:w-44 bg-neutral-900 border border-neutral-800 rounded-md pl-8 pr-3 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-neutral-700 transition-colors"
+                className="h-8 w-32 sm:w-44 bg-[#070e2f]/90 border border-indigo-900/40 rounded-md pl-8 pr-3 text-xs text-white placeholder-indigo-300/40 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all duration-150"
               />
             </div>
 
@@ -983,10 +983,10 @@ export default function ChatPanel({
             {setShowMembersSidebar && (
               <button
                 onClick={() => setShowMembersSidebar((prev) => !prev)}
-                className={`p-1.5 rounded-md transition-colors ${
+                className={`p-1.5 rounded-md transition-all duration-150 active:scale-95 ${
                   showMembersSidebar
-                    ? "bg-neutral-800 text-white"
-                    : "text-neutral-400 hover:bg-neutral-900 hover:text-white"
+                    ? "bg-indigo-950/70 text-indigo-200 border border-indigo-800/40 shadow-sm"
+                    : "text-neutral-400 hover:bg-[#070e2f] hover:text-white"
                 }`}
                 title="Toggle Member List"
               >
@@ -1004,16 +1004,16 @@ export default function ChatPanel({
         >
           {/* Welcome Channel Banner matching Image 2 */}
           <div className="mb-8 pt-2">
-            <div className="w-16 h-16 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-3xl font-extrabold text-white mb-3 shadow-md">
-              <Hash size={36} className="text-neutral-300" />
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#0c1642] to-[#04081c] border border-indigo-800/40 flex items-center justify-center text-3xl font-extrabold text-white mb-3 shadow-lg shadow-indigo-950/40 group hover:scale-105 transition-transform duration-200">
+              <Hash size={36} className="text-indigo-300" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-1">
               Welcome to #{activeChannel}!
             </h1>
-            <p className="text-neutral-400 text-xs sm:text-sm">
+            <p className="text-indigo-200/70 text-xs sm:text-sm">
               This is the start of the #{activeChannel} channel.
             </p>
-            <div className="border-b border-neutral-900 mt-6" />
+            <div className="border-b border-indigo-950/40 mt-6" />
           </div>
 
           {/* Loading Indicator */}
@@ -1032,7 +1032,7 @@ export default function ChatPanel({
                   <button
                     onClick={handleLoadOlderMessages}
                     disabled={isLoadingOlder}
-                    className="px-4 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-medium text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center gap-2 shadow-sm disabled:opacity-50"
+                    className="px-4 py-1.5 rounded-full bg-[#080f33] hover:bg-[#0e1b56] border border-indigo-800/50 text-xs font-semibold text-indigo-200 hover:text-white transition-all duration-150 cursor-pointer flex items-center gap-2 shadow-md active:scale-95 disabled:opacity-50"
                   >
                     {isLoadingOlder ? (
                       <>
@@ -1056,10 +1056,10 @@ export default function ChatPanel({
             return (
               <div
                 key={`${msg.id || "msg"}-${mIdx}`}
-                className="flex gap-3.5 group hover:bg-neutral-950/60 p-1.5 -mx-1.5 rounded-lg transition-colors relative"
+                className="flex gap-3.5 group hover:bg-[#070e2f]/50 p-1.5 -mx-1.5 rounded-lg transition-colors duration-150 relative"
               >
                 {/* Avatar Circle */}
-                <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-neutral-800 flex-shrink-0 flex items-center justify-center font-bold text-white text-sm">
+                <div className="w-10 h-10 rounded-full overflow-hidden bg-neutral-800 border border-indigo-950 flex-shrink-0 flex items-center justify-center font-bold text-white text-sm shadow-sm transition-transform duration-150 group-hover:scale-105">
                   {msg.photoURL ? (
                     <img
                       src={msg.photoURL}
@@ -1076,16 +1076,16 @@ export default function ChatPanel({
                 {/* Message Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-sm font-bold text-white hover:underline cursor-pointer">
+                    <span className="text-sm font-bold text-white hover:underline hover:text-indigo-200 cursor-pointer transition-colors">
                       {msg.username}
                     </span>
-                    <span className="text-[11px] text-neutral-500 font-normal">
+                    <span className="text-[11px] text-indigo-300/60 font-normal">
                       {formatTimestamp(msg.timestamp)}
                     </span>
                   </div>
 
                   {msg.text && (
-                    <p className="text-sm text-neutral-200 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
+                    <p className="text-sm text-neutral-100 mt-1 whitespace-pre-wrap break-words leading-relaxed font-normal">
                       {msg.text}
                     </p>
                   )}
@@ -1096,7 +1096,7 @@ export default function ChatPanel({
                       alt="GIF"
                       loading="lazy"
                       decoding="async"
-                      className="rounded-xl mt-2 max-w-xs h-auto border border-neutral-800"
+                      className="rounded-xl mt-2 max-w-xs h-auto border border-indigo-900/40 shadow-md"
                     />
                   )}
 
@@ -1113,9 +1113,9 @@ export default function ChatPanel({
                             onClick={() => handleReactMessage(msg.id, emoji)}
                             className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium border ${
                               userList.includes(profile.uid)
-                                ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-300"
-                                : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
-                            } transition-colors cursor-pointer`}
+                                ? "bg-indigo-600/30 border-indigo-500/40 text-indigo-200"
+                                : "bg-[#080f33] border-indigo-900/40 text-indigo-300 hover:bg-[#0e1b56]"
+                            } transition-colors duration-150 cursor-pointer active:scale-95`}
                           >
                             <span>{emoji}</span>
                             <span>{userList.length}</span>
@@ -1127,12 +1127,12 @@ export default function ChatPanel({
                 </div>
 
                 {/* Actions (Delete, React) */}
-                <div className="absolute right-2 -top-3 sm:top-2 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 transition-opacity flex items-center gap-1 bg-neutral-900 border border-neutral-700 rounded-lg p-1 shadow-md z-10">
+                <div className="absolute right-2 -top-3 sm:top-2 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 transition-opacity flex items-center gap-1 bg-[#080f35] border border-indigo-900/50 rounded-lg p-1 shadow-xl z-10">
                   {["👍", "❤️", "😂"].map((emoji) => (
                     <button
                       key={emoji}
                       onClick={() => handleReactMessage(msg.id, emoji)}
-                      className="p-1.5 hover:bg-neutral-700 rounded text-sm transition-colors cursor-pointer"
+                      className="p-1.5 hover:bg-[#0e1b56] rounded text-sm transition-colors duration-150 cursor-pointer active:scale-90"
                       title={`React with ${emoji}`}
                     >
                       {emoji}
@@ -1141,7 +1141,7 @@ export default function ChatPanel({
                   {isMe && (
                     <button
                       onClick={() => handleDeleteMessage(msg.id)}
-                      className="p-1.5 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded transition-colors cursor-pointer ml-1 border-l border-neutral-800"
+                      className="p-1.5 text-neutral-400 hover:text-red-400 hover:bg-[#0e1b56] rounded transition-colors duration-150 cursor-pointer ml-1 border-l border-indigo-950/60 active:scale-90"
                       title="Delete Message"
                     >
                       <Trash2 size={16} />
@@ -1163,10 +1163,10 @@ export default function ChatPanel({
                   isUserScrolledUpRef.current = false;
                   scrollToBottom("smooth");
                 }}
-                className="pointer-events-auto px-4 py-1.5 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700 text-xs font-semibold shadow-2xl transition-all flex items-center gap-1.5 cursor-pointer backdrop-blur-sm active:scale-95"
+                className="pointer-events-auto px-4 py-1.5 rounded-full bg-[#080f33] hover:bg-[#0e1b56] text-white border border-indigo-800/60 text-xs font-semibold shadow-2xl transition-all duration-150 flex items-center gap-1.5 cursor-pointer active:scale-95 hover:border-indigo-600/70"
               >
                 <span>Latest messages</span>
-                <span className="text-sm font-bold">↓</span>
+                <span className="text-sm font-bold text-indigo-300">↓</span>
               </button>
             </div>
           )}
@@ -1182,7 +1182,7 @@ export default function ChatPanel({
 
         {/* Attachment Preview Drawer */}
         {(attachment || isUploading) && (
-          <div className="p-3 border-t border-neutral-900 bg-[#070707] flex items-center justify-between gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
+          <div className="p-3 border-t border-indigo-950/40 bg-[#03040c] flex items-center justify-between gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
             <div className="flex items-center gap-3 min-w-0 flex-1 max-w-xl">
               <div className="relative flex-shrink-0">
                 {(() => {
@@ -1205,7 +1205,7 @@ export default function ChatPanel({
                   }
                   if (stagedType === "audio") {
                     return (
-                      <div className="h-11 w-11 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                      <div className="h-11 w-11 rounded-lg bg-indigo-950/50 border border-indigo-800/40 flex items-center justify-center text-indigo-400">
                         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                       </div>
                     );
@@ -1243,7 +1243,7 @@ export default function ChatPanel({
                         {uploadProgress !== null ? `${uploadProgress}%` : "Uploading..."}
                       </span>
                     ) : (
-                      <span className="text-[10px] text-emerald-400 font-medium bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                      <span className="text-[10px] text-indigo-300 font-medium bg-[#0b143c] px-1.5 py-0.5 rounded border border-indigo-700/50 shadow-sm">
                         Ready
                       </span>
                     )}
@@ -1275,15 +1275,15 @@ export default function ChatPanel({
         )}
 
         {/* Bottom Message Input Bar matching Image 2 */}
-        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-black border-t border-neutral-900 flex-shrink-0">
+        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-[#03040c] border-t border-indigo-950/50 flex-shrink-0">
           {typingUsers.length > 0 && (
-            <div className="flex items-center gap-2 text-xs text-neutral-400 mb-2 pl-2 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2 text-xs text-indigo-300/80 mb-2 pl-2 animate-in fade-in duration-150">
               <div className="flex items-center gap-1">
                 <span className="relative flex h-1.5 w-1.5 mr-1">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
                 </span>
-                <span className="font-bold text-neutral-300">
+                <span className="font-bold text-indigo-200">
                   {typingUsers.length <= 3 
                     ? typingUsers.map((u) => u.username).join(", ") 
                     : "Several people"}
@@ -1295,7 +1295,7 @@ export default function ChatPanel({
           <form
             onSubmit={handleSendMessage}
             onPaste={handlePaste}
-            className="bg-neutral-900/90 border border-neutral-800 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-neutral-700 transition-colors"
+            className="bg-[#070c28]/95 border border-indigo-950/70 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-indigo-600/70 focus-within:ring-1 focus-within:ring-indigo-600/30 transition-all duration-150 shadow-lg shadow-black/40"
           >
             <input
               ref={inputRef}
@@ -1326,7 +1326,7 @@ export default function ChatPanel({
                 }
               }}
               placeholder={isLoadingMessages ? "Loading..." : `Message #${activeChannel}...`}
-              className="flex-1 bg-transparent text-sm text-white placeholder-neutral-500 focus:outline-none disabled:opacity-50"
+              className="flex-1 bg-transparent text-sm text-white placeholder-indigo-300/40 focus:outline-none disabled:opacity-50"
             />
 
             {/* Action Tools: File, GIF, Send */}
@@ -1335,7 +1335,7 @@ export default function ChatPanel({
                 type="button"
                 disabled={isLoadingMessages}
                 onClick={() => fileInputRef.current?.click()}
-                className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer"
+                className="text-indigo-300/70 hover:text-white p-1.5 rounded-lg hover:bg-indigo-950/40 transition-colors duration-150 disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer active:scale-90"
                 title="Attach Any File"
               >
                 <Plus size={18} />
@@ -1352,7 +1352,7 @@ export default function ChatPanel({
                 type="button"
                 disabled={isLoadingMessages}
                 onClick={() => setShowGiphy(!showGiphy)}
-                className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-[11px] font-bold tracking-wider transition-colors disabled:opacity-40 cursor-pointer"
+                className="px-2 py-0.5 bg-[#0b143c] hover:bg-[#122060] border border-indigo-900/40 text-indigo-200 hover:text-white rounded text-[11px] font-bold tracking-wider transition-all duration-150 disabled:opacity-40 cursor-pointer active:scale-95"
                 title="Choose GIF"
               >
                 GIF
@@ -1361,7 +1361,7 @@ export default function ChatPanel({
               <button
                 type="submit"
                 disabled={isLoadingMessages || (!text.trim() && !attachment) || isUploading}
-                className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white disabled:opacity-40 disabled:hover:bg-neutral-800 transition-all ml-1 cursor-pointer"
+                className="p-2 rounded-lg bg-[#0e1b52] hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-700/50 hover:border-indigo-500 disabled:opacity-40 disabled:hover:bg-[#0e1b52] disabled:hover:border-indigo-700/50 transition-all duration-150 ml-1 cursor-pointer active:scale-90"
                 title="Send Message"
               >
                 <Send size={15} />
@@ -1373,7 +1373,7 @@ export default function ChatPanel({
 
       {/* Right Members Sidebar ("ONLINE — N" & "OFFLINE / LEFT — N") matching Image 2 */}
       {showMembersSidebar && (
-        <aside className="w-56 bg-[#080808] border-l border-neutral-900 flex flex-col h-full flex-shrink-0">
+        <aside className="w-56 bg-[#040614] border-l border-indigo-950/40 flex flex-col h-full flex-shrink-0">
           <div className="flex-1 overflow-y-auto p-3 space-y-5">
             {/* ONLINE SECTION */}
             <div>
@@ -1404,7 +1404,7 @@ export default function ChatPanel({
                             <span>{(user.username || "?").charAt(0).toUpperCase()}</span>
                           )}
                         </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080808]" />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-indigo-500 border-2 border-[#030514]" />
                       </div>
 
                       {/* Username & Status Label */}
@@ -1415,23 +1415,23 @@ export default function ChatPanel({
                               {user.username}
                             </span>
                             {isCurrentUser && (
-                              <span className="bg-emerald-950 text-emerald-400 border border-emerald-800/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider flex-shrink-0">
+                              <span className="bg-[#0a1236] text-indigo-300 border border-indigo-700/80 text-[9px] font-bold px-1 py-0.2 rounded uppercase tracking-wider flex-shrink-0">
                                 YOU
                               </span>
                             )}
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                          <span className="text-[10px] text-neutral-500 font-medium">
+                          <span className="text-[10px] text-indigo-300/50 font-medium">
                             Online
                           </span>
                           {isInVoice && (
-                            <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-1 py-0.2 rounded">
+                            <span className="flex items-center gap-1 text-[9px] font-bold text-indigo-300 bg-[#0a1236] border border-indigo-700/60 px-1 py-0.2 rounded">
                               <Volume2 size={9} /> In Voice
                             </span>
                           )}
                           {isInVoice && (voiceInfo as any)?.isScreenSharing && (
-                            <span className="flex items-center gap-0.5 text-[9px] font-extrabold text-emerald-300 bg-emerald-950/90 border border-emerald-700/80 px-1 py-0.2 rounded animate-pulse">
+                            <span className="flex items-center gap-0.5 text-[9px] font-extrabold text-indigo-200 bg-[#0c1642] border border-indigo-600/80 px-1 py-0.2 rounded animate-pulse">
                               <MonitorUp size={9} /> LIVE
                             </span>
                           )}
@@ -1444,7 +1444,7 @@ export default function ChatPanel({
                         {!isCurrentUser && !isInVoice && (
                           <div className="mt-1.5">
                             {invitedUsers.has(user.uid) ? (
-                              <span className="text-[9px] text-emerald-400/80 italic line-clamp-2 leading-tight">
+                              <span className="text-[9px] text-indigo-300/80 italic line-clamp-2 leading-tight">
                                 Invited person, just wait for an answer or something
                               </span>
                             ) : (

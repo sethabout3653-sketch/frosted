@@ -33,20 +33,20 @@ const GameCard = memo(function GameCard({
     <div
       id={`game-card-${game.id}`}
       onClick={() => onSelect(game)}
-      className="game-card-item group relative cursor-pointer overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/60 p-2 text-left shadow-md transition-all duration-150 ease-out hover:-translate-y-1 hover:border-neutral-500 hover:bg-neutral-900 hover:shadow-lg hover:shadow-white/5 active:scale-[0.98]"
+      className="game-card-item group relative cursor-pointer overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-2 text-left shadow-lg transition-all duration-200 ease-out hover:-translate-y-1.5 hover:border-white/15 hover:bg-white/[0.06] hover:shadow-xl hover:shadow-indigo-500/5 active:scale-[0.98]"
     >
       {/* Cover Image Container */}
-      <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-black">
+      <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-neutral-950">
         <GameCover name={game.name} cover={game.cover} />
 
         {/* Tags Overlay */}
         <div className="absolute bottom-2 left-2 z-10 flex flex-wrap gap-1">
           {isMod ? (
-            <span className="rounded-md bg-white text-black px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider shadow-sm">
+            <span className="rounded-md bg-indigo-500 text-white px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider shadow-sm">
               FNF Mod
             </span>
           ) : isFnf ? (
-            <span className="rounded-md bg-black/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white backdrop-blur-md border border-neutral-600">
+            <span className="rounded-md bg-black/85 px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider text-indigo-200 border border-white/10">
               FNF
             </span>
           ) : null}
@@ -54,7 +54,7 @@ const GameCard = memo(function GameCard({
           {tagsToShow.map((tag) => (
             <span
               key={tag}
-              className="rounded-md bg-black/80 px-1.5 py-0.5 text-[9px] font-medium text-neutral-300 backdrop-blur-md border border-neutral-700/60"
+              className="rounded-md bg-black/75 px-1.5 py-0.5 text-[8px] font-bold text-neutral-200 uppercase tracking-wider border border-white/5"
             >
               {formatTagLabel(tag)}
             </span>
@@ -63,16 +63,16 @@ const GameCard = memo(function GameCard({
       </div>
 
       {/* Meta Text */}
-      <div className="mt-2 px-1">
-        <h3 className="truncate text-sm font-semibold tracking-wide text-neutral-200 group-hover:text-white">
+      <div className="mt-2.5 px-1 pb-1">
+        <h3 className="truncate text-xs font-bold tracking-wide text-neutral-200 group-hover:text-white transition-colors">
           {game.name}
         </h3>
         {game.author ? (
-          <p className="mt-0.5 truncate text-[11px] text-neutral-400 font-medium">
+          <p className="mt-0.5 truncate text-[10px] text-neutral-400 font-medium">
             {game.author}
           </p>
         ) : (
-          <p className="mt-0.5 truncate text-[11px] text-neutral-500 font-medium">
+          <p className="mt-0.5 truncate text-[10px] text-neutral-500 font-medium">
             {isMod ? "FNF Mod" : isFnf ? "FNF" : tagsToShow.length > 0 ? formatTagLabel(tagsToShow[0]) : "Web"}
           </p>
         )}

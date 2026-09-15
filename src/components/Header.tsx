@@ -48,35 +48,35 @@ const Header = memo(function Header({
   };
 
   return (
-    <header id="app-header" className="sticky top-0 z-40 w-full border-b border-neutral-800 bg-black/85 px-4 py-3.5 md:px-8 backdrop-blur-md">
+    <header id="app-header" className="sticky top-0 z-40 w-full border-b border-indigo-950/40 bg-[#040616]/95 px-4 py-3.5 md:px-8 shadow-lg shadow-black/30">
       <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         {/* Brand Logo with Frosted Emblem (clickable to go home & reset search) */}
         <button
           id="frosted-logo-btn"
           onClick={handleLogoClick}
-          className="flex items-center gap-2.5 text-left group cursor-pointer focus:outline-none rounded-lg transition-transform active:scale-95"
+          className="flex items-center gap-2.5 text-left group cursor-pointer focus:outline-none rounded-lg transition-transform duration-150 active:scale-95"
           title="Return to Home"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-sm transition-all group-hover:bg-white/20 group-hover:border-white/40">
-            <Snowflake size={18} className="text-white transition-transform group-hover:rotate-45" />
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-950/60 text-white border border-indigo-800/50 shadow-sm transition-transform duration-200 group-hover:scale-105">
+            <Snowflake size={18} className="text-indigo-300 transition-transform duration-300 group-hover:rotate-45" />
           </span>
-          <h1 className="text-xl font-bold tracking-tight text-white transition-colors group-hover:text-neutral-200">
-            FrostedStudying
+          <h1 className="text-xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-indigo-100 to-indigo-300 transition-all group-hover:text-indigo-200">
+            Frosted Studying
           </h1>
         </button>
 
-        {/* Black and White Search & Filter Panel */}
+        {/* Search & Filter Panel */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-1 sm:justify-end">
           {/* Search Bar */}
           <div className="relative flex-1 max-w-xs">
-            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-indigo-400/60 transition-colors" />
             <input
               id="game-search-input"
               type="text"
               value={localQuery}
               onChange={(e) => setLocalQuery(e.target.value)}
               placeholder="Search games..."
-              className="h-9 w-full rounded-lg border border-neutral-800 bg-neutral-900/80 pl-9 pr-3 text-xs text-white placeholder-neutral-500 transition-all focus:border-white focus:bg-neutral-900 focus:outline-none focus:ring-1 focus:ring-white"
+              className="h-9 w-full rounded-lg border border-indigo-950/60 bg-[#070b22]/90 pl-9 pr-3 text-xs text-white placeholder-indigo-300/40 transition-all duration-150 focus:border-indigo-500/70 focus:bg-[#0a0f30] focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
             />
           </div>
 
@@ -86,11 +86,11 @@ const Header = memo(function Header({
               id="tag-filter-select"
               value={selectedTag}
               onChange={(e) => setSelectedTag(e.target.value)}
-              className="h-9 w-full sm:w-44 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1 text-xs text-neutral-300 focus:border-white focus:outline-none focus:ring-1 focus:ring-white cursor-pointer"
+              className="h-9 w-full sm:w-44 rounded-lg border border-indigo-950/60 bg-[#070b22]/90 px-3 py-1 text-xs text-neutral-200 hover:bg-[#0a0f30] hover:border-indigo-800/50 focus:border-indigo-500/70 focus:outline-none focus:ring-1 focus:ring-indigo-500/30 cursor-pointer transition-all duration-150"
             >
-              <option value="all">All Genres</option>
+              <option value="all" className="bg-[#040616] text-white">All Genres</option>
               {tags.map((tag) => (
-                <option key={tag} value={tag}>
+                <option key={tag} value={tag} className="bg-[#040616] text-white">
                   {formatTagLabel(tag)}
                 </option>
               ))}
@@ -98,20 +98,20 @@ const Header = memo(function Header({
             <button
               id="frosted-chat-tab-btn"
               onClick={onChatClick}
-              className="h-9 rounded-full border border-neutral-800 bg-neutral-900/90 hover:bg-neutral-800 px-4 py-1 text-xs font-bold text-white transition-all cursor-pointer flex items-center gap-2 shadow-sm hover:border-neutral-700 active:scale-95"
+              className="h-9 rounded-full border border-indigo-700/50 bg-[#0b143c] hover:bg-[#122060] px-4 py-1 text-xs font-bold text-white transition-all duration-150 cursor-pointer flex items-center gap-2 shadow-md hover:border-indigo-500/70 active:scale-95"
               title="Open Frosted Chat"
             >
-              <MessageSquare size={15} className="text-white" />
+              <MessageSquare size={15} className="text-indigo-200" />
               <span>Frosted Chat</span>
             </button>
             <button
               id="frosted-settings-btn"
               onClick={onOpenSettings}
-              className="h-9 w-9 rounded-lg border border-neutral-800 bg-neutral-900/90 hover:bg-neutral-800 text-white transition-all cursor-pointer flex items-center justify-center shadow-sm hover:border-neutral-700 active:scale-95 flex-shrink-0"
+              className="h-9 w-9 rounded-lg border border-indigo-950/60 bg-[#070b22]/90 hover:bg-[#0a0f30] text-white transition-all duration-150 cursor-pointer flex items-center justify-center shadow-md hover:border-indigo-700/50 active:scale-95 flex-shrink-0"
               title="Settings"
               aria-label="Settings"
             >
-              <SlidersHorizontal size={16} className="text-white" />
+              <SlidersHorizontal size={16} className="text-neutral-200 hover:text-white" />
             </button>
           </div>
         </div>

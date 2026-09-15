@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Game } from "./types";
 import { fetchGamesList, getUniqueTags, isFnfGame, isFnfMod, deduplicateGames } from "./utils";
 import { fetchLuminGames, getLocalLuminGames, fetchLuminSessionId, getLocalLuminGamesWithSession } from "./lumin";
@@ -8,6 +9,7 @@ import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
 import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
 import SettingsModal from "./components/SettingsModal";
+import LoadingScreen from "./components/LoadingScreen";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import localZones from "./zones.json";
 
@@ -93,14 +95,50 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setShowStartup(false), 2400);
-    return () => window.clearTimeout(timeout);
+    // Safety fallback timeout to ensure app is always accessible
+    const safetyTimeout = window.setTimeout(() => setShowStartup(false), 6000);
+    return () => window.clearTimeout(safetyTimeout);
   }, []);
+
+  // Manage scrolling state on document body
+  useEffect(() => {
+    if (currentView === "chat" || currentView === "game") {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    };
+  }, [currentView]);
 
   // Filter states
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearch = useDeferredValue(searchQuery);
   const [selectedTag, setSelectedTag] = useState("all");
+
+  const handleSearchChange = useCallback((query: string) => {
+    setSearchQuery(query);
+    if (query.trim().length > 0 && currentView !== "home") {
+      setCurrentView("home");
+      setSelectedGame(null);
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+  }, [currentView]);
+
+  const handleTagChange = useCallback((tag: string) => {
+    setSelectedTag(tag);
+    if (tag !== "all" && currentView !== "home") {
+      setCurrentView("home");
+      setSelectedGame(null);
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+  }, [currentView]);
 
   // Fetch live games from GitHub assets and Lumin games on mount
   useEffect(() => {
@@ -164,32 +202,28 @@ export default function App() {
     return getUniqueTags(games);
   }, [games]);
 
-  // Handle URL state so users can share links directly to specific games
+  // Ensure URL is clean and without query params like ?game=...
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const gameIdStr = params.get("game");
-    if (gameIdStr) {
-      const game = games.find((g) => g.id.toString() === gameIdStr);
-      if (game) {
-        setSelectedGame(game);
-      }
+    if (params.has("game")) {
+      params.delete("game");
+      const cleanSearch = params.toString();
+      const cleanUrl = window.location.pathname + (cleanSearch ? `?${cleanSearch}` : "") + window.location.hash;
+      window.history.replaceState({}, "", cleanUrl);
     }
-  }, [games]);
+  }, []);
 
   const handleSelectGame = useCallback((game: Game) => {
+    if (showStartup) return;
     setSelectedGame(game);
     setCurrentView("game");
-    const url = new URL(window.location.href);
-    url.searchParams.set("game", game.id.toString());
-    window.history.pushState({}, "", url.toString());
-  }, []);
+  }, [showStartup]);
 
   const handleBackToHub = useCallback(() => {
     setSelectedGame(null);
     setCurrentView("home");
-    const url = new URL(window.location.href);
-    url.searchParams.delete("game");
-    window.history.pushState({}, "", url.toString());
+    document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
   }, []);
 
   const handleOpenChat = useCallback(() => {
@@ -221,20 +255,19 @@ export default function App() {
 
   return (
     <>
-      <div
-        aria-hidden={!showStartup}
-        className={`startup-splash ${showStartup ? "startup-splash-visible" : "startup-splash-hidden"}`}
-      >
-        <div className="startup-wordmark" aria-label="Frosted">Frosted</div>
-      </div>
-      <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+      <AnimatePresence mode="wait">
+        {showStartup && (
+          <LoadingScreen onComplete={() => setShowStartup(false)} />
+        )}
+      </AnimatePresence>
+      <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} ${showStartup ? "pointer-events-none select-none" : ""} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
       
       {/* Interactive Top Header Component */}
       <Header
         searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
+        setSearchQuery={handleSearchChange}
         selectedTag={selectedTag}
-        setSelectedTag={setSelectedTag}
+        setSelectedTag={handleTagChange}
         tags={tags}
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
@@ -242,17 +275,46 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className={`flex-1 w-full flex flex-col ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"}`}>
-        <div className={currentView === "game" && selectedGame ? `flex-1 w-full flex flex-col ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"}` : "hidden"}>
+      <main className={`flex-1 w-full flex flex-col relative ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"}`}>
+        
+        {/* Game Player View */}
+        <motion.div 
+          animate={{
+            opacity: (currentView === "game" && selectedGame) ? 1 : 0,
+            y: (currentView === "game" && selectedGame) ? 0 : 16,
+            scale: (currentView === "game" && selectedGame) ? 1 : 0.99,
+          }}
+          initial={{ opacity: 0, y: 16, scale: 0.99 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          style={{ 
+            pointerEvents: (currentView === "game" && selectedGame) ? "auto" : "none",
+            transform: "translateZ(0)"
+          }}
+          className={`flex-1 w-full flex flex-col ${isSoundboardActive ? "min-h-0 overflow-visible" : "min-h-0"} ${(currentView === "game" && selectedGame) ? "" : "absolute inset-x-0 top-0 invisible h-0 overflow-hidden"}`}
+        >
           {selectedGame && (
             <GamePlayer
               game={selectedGame}
               onBack={handleBackToHub}
             />
           )}
-        </div>
+        </motion.div>
 
-        <div className={currentView === "home" ? "w-full max-w-7xl mx-auto px-4 py-6 md:px-8 flex-1 flex flex-col gap-6" : "hidden"}>
+        {/* Catalog Grid View */}
+        <motion.div 
+          animate={{
+            opacity: currentView === "home" ? 1 : 0,
+            y: currentView === "home" ? 0 : 16,
+            scale: currentView === "home" ? 1 : 0.99,
+          }}
+          initial={{ opacity: 0, y: 0, scale: 1 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          style={{ 
+            pointerEvents: currentView === "home" ? "auto" : "none",
+            transform: "translateZ(0)"
+          }}
+          className={`w-full max-w-7xl mx-auto px-4 py-6 md:px-8 flex-1 flex flex-col gap-6 ${currentView === "home" ? "" : "absolute inset-x-0 top-0 invisible h-0 overflow-hidden"}`}
+        >
           {/* Catalog Grid View */}
           <section id="games-catalog-section" className="flex-1 flex flex-col gap-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -261,7 +323,7 @@ export default function App() {
                   <span>Games ({processedGames.length})</span>
                 </h2>
                 {loadingLive && (
-                  <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
+                  <span className="text-[10px] text-indigo-300/60 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
                     Loading games...
                   </span>
                 )}
@@ -273,32 +335,46 @@ export default function App() {
               onSelectGame={handleSelectGame}
             />
           </section>
-        </div>
+        </motion.div>
 
-        <div className={currentView === "chat" ? "flex-1 w-full flex flex-col min-h-0" : ""}>
+        {/* Discord Chat View */}
+        <motion.div 
+          animate={{
+            opacity: currentView === "chat" ? 1 : 0,
+            y: currentView === "chat" ? 0 : 16,
+            scale: currentView === "chat" ? 1 : 0.99,
+          }}
+          initial={{ opacity: 0, y: 16, scale: 0.99 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          style={{ 
+            pointerEvents: currentView === "chat" ? "auto" : "none",
+            transform: "translateZ(0)"
+          }}
+          className={`flex-1 w-full flex flex-col min-h-0 ${currentView === "chat" ? "" : "absolute inset-x-0 top-0 invisible h-0 overflow-hidden"}`}
+        >
           <Chat
             isOpen={currentView === "chat"}
             onClose={handleBackToHub}
             onOpenVoiceChat={() => setCurrentView("chat")}
             persistent
           />
-        </div>
+        </motion.div>
       </main>
 
       {/* Footer Branding Area (Home view only) */}
       {currentView === "home" && (
-        <footer id="app-footer" className="border-t border-neutral-900 bg-black px-4 py-6 md:px-8 text-center text-xs text-neutral-500">
+        <footer id="app-footer" className="border-t border-indigo-950/40 bg-[#040616] px-4 py-6 md:px-8 text-center text-xs text-indigo-300/60">
           <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
-            <p className="font-medium">
+            <p className="font-medium text-neutral-300">
               &copy; 2026 FrostedStudying. Fast, unblocked browser games library.
             </p>
-            <div className="flex flex-wrap gap-4 font-semibold">
+            <div className="flex flex-wrap gap-4 font-semibold text-indigo-300/80">
               <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
                 Community
               </a>
-              <span className="text-neutral-800">|</span>
+              <span className="text-indigo-950">|</span>
               <a href="https://github.com/gn-math" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
-                GitHub Repositories
+                GN-Math
               </a>
             </div>
           </div>

@@ -270,7 +270,7 @@ export default function MediaAttachment({
               {isDownloading ? (
                 <Loader2 size={13} className="animate-spin text-indigo-400" />
               ) : downloadSuccess ? (
-                <Check size={13} className="text-emerald-400" />
+                <Check size={13} className="text-indigo-400" />
               ) : (
                 <Download size={13} />
               )}
@@ -357,8 +357,8 @@ export default function MediaAttachment({
                   <Loader2 size={13} className="animate-spin text-indigo-400" />
                 ) : downloadSuccess ? (
                   <>
-                    <Check size={13} className="text-emerald-400" />
-                    <span className="text-[11px] text-emerald-400">Saved</span>
+                    <Check size={13} className="text-indigo-400" />
+                    <span className="text-[11px] text-indigo-400">Saved</span>
                   </>
                 ) : (
                   <>
@@ -466,7 +466,7 @@ export default function MediaAttachment({
       <div className="mt-2.5 max-w-sm sm:max-w-md w-full bg-neutral-900/80 p-3.5 rounded-2xl border border-neutral-800 shadow-md flex flex-col gap-2.5">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 flex-shrink-0">
+            <div className="w-8 h-8 rounded-xl bg-indigo-950/60 border border-indigo-800/50 flex items-center justify-center text-indigo-400 flex-shrink-0">
               <Music size={16} />
             </div>
             <div className="min-w-0">
@@ -486,9 +486,9 @@ export default function MediaAttachment({
             title="Download audio track"
           >
             {isDownloading ? (
-              <Loader2 size={14} className="animate-spin text-emerald-400" />
+              <Loader2 size={14} className="animate-spin text-indigo-400" />
             ) : downloadSuccess ? (
-              <Check size={14} className="text-emerald-400" />
+              <Check size={14} className="text-indigo-400" />
             ) : (
               <Download size={14} />
             )}
@@ -515,7 +515,7 @@ export default function MediaAttachment({
       case "code":
         return <FileCode size={20} className="text-cyan-400" />;
       case "sheet":
-        return <FileSpreadsheet size={20} className="text-emerald-400" />;
+        return <FileSpreadsheet size={20} className="text-indigo-400" />;
       case "presentation":
         return <FileText size={20} className="text-orange-400" />;
       default:
@@ -578,7 +578,7 @@ export default function MediaAttachment({
           {isDownloading ? (
             <Loader2 size={13} className="animate-spin text-white" />
           ) : downloadSuccess ? (
-            <Check size={13} className="text-emerald-400" />
+            <Check size={13} className="text-indigo-400" />
           ) : (
             <Download size={13} />
           )}
