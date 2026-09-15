@@ -1352,7 +1352,11 @@ export default function ChatPanel({
                 type="button"
                 disabled={isLoadingMessages}
                 onClick={() => setShowGiphy(!showGiphy)}
-                className="px-2 py-0.5 bg-[#0b143c] hover:bg-[#122060] border border-indigo-900/40 text-indigo-200 hover:text-white rounded text-[11px] font-bold tracking-wider transition-all duration-150 disabled:opacity-40 cursor-pointer active:scale-95"
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold tracking-wider transition-all duration-150 disabled:opacity-40 cursor-pointer active:scale-95 ${
+                  showGiphy
+                    ? "bg-[#182d82] text-white border border-indigo-400 shadow-md shadow-indigo-950"
+                    : "bg-[#0b143c] hover:bg-[#122060] border border-indigo-800/60 text-indigo-200 hover:text-white"
+                }`}
                 title="Choose GIF"
               >
                 GIF

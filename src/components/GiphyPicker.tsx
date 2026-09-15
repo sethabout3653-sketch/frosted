@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, X, Loader2, Sparkles, RefreshCw, ExternalLink } from "lucide-react";
+import { Search, X, Loader2, Sparkles, RefreshCw } from "lucide-react";
 import { GiphyFetch } from "@giphy/js-fetch-api";
 
 // Active working Giphy API key
@@ -165,18 +165,18 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
   return (
     <div
       id="giphy-picker-drawer"
-      className="border-t border-neutral-800 bg-[#0d0d0d] flex flex-col h-72 sm:h-80 flex-shrink-0 animate-in slide-in-from-bottom duration-200 select-none shadow-2xl"
+      className="border-t border-indigo-950/60 bg-[#04071c] flex flex-col h-72 sm:h-80 flex-shrink-0 animate-in slide-in-from-bottom duration-200 select-none shadow-2xl"
     >
-      {/* Drawer Header */}
-      <div className="px-3 py-2 border-b border-neutral-800/80 flex items-center justify-between gap-2 flex-shrink-0 bg-neutral-900/60">
+      {/* Drawer Header with Navy Blue styling */}
+      <div className="px-3 py-2 border-b border-indigo-950/60 flex items-center justify-between gap-2 flex-shrink-0 bg-[#070e2f]">
         <div className="flex items-center gap-2">
-          <span className="px-1.5 py-0.5 rounded bg-neutral-800 text-white font-bold text-[10px] tracking-wider uppercase">
+          <span className="px-1.5 py-0.5 rounded bg-[#0b143c] border border-indigo-700/60 text-indigo-200 font-bold text-[10px] tracking-wider uppercase shadow-sm">
             GIF
           </span>
-          <span className="text-xs font-semibold text-neutral-200">
+          <span className="text-xs font-bold text-white">
             Choose a GIF
           </span>
-          <span className="text-[10px] text-neutral-500 hidden sm:inline">
+          <span className="text-[10px] text-indigo-300/50 hidden sm:inline">
             Powered by GIPHY
           </span>
         </div>
@@ -185,10 +185,10 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
           <button
             type="button"
             onClick={() => setShowUrlInput(!showUrlInput)}
-            className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+            className={`text-xs px-2 py-0.5 rounded border transition-all duration-150 cursor-pointer ${
               showUrlInput
-                ? "bg-white text-black border-white"
-                : "bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-white"
+                ? "bg-indigo-600 text-white border-indigo-400 font-bold shadow-sm"
+                : "bg-[#0b143c] text-indigo-300 border-indigo-800/60 hover:text-white hover:bg-[#12205a]"
             }`}
             title="Paste custom GIF link"
           >
@@ -197,15 +197,15 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
           <button
             type="button"
             onClick={() => fetchGiphyData(searchTerm || activeCategory)}
-            className="p-1 text-neutral-400 hover:text-white rounded hover:bg-neutral-800 transition-colors"
+            className="p-1 text-indigo-300/70 hover:text-white rounded hover:bg-[#0e1c50] transition-colors cursor-pointer"
             title="Refresh GIFs"
           >
-            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+            <RefreshCw size={13} className={loading ? "animate-spin text-indigo-300" : ""} />
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 text-neutral-400 hover:text-white rounded hover:bg-neutral-800 transition-colors"
+            className="p-1 text-indigo-300/70 hover:text-white rounded hover:bg-[#0e1c50] transition-colors cursor-pointer"
             title="Close GIF Picker"
           >
             <X size={14} />
@@ -213,40 +213,40 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
         </div>
       </div>
 
-      {/* Custom URL Input Field (Optional Bar) */}
+      {/* Custom URL Input Field (Optional Bar) in Navy Blue */}
       {showUrlInput && (
         <form
           onSubmit={handleCustomUrlSubmit}
-          className="p-2 bg-neutral-950 border-b border-neutral-800 flex items-center gap-2 flex-shrink-0"
+          className="p-2 bg-[#050924] border-b border-indigo-950/60 flex items-center gap-2 flex-shrink-0"
         >
           <input
             type="url"
             value={customUrl}
             onChange={(e) => setCustomUrl(e.target.value)}
             placeholder="Paste direct .gif URL here..."
-            className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-2.5 py-1 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-neutral-700"
+            className="flex-1 bg-[#091238] border border-indigo-900/60 rounded px-2.5 py-1 text-xs text-white placeholder-indigo-300/40 focus:outline-none focus:border-indigo-500/70"
           />
           <button
             type="submit"
             disabled={!customUrl.trim()}
-            className="px-3 py-1 bg-white hover:bg-neutral-200 text-black text-xs font-semibold rounded disabled:opacity-40"
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded disabled:opacity-40 cursor-pointer transition-colors shadow-sm"
           >
             Send
           </button>
         </form>
       )}
 
-      {/* Search Input Bar */}
-      <div className="p-2 border-b border-neutral-800/80 bg-neutral-950 flex-shrink-0">
+      {/* Search Input Bar & Category Chips in Navy Blue */}
+      <div className="p-2 border-b border-indigo-950/60 bg-[#050a26] flex-shrink-0">
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 w-3.5 h-3.5" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400/60 w-3.5 h-3.5 pointer-events-none" />
           <input
             ref={searchInputRef}
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Search GIPHY for memes, reactions, gaming..."
-            className="w-full bg-neutral-900/90 border border-neutral-800 text-xs text-white placeholder-neutral-500 rounded-lg pl-8 pr-7 py-1.5 focus:outline-none focus:border-neutral-600 transition-colors"
+            className="w-full bg-[#081034] border border-indigo-900/60 text-xs text-white placeholder-indigo-300/40 rounded-lg pl-8 pr-7 py-1.5 focus:outline-none focus:border-indigo-500/70 focus:ring-1 focus:ring-indigo-500/30 transition-all"
           />
           {searchTerm && (
             <button
@@ -255,7 +255,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
                 setSearchTerm("");
                 setActiveCategory("Trending");
               }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-indigo-400/70 hover:text-white cursor-pointer"
             >
               <X size={12} />
             </button>
@@ -271,8 +271,8 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
               onClick={() => handleSelectCategory(cat)}
               className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium whitespace-nowrap transition-all cursor-pointer ${
                 activeCategory === cat && !searchTerm
-                  ? "bg-white text-black font-semibold shadow"
-                  : "bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 border border-neutral-800/80"
+                  ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-950/80 border border-indigo-400/70"
+                  : "bg-[#091238] text-indigo-200/80 hover:text-white hover:bg-[#101e58] border border-indigo-900/50"
               }`}
             >
               {cat}
@@ -281,23 +281,23 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
         </div>
       </div>
 
-      {/* GIF Grid Area */}
-      <div className="flex-1 overflow-y-auto p-2 min-h-0 bg-[#0a0a0a]">
+      {/* GIF Grid Area in Navy Blue */}
+      <div className="flex-1 overflow-y-auto p-2 min-h-0 bg-[#030616]">
         {loading ? (
-          <div className="h-full flex flex-col items-center justify-center gap-2 text-neutral-500 py-8">
-            <Loader2 size={24} className="animate-spin text-neutral-400" />
-            <span className="text-xs">Fetching GIFs from GIPHY...</span>
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-indigo-300/60 py-8">
+            <Loader2 size={24} className="animate-spin text-indigo-400" />
+            <span className="text-xs font-medium">Fetching GIFs from GIPHY...</span>
           </div>
         ) : gifs.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center gap-2 text-neutral-500 py-8 text-center">
-            <Sparkles size={20} className="text-neutral-600" />
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-indigo-300/60 py-8 text-center">
+            <Sparkles size={20} className="text-indigo-400" />
             <span className="text-xs">No GIFs found for this search.</span>
             <button
               onClick={() => {
                 setSearchTerm("");
                 setActiveCategory("Trending");
               }}
-              className="text-xs text-white hover:underline mt-1"
+              className="text-xs text-indigo-300 hover:text-white hover:underline mt-1 cursor-pointer font-medium"
             >
               View Trending GIFs
             </button>
@@ -312,7 +312,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
                   onSelectGif(gif.url);
                   onClose();
                 }}
-                className="group relative aspect-video bg-neutral-900 rounded-lg overflow-hidden border border-neutral-800/80 hover:border-neutral-500 focus:outline-none transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                className="group relative aspect-video bg-[#070e30] rounded-lg overflow-hidden border border-indigo-950/80 hover:border-indigo-500/80 focus:outline-none transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shadow-sm hover:shadow-indigo-950/80"
                 title={gif.title}
               >
                 <img
@@ -322,7 +322,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover group-hover:opacity-90 transition-opacity"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
+                <div className="absolute inset-0 bg-gradient-to-t from-[#04071c]/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
                   <span className="text-[10px] text-white font-medium truncate drop-shadow">
                     {gif.title || "Send GIF"}
                   </span>
