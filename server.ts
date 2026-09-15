@@ -981,6 +981,16 @@ const PORT = 3000;
     }
   });
 
+  // Vercel Native WebSocket Route / Server WebSocket Endpoint
+  app.all(["/api/ws", "/api/ws/*"], async (req, res) => {
+    try {
+      const { default: handler } = await import("./api/ws.js").catch(() => import("./api/ws"));
+      return handler(req, res);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)
   app.all(["/api/db/data", "/api/db/data/*"], async (req, res) => {
     try {

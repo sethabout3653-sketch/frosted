@@ -1,4 +1,5 @@
 import { supabase } from "./lib/supabase";
+import { wsClient } from "./lib/wsClient";
 
 // =========================================================
 // Unlimited Supabase Storage & Media Upload Engine
@@ -591,7 +592,13 @@ export function sendBroadcastSignal(payload: any) {
     payload: sig,
   });
 
-  // 3. Fallback to server endpoint for offline synchronization
+  // 3. Ultra-low latency WebSocket delivery
+  wsClient.send({
+    type: "webrtc_signal",
+    ...sig,
+  });
+
+  // 4. Fallback to server endpoint for offline synchronization
   fetch("/api/webrtc/signal", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -634,7 +641,15 @@ export function subscribeBroadcastSignals(
     }
   );
 
-  // 3. Server fallback polling for cross-network reliability
+  // 3. WebSocket Real-time Signaling Layer
+  wsClient.registerUid(myUid);
+  const unsubscribeWS = wsClient.subscribe((msg) => {
+    if (msg.type === "webrtc_signal") {
+      handleSignal(msg);
+    }
+  });
+
+  // 4. Server fallback polling for cross-network reliability
   const interval = setInterval(async () => {
     try {
       const res = await fetch(`/api/webrtc/signals?uid=${encodeURIComponent(myUid)}`);
@@ -650,6 +665,7 @@ export function subscribeBroadcastSignals(
 
   return () => {
     clearInterval(interval);
+    unsubscribeWS();
     supabase.removeChannel(myChannel);
   };
 }
