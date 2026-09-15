@@ -1,5 +1,5 @@
 import { supabase } from "./lib/supabase";
-import { wsClient } from "./lib/wsClient";
+import { wsClient } from "./lib/websocket-client";
 
 // =========================================================
 // Unlimited Supabase Storage & Media Upload Engine
@@ -257,6 +257,7 @@ class SupabaseRealtimeManager {
 
   private constructor() {
     this.initSyncChannel();
+    this.initWebSocketBridge();
   }
 
   public static getInstance(): SupabaseRealtimeManager {
@@ -264,6 +265,15 @@ class SupabaseRealtimeManager {
       SupabaseRealtimeManager.instance = new SupabaseRealtimeManager();
     }
     return SupabaseRealtimeManager.instance;
+  }
+
+  private initWebSocketBridge() {
+    // Listen for instant 0ms WebSocket change events
+    wsClient.onAnyChange(({ op, collection, id, data }) => {
+      if (collection && id) {
+        this.applyChange(op, collection, id, data);
+      }
+    });
   }
 
   private initSyncChannel() {
@@ -421,16 +431,21 @@ class SupabaseRealtimeManager {
     // 1. Optimistic instant local update
     this.applyChange(op, colName, id, recordPayload);
 
-    // 2. Instant Supabase Realtime Broadcast to all connected clients
+    // 2. Instant 0ms WebSocket Delivery to connected peers
     try {
-      this.syncChannel.send({
+      wsClient.sendChange(op as any, colName, id, recordPayload);
+    } catch (e) {}
+
+    // 3. Supabase Realtime Broadcast
+    try {
+      this.syncChannel?.send({
         type: "broadcast",
         event: "change",
         payload: { op, collection: colName, id, data: recordPayload, timestamp: ts },
       });
     } catch (e) {}
 
-    // 3. Persist to Supabase Postgres 'records' table
+    // 4. Persist to Supabase Postgres 'records' table
     try {
       if (op === "delete") {
         await supabase
@@ -450,7 +465,7 @@ class SupabaseRealtimeManager {
       // Supabase table not created yet or RLS restriction, handled gracefully below
     }
 
-    // 4. Also mirror write to persistent storage server to guarantee zero data loss
+    // 5. Also mirror write to persistent storage server to guarantee zero data loss
     try {
       fetch("/api/cassandra/write", {
         method: "POST",
@@ -568,7 +583,12 @@ export function sendBroadcastSignal(payload: any) {
     timestamp: payload.timestamp || Date.now(),
   };
 
-  // 1. Direct targeted delivery via dedicated Supabase user channel
+  // 1. Instant 0ms WebSocket Peer-to-Peer Signaling
+  try {
+    wsClient.sendSignal(sig);
+  } catch (e) {}
+
+  // 2. Direct targeted delivery via dedicated Supabase user channel
   if (sig.targetUid && sig.targetUid !== "all") {
     let targetChannel = userSignalChannels.get(sig.targetUid);
     if (!targetChannel) {
@@ -585,17 +605,11 @@ export function sendBroadcastSignal(payload: any) {
     });
   }
 
-  // 2. Broadcast delivery via general Supabase WebRTC channel
+  // 3. Broadcast delivery via general Supabase WebRTC channel
   webrtcBroadcastChannel.send({
     type: "broadcast",
     event: "webrtc_signal",
     payload: sig,
-  });
-
-  // 3. Ultra-low latency WebSocket delivery
-  wsClient.send({
-    type: "webrtc_signal",
-    ...sig,
   });
 
   // 4. Fallback to server endpoint for offline synchronization
@@ -613,6 +627,9 @@ export function subscribeBroadcastSignals(
 ) {
   const processedSignals = new Set<string>();
 
+  // Register UID with WebSocket client for targeted routing
+  wsClient.setUserUid(myUid);
+
   const handleSignal = (sig: any) => {
     if (!sig || !sig.id) return;
     if (sig.uid === myUid) return; // ignore own signals
@@ -622,7 +639,12 @@ export function subscribeBroadcastSignals(
     onSignal(sig);
   };
 
-  // 1. Dedicated Supabase private channel for this user
+  // 1. Instant 0ms WebSocket signaling listener
+  const unsubWs = wsClient.onSignal((sig) => {
+    handleSignal(sig);
+  });
+
+  // 2. Dedicated Supabase private channel for this user
   const myChannel = supabase.channel(`supabase-user-signals-${myUid}`, {
     config: { broadcast: { ack: false, self: false } },
   });
@@ -632,7 +654,7 @@ export function subscribeBroadcastSignals(
     })
     .subscribe();
 
-  // 2. General Supabase WebRTC broadcast channel
+  // 3. General Supabase WebRTC broadcast channel
   const generalSub = webrtcBroadcastChannel.on(
     "broadcast",
     { event: "webrtc_signal" },
@@ -640,14 +662,6 @@ export function subscribeBroadcastSignals(
       handleSignal(payload);
     }
   );
-
-  // 3. WebSocket Real-time Signaling Layer
-  wsClient.registerUid(myUid);
-  const unsubscribeWS = wsClient.subscribe((msg) => {
-    if (msg.type === "webrtc_signal") {
-      handleSignal(msg);
-    }
-  });
 
   // 4. Server fallback polling for cross-network reliability
   const interval = setInterval(async () => {
@@ -664,8 +678,8 @@ export function subscribeBroadcastSignals(
   }, 2000);
 
   return () => {
+    unsubWs();
     clearInterval(interval);
-    unsubscribeWS();
     supabase.removeChannel(myChannel);
   };
 }

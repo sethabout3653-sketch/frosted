@@ -37,7 +37,6 @@ import {
 import GiphyPicker from "./GiphyPicker";
 import MediaAttachment from "./MediaAttachment";
 import { detectMediaType, formatFileSize } from "../utils/mediaUtils";
-import { wsClient } from "../lib/wsClient";
 
 interface ChatPanelProps {
   profile: ChatProfile;
@@ -152,16 +151,6 @@ export default function ChatPanel({
 
   const updateTypingStatus = async (typing: boolean) => {
     if (!profile) return;
-    // 1. Instant ultra-low latency WebSocket delivery
-    wsClient.send({
-      type: "typing",
-      uid: profile.uid,
-      username: profile.username,
-      channelId: activeChannel,
-      typing,
-      timestamp: Date.now(),
-    });
-
     const typingRef = doc(db, "typing", `${activeChannel}_${profile.uid}`);
     if (typing) {
       setIsLocalTyping(true);
@@ -204,63 +193,6 @@ export default function ChatPanel({
     );
 
     return () => unsub();
-  }, [activeChannel, profile?.uid]);
-
-  // WebSocket real-time instant event receiver (typing, messages, deletions)
-  useEffect(() => {
-    if (!profile?.uid) return;
-    wsClient.registerUid(profile.uid);
-
-    const unsubscribe = wsClient.subscribe((data) => {
-      if (!data) return;
-
-      // Instant Typing Events over WebSocket
-      if (data.type === "typing") {
-        if (data.uid === profile.uid || data.channelId !== activeChannel) return;
-        setTypingUsers((prev) => {
-          const filtered = prev.filter((u) => u.uid !== data.uid);
-          if (data.typing) {
-            return [...filtered, { uid: data.uid, username: data.username, channelId: data.channelId, timestamp: data.timestamp || Date.now() }];
-          }
-          return filtered;
-        });
-        return;
-      }
-
-      // Instant Chat Messages over WebSocket (0ms latency before DB sync)
-      if (data.type === "chat_message" && data.message) {
-        const incomingMsg: ChatMessage = {
-          ...data.message,
-          timestamp: toTimestampMs(data.message.timestamp) || Date.now(),
-        };
-
-        if (incomingMsg.channelId && incomingMsg.channelId !== activeChannel) {
-          return;
-        }
-
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === incomingMsg.id)) {
-            return prev;
-          }
-          const next = [...prev, incomingMsg].sort(compareMessagesChronological);
-          saveCachedMessages(next);
-          return next;
-        });
-
-        // Scroll to bottom if user is at the bottom
-        if (!isUserScrolledUpRef.current) {
-          window.setTimeout(() => scrollToBottom("smooth"), 10);
-        }
-        return;
-      }
-
-      // Instant Message Deletion over WebSocket
-      if (data.type === "delete_message" && data.messageId) {
-        setMessages((prev) => prev.filter((m) => m.id !== data.messageId));
-      }
-    });
-
-    return () => unsubscribe();
   }, [activeChannel, profile?.uid]);
 
   // Periodic pruning of dead typing heartbeats
@@ -566,13 +498,6 @@ export default function ChatPanel({
   };
 
   const handleDeleteMessage = async (msgId: string) => {
-    // 1. Instant WebSocket notification (0ms)
-    wsClient.send({
-      type: "delete_message",
-      messageId: msgId,
-      channelId: activeChannel,
-    });
-
     setMessages((prev) => {
       const updated = prev.filter((m) => m.id !== msgId);
       saveCachedMessages(updated);
@@ -706,16 +631,6 @@ export default function ChatPanel({
         if (currentSize) msgData.attachmentSize = currentSize;
       }
 
-      // 1. Instant WebSocket broadcast (0ms delay across all connected peers)
-      wsClient.send({
-        type: "chat_message",
-        message: {
-          id: msgId,
-          ...msgData,
-        },
-      });
-
-      // 2. Persistent storage for chat history
       await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
       // Revert optimistic message if writing failed
@@ -759,16 +674,6 @@ export default function ChatPanel({
         timestamp: now,
       };
 
-      // 1. Instant WebSocket broadcast (0ms delay)
-      wsClient.send({
-        type: "chat_message",
-        message: {
-          id: msgId,
-          ...msgData,
-        },
-      });
-
-      // 2. Persistent storage
       await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
       setMessages((prev) => prev.filter((m) => m.id !== msgId));

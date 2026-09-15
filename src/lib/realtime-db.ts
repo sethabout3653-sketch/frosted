@@ -2,6 +2,7 @@
 // Lightweight, zero-dependency, and 100% resilient
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { wsClient } from "./websocket-client";
 
 export interface RealtimeChangeEvent<T = any> {
   op: "upsert" | "delete";
@@ -34,6 +35,22 @@ export class RealtimeDB {
 
     let eventSource: EventSource | null = null;
     let isSubscribed = true;
+
+    // 1. WebSocket Live Stream (Instant 0ms latency)
+    const unsubWs = wsClient.onCollectionChange(cleanPath, (change) => {
+      if (!isSubscribed) return;
+      try {
+        callbacks.onChange?.({
+          op: change.op === "delete" ? "delete" : "upsert",
+          path: cleanPath,
+          id: change.id,
+          data: change.data,
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        callbacks.onError?.(e);
+      }
+    });
 
     const connect = () => {
       if (!isSubscribed) return;
@@ -84,6 +101,7 @@ export class RealtimeDB {
 
     return () => {
       isSubscribed = false;
+      unsubWs();
       clearInterval(interval);
       if (eventSource) {
         eventSource.close();
@@ -97,6 +115,12 @@ export class RealtimeDB {
    */
   async set<T = any>(path: string, id: string, data: T): Promise<{ success: boolean; id: string; data: T }> {
     const cleanPath = path.replace(/^\//, "");
+
+    // Instant WebSocket broadcast
+    try {
+      wsClient.sendChange("set", cleanPath, id, data);
+    } catch (e) {}
+
     const res = await fetch(`${this.baseUrl}/api/db/data`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

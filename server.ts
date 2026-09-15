@@ -1,5 +1,7 @@
 import express from "express";
 import path from "path";
+import http from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
@@ -9,6 +11,7 @@ import { records, webrtcSignals } from "./src/db/schema.js";
 import { eq, and, gt, ne, or } from "drizzle-orm";
 
 export const app = express();
+export const httpServer = http.createServer(app);
 const PORT = 3000;
 
   // Ensure uploads directory exists (fall back to /tmp/uploads on read-only environments like Cloud Run)
@@ -517,6 +520,236 @@ const PORT = 3000;
     return dbInstance;
   }
 
+  // ==========================================
+  // High-Performance WebSocket Engine (/api/ws)
+  // Instant 0ms Latency Driver with Persistence
+  // ==========================================
+  interface ExtendedWebSocket extends WebSocket {
+    isAlive?: boolean;
+    uid?: string;
+    subscriptions?: Set<string>;
+  }
+
+  const wsClients = new Set<ExtendedWebSocket>();
+  export const wss = new WebSocketServer({ noServer: true });
+
+  export const broadcastWebSocketChange = (
+    op: string,
+    collection: string,
+    id: string,
+    data: any,
+    excludeWs?: WebSocket
+  ) => {
+    const payload = JSON.stringify({
+      type: "change",
+      op,
+      collection,
+      id,
+      data,
+      timestamp: Date.now(),
+    });
+
+    wsClients.forEach((client) => {
+      if (client === excludeWs) return;
+      if (client.readyState === WebSocket.OPEN) {
+        // If client has subscriptions, verify collection or wildcard
+        if (!client.subscriptions || client.subscriptions.size === 0 || client.subscriptions.has("all") || client.subscriptions.has(collection)) {
+          try {
+            client.send(payload);
+          } catch (e) {
+            wsClients.delete(client);
+          }
+        }
+      }
+    });
+  };
+
+  export const broadcastWebSocketSignal = (
+    signal: any,
+    excludeWs?: WebSocket
+  ) => {
+    const payload = JSON.stringify({
+      type: "webrtc_signal",
+      payload: signal,
+      timestamp: Date.now(),
+    });
+
+    const targetUid = signal?.targetUid;
+
+    wsClients.forEach((client) => {
+      if (client === excludeWs) return;
+      if (client.readyState === WebSocket.OPEN) {
+        // Direct routing: if targetUid is specific, prioritize matching client
+        if (targetUid && targetUid !== "all") {
+          if (client.uid === targetUid) {
+            try {
+              client.send(payload);
+            } catch (e) {
+              wsClients.delete(client);
+            }
+          }
+        } else {
+          try {
+            client.send(payload);
+          } catch (e) {
+            wsClients.delete(client);
+          }
+        }
+      }
+    });
+  };
+
+  wss.on("connection", (ws: ExtendedWebSocket) => {
+    ws.isAlive = true;
+    ws.subscriptions = new Set(["all"]);
+    wsClients.add(ws);
+
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
+    ws.on("message", async (rawMessage) => {
+      try {
+        const msg = JSON.parse(rawMessage.toString());
+        if (!msg || typeof msg !== "object") return;
+
+        // 1. Heartbeat Ping / Pong
+        if (msg.type === "ping") {
+          ws.isAlive = true;
+          ws.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+          return;
+        }
+
+        // 2. User UID Registration
+        if (msg.type === "register_uid" && msg.uid) {
+          ws.uid = msg.uid;
+          return;
+        }
+
+        // 3. Collection Subscription
+        if (msg.type === "subscribe" && msg.collection) {
+          ws.subscriptions = ws.subscriptions || new Set();
+          ws.subscriptions.add(msg.collection);
+          return;
+        }
+
+        // 4. Instant Mutation / Database Write over WebSocket
+        if (msg.type === "change" && msg.collection && msg.id) {
+          const { op, collection: col, id, data } = msg;
+          const ts = Date.now();
+          let recordData = data;
+
+          // Asynchronously persist to database (Cloud SQL / Postgres / Local records table)
+          getDb().then(async (db) => {
+            try {
+              if (op === "delete") {
+                await db.run("DELETE FROM records WHERE collection = ? AND id = ?", [col, id]);
+              } else if (op === "update") {
+                const row = await db.get("SELECT data FROM records WHERE collection = ? AND id = ?", [col, id]);
+                const existing = row ? JSON.parse(row.data) : {};
+                recordData = { ...existing, ...data, id };
+                await db.run(
+                  "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+                  [col, id, JSON.stringify(recordData), ts]
+                );
+              } else {
+                recordData = { ...data, id };
+                await db.run(
+                  "INSERT OR REPLACE INTO records (collection, id, data, timestamp) VALUES (?, ?, ?, ?)",
+                  [col, id, JSON.stringify(recordData), ts]
+                );
+              }
+
+              // Prune stale presence and voice users
+              if (col === "presence" || col === "voice_users") {
+                const staleThreshold = ts - 120000;
+                await db.run("DELETE FROM records WHERE collection = ? AND timestamp < ?", [col, staleThreshold]);
+              }
+            } catch (err) {
+              console.warn("[WS Database Persistence]", err);
+            }
+          }).catch(() => {});
+
+          // Instant 0ms broadcast to all other WebSocket clients
+          broadcastWebSocketChange(op || "set", col, id, recordData, ws);
+
+          // Also broadcast to SSE clients
+          broadcastCassandraChange(op || "set", col, id, recordData);
+          return;
+        }
+
+        // 5. Instant WebRTC Signaling over WebSocket
+        if (msg.type === "webrtc_signal" && msg.payload) {
+          const sigObj = {
+            id: msg.payload?.id || ("sig_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8)),
+            uid: msg.payload?.uid,
+            targetUid: msg.payload?.targetUid,
+            type: msg.payload?.type,
+            sdp: msg.payload?.sdp,
+            candidate: msg.payload?.candidate,
+            timestamp: msg.payload?.timestamp || Date.now(),
+          };
+
+          // Store in DB for reliability
+          getDb().then(async (db) => {
+            try {
+              await db.run(
+                "INSERT INTO webrtc_signals (id, target_uid, uid, payload, timestamp) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, timestamp = EXCLUDED.timestamp",
+                [sigObj.id, sigObj.targetUid, sigObj.uid, JSON.stringify(sigObj), sigObj.timestamp]
+              );
+            } catch (e) {}
+          }).catch(() => {});
+
+          // Direct instant delivery to peer(s)
+          broadcastWebSocketSignal(sigObj, ws);
+
+          // Mirror to SSE stream
+          broadcastWebRTCSignal(sigObj);
+          return;
+        }
+      } catch (err) {
+        // ignore malformed ws payloads
+      }
+    });
+
+    ws.on("close", () => {
+      wsClients.delete(ws);
+    });
+
+    ws.on("error", () => {
+      wsClients.delete(ws);
+    });
+  });
+
+  // Proactive WebSocket Heartbeat Interval (Every 25 seconds)
+  const wsHeartbeatInterval = setInterval(() => {
+    wsClients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        wsClients.delete(ws);
+        try { ws.terminate(); } catch (e) {}
+        return;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch (e) {
+        wsClients.delete(ws);
+      }
+    });
+  }, 25000);
+
+  // Upgrade HTTP connections to WebSocket on /api/ws and /ws
+  httpServer.on("upgrade", (request, socket, head) => {
+    const url = new URL(request.url || "", "http://localhost");
+    const pathname = url.pathname;
+
+    if (pathname === "/api/ws" || pathname === "/ws" || pathname.startsWith("/api/ws/")) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    }
+  });
+
   // Connected SSE clients for real-time broadcasts
   const sseClients = new Set<express.Response>();
 
@@ -526,6 +759,9 @@ const PORT = 3000;
     id: string,
     data: any
   ) => {
+    // Also notify WebSockets
+    broadcastWebSocketChange(op, collection, id, data);
+
     const payload = JSON.stringify({
       type: "change",
       op,
@@ -546,6 +782,9 @@ const PORT = 3000;
   };
 
   const broadcastWebRTCSignal = (signal: any) => {
+    // Also notify WebSockets
+    broadcastWebSocketSignal(signal);
+
     const payload = JSON.stringify({
       type: "webrtc_signal",
       payload: signal,
@@ -981,16 +1220,6 @@ const PORT = 3000;
     }
   });
 
-  // Vercel Native WebSocket Route / Server WebSocket Endpoint
-  app.all(["/api/ws", "/api/ws/*"], async (req, res) => {
-    try {
-      const { default: handler } = await import("./api/ws.js").catch(() => import("./api/ws"));
-      return handler(req, res);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || String(err) });
-    }
-  });
-
   // Custom Real-Time Database Engine Routes (Vercel & Local Node compatible)
   app.all(["/api/db/data", "/api/db/data/*"], async (req, res) => {
     try {
@@ -1034,8 +1263,8 @@ const PORT = 3000;
         });
       }
 
-      app.listen(PORT, "0.0.0.0", () => {
-        console.log(`Server running on http://localhost:${PORT}`);
+      httpServer.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running with WebSockets enabled on http://localhost:${PORT}`);
       });
     })();
   }
