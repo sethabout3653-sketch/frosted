@@ -1,5 +1,5 @@
-import React, { useState, useEffect, memo } from "react";
-import { Search, Snowflake, MessageSquare, SlidersHorizontal } from "lucide-react";
+import React, { memo } from "react";
+import { Search, Snowflake, MessageSquare, SlidersHorizontal, X } from "lucide-react";
 import { formatTagLabel } from "../utils";
 
 interface HeaderProps {
@@ -23,25 +23,29 @@ const Header = memo(function Header({
   onChatClick,
   onOpenSettings,
 }: HeaderProps) {
-  const [localQuery, setLocalQuery] = useState(searchQuery);
-
-  // Synchronize local input if cleared from external state
-  useEffect(() => {
-    setLocalQuery(searchQuery);
-  }, [searchQuery]);
-
-  // Debounce search update to parent
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearchQuery(localQuery);
-    }, 90);
-    return () => clearTimeout(timer);
-  }, [localQuery, setSearchQuery]);
-
   const handleLogoClick = () => {
-    setLocalQuery("");
     setSearchQuery("");
     setSelectedTag("all");
+    if (onGoHome) {
+      onGoHome();
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    if (onGoHome) {
+      onGoHome();
+    }
+  };
+
+  const handleClearSearch = () => {
+    setSearchQuery("");
+  };
+
+  const handleTagSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setSelectedTag(val);
     if (onGoHome) {
       onGoHome();
     }
@@ -69,15 +73,25 @@ const Header = memo(function Header({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-1 sm:justify-end">
           {/* Search Bar */}
           <div className="relative flex-1 max-w-xs">
-            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-indigo-400/60 transition-colors" />
+            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-indigo-400/60 transition-colors pointer-events-none" />
             <input
               id="game-search-input"
               type="text"
-              value={localQuery}
-              onChange={(e) => setLocalQuery(e.target.value)}
+              value={searchQuery}
+              onChange={handleInputChange}
               placeholder="Search games..."
-              className="h-9 w-full rounded-lg border border-indigo-950/60 bg-[#070b22]/90 pl-9 pr-3 text-xs text-white placeholder-indigo-300/40 transition-all duration-150 focus:border-indigo-500/70 focus:bg-[#0a0f30] focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
+              className="h-9 w-full rounded-lg border border-indigo-950/60 bg-[#070b22]/90 pl-9 pr-8 text-xs text-white placeholder-indigo-300/40 transition-all duration-150 focus:border-indigo-500/70 focus:bg-[#0a0f30] focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                className="absolute top-1/2 right-2.5 -translate-y-1/2 text-indigo-400/60 hover:text-white transition-colors"
+                title="Clear search"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
 
           {/* Genre Category Filter and Chat */}
@@ -85,7 +99,7 @@ const Header = memo(function Header({
             <select
               id="tag-filter-select"
               value={selectedTag}
-              onChange={(e) => setSelectedTag(e.target.value)}
+              onChange={handleTagSelect}
               className="h-9 w-full sm:w-44 rounded-lg border border-indigo-950/60 bg-[#070b22]/90 px-3 py-1 text-xs text-neutral-200 hover:bg-[#0a0f30] hover:border-indigo-800/50 focus:border-indigo-500/70 focus:outline-none focus:ring-1 focus:ring-indigo-500/30 cursor-pointer transition-all duration-150"
             >
               <option value="all" className="bg-[#040616] text-white">All Genres</option>
@@ -121,4 +135,3 @@ const Header = memo(function Header({
 });
 
 export default Header;
-

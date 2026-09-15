@@ -122,23 +122,11 @@ export default function App() {
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
-    if (query.trim().length > 0 && currentView !== "home") {
-      setCurrentView("home");
-      setSelectedGame(null);
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-  }, [currentView]);
+  }, []);
 
   const handleTagChange = useCallback((tag: string) => {
     setSelectedTag(tag);
-    if (tag !== "all" && currentView !== "home") {
-      setCurrentView("home");
-      setSelectedGame(null);
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-  }, [currentView]);
+  }, []);
 
   // Fetch live games from GitHub assets and Lumin games on mount
   useEffect(() => {
