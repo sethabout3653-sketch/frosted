@@ -249,7 +249,13 @@ export default function MediaAttachment({
 
           <div className="px-3 py-2 bg-neutral-900/90 border-t border-neutral-800/60 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
-              <ImageIcon size={14} className="text-neutral-400 flex-shrink-0" />
+              {ext === "GIF" ? (
+                <span className="px-1.5 py-0.5 rounded bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-[9px] font-mono font-bold flex-shrink-0">
+                  GIF
+                </span>
+              ) : (
+                <ImageIcon size={14} className="text-neutral-400 flex-shrink-0" />
+              )}
               <span className="text-xs font-medium text-neutral-300 truncate" title={displayName}>
                 {displayName}
               </span>

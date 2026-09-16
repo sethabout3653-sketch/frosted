@@ -474,8 +474,8 @@ const PORT = 3000;
   });
 
   // JSON and URL parsing middleware with generous limit for large attachments
-  app.use(express.json({ limit: "100mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+  app.use(express.json({ limit: "500mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "500mb" }));
 
   // ==========================================
   // Distributed Postgres Engine & Storage
@@ -1137,7 +1137,73 @@ const PORT = 3000;
     }
   };
 
-  // Support upload via multiple paths and methods to guarantee no 404
+  // Support chunked upload for ultra-large files (videos, high-res images, etc.)
+  const chunkStore: Record<string, string[]> = {};
+  
+  app.post("/api/upload/chunk", upload.any(), (req, res) => {
+    const { uploadId, chunkIndex, totalChunks, filename, mimetype, size } = req.body;
+    const chunkFile = req.files && Array.isArray(req.files) ? req.files[0] : null;
+    
+    if (!chunkFile) return res.status(400).send("No chunk file received");
+    
+    const parsedTotal = parseInt(totalChunks, 10) || 1;
+    const parsedIndex = parseInt(chunkIndex, 10) || 0;
+
+    if (!chunkStore[uploadId]) {
+      chunkStore[uploadId] = new Array(parsedTotal);
+    }
+    
+    chunkStore[uploadId][parsedIndex] = chunkFile.path;
+    
+    // Check if all chunks have arrived
+    const receivedCount = chunkStore[uploadId].filter(Boolean).length;
+    if (receivedCount === parsedTotal) {
+       const ext = getExtensionFromMime(mimetype, filename);
+       const cleanExt = (path.extname(filename) || ext || "").replace(/^\./, "").toLowerCase();
+       const uniqueName = `upload-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext || ".bin"}`;
+       const finalPath = path.join(uploadsDir, uniqueName);
+       
+       try {
+         // Synchronously stream all chunks to disk in order to ensure atomic integrity
+         const fd = fs.openSync(finalPath, "w");
+         for (let i = 0; i < parsedTotal; i++) {
+           const chunkPath = chunkStore[uploadId][i];
+           if (chunkPath && fs.existsSync(chunkPath)) {
+             const data = fs.readFileSync(chunkPath);
+             fs.writeSync(fd, data);
+             try { fs.unlinkSync(chunkPath); } catch (e) {}
+           }
+         }
+         fs.closeSync(fd);
+       } catch (assemblyErr: any) {
+         console.error("Chunk reassembly error:", assemblyErr);
+         return res.status(500).json({ error: "Failed to assemble file chunks on server" });
+       }
+       
+       delete chunkStore[uploadId];
+       
+       const realSize = fs.existsSync(finalPath) ? fs.statSync(finalPath).size : parseInt(size || "0", 10);
+       
+       fileMetadataStore[uniqueName] = {
+           originalName: filename || "uploaded_file",
+           mimeType: mimetype || "application/octet-stream",
+           size: realSize,
+           ext: cleanExt,
+       };
+       saveFileMetadata();
+       
+       const fileUrl = `/uploads/${uniqueName}?name=${encodeURIComponent(filename)}&type=${encodeURIComponent(mimetype)}&size=${realSize}`;
+       return res.json({
+           url: fileUrl,
+           filename,
+           mimetype,
+           size: realSize,
+       });
+    }
+    
+    return res.json({ status: "chunk_received", chunkIndex: parsedIndex, totalChunks: parsedTotal, received: receivedCount });
+  });
+
   app.post("/api/upload", upload.any(), handleFileUpload);
   app.post("/api/sethbase/upload", upload.any(), handleFileUpload);
   app.post("/upload", upload.any(), handleFileUpload);
@@ -1152,7 +1218,382 @@ const PORT = 3000;
     });
   });
 
-  // Health check endpoint
+  // Helper: Locate or temporarily download media file for Groq AI analysis
+  async function getLocalMediaFile(mediaUrl: string): Promise<{ filePath: string; cleanup: () => void } | null> {
+    if (!mediaUrl) return null;
+
+    // Check if it is a local upload path
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("uploads/")) {
+      const fn = path.basename(mediaUrl.split("?")[0]);
+      const localPath = path.join(uploadsDir, fn);
+      if (fs.existsSync(localPath)) {
+        return { filePath: localPath, cleanup: () => {} };
+      }
+    }
+
+    // Remote URL (e.g. GIPHY, CDN, or Supabase)
+    if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const resp = await fetch(mediaUrl, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!resp.ok) return null;
+        const arrayBuffer = await resp.arrayBuffer();
+        const tempPath = path.join("/tmp", `groq_media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+        fs.writeFileSync(tempPath, Buffer.from(arrayBuffer));
+        return {
+          filePath: tempPath,
+          cleanup: () => {
+            try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) {}
+          }
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  // 🖼️ For Images & Visual Frames: Multimodal Vision using Qwen (qwen/qwen3.8-27b / qwen3.6-27b)
+  async function inspectImageWithVision(imagePath: string, apiKey: string): Promise<{ safe: boolean; reason?: string; description?: string }> {
+    const scaledTmp = path.join("/tmp", `groq_scaled_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`);
+    try {
+      // Scale down image to 480px to optimize tokens and stay within Groq rate limits
+      try {
+        const { execSync } = await import("child_process");
+        execSync(`ffmpeg -y -i "${imagePath}" -vf "scale='min(480,iw)':-1" -q:v 3 "${scaledTmp}" 2>/dev/null`, { timeout: 8000 });
+      } catch (e) {
+        fs.copyFileSync(imagePath, scaledTmp);
+      }
+
+      if (!fs.existsSync(scaledTmp) || fs.statSync(scaledTmp).size < 100) {
+        return { safe: true };
+      }
+
+      const base64 = fs.readFileSync(scaledTmp).toString("base64");
+      const visionModel = process.env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b";
+
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: visionModel,
+          max_tokens: 120,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: "Analyze this image. Perform OCR and check visual content. Respond strictly in valid JSON: {\"safe\": boolean, \"reason\": \"string\", \"description\": \"summary\"}. Set safe to false if it contains explicit sexual content, nudity, graphic violence, hate symbols, or offensive slurs."
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/jpeg;base64,${base64}`
+                  }
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (res.ok) {
+        const data: any = await res.json();
+        const content = data.choices?.[0]?.message?.content || "";
+        const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
+        try {
+          const parsed = JSON.parse(cleaned);
+          return {
+            safe: parsed.safe !== false,
+            reason: parsed.reason || "",
+            description: parsed.description || ""
+          };
+        } catch (e) {
+          if (content.toLowerCase().includes("unsafe") || content.toLowerCase().includes("not safe") || content.toLowerCase().includes("explicit")) {
+            return { safe: false, reason: "Explicit or inappropriate visual content detected." };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Vision inspection notice:", err);
+    } finally {
+      try { if (fs.existsSync(scaledTmp)) fs.unlinkSync(scaledTmp); } catch (e) {}
+    }
+    return { safe: true };
+  }
+
+  // 🎵 For Audio Files: Dedicated Speech-to-Text Pipeline using Whisper Large V3
+  async function transcribeAudioWithWhisper(audioPath: string, apiKey: string): Promise<string> {
+    try {
+      if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 300) return "";
+
+      const buffer = fs.readFileSync(audioPath);
+      const blob = new Blob([buffer], { type: "audio/mp3" });
+      const form = new FormData();
+      form.append("file", blob, path.basename(audioPath));
+      form.append("model", process.env.GROQ_AUDIO_MODEL || "whisper-large-v3");
+      form.append("response_format", "json");
+
+      const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: form
+      });
+
+      if (res.ok) {
+        const data: any = await res.json();
+        return (data.text || "").trim();
+      }
+    } catch (err) {
+      console.warn("Whisper transcription notice:", err);
+    }
+    return "";
+  }
+
+  // 🎬 For Video Files: Compound Pipeline (Audio track via Whisper + Key snapshots via Qwen Vision)
+  async function inspectVideoCompound(videoPath: string, apiKey: string): Promise<{ safe: boolean; reason?: string; transcript?: string }> {
+    const uid = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const audioTmp = path.join("/tmp", `vid_aud_${uid}.mp3`);
+    const framePattern = path.join("/tmp", `vid_frm_${uid}_%02d.jpg`);
+    const extractedFrames: string[] = [];
+
+    try {
+      const { execSync } = await import("child_process");
+
+      // 1. Audio Track: Extract sound from video and transcribe with Whisper Large V3
+      try {
+        execSync(`ffmpeg -y -i "${videoPath}" -vn -ar 16000 -ac 1 -b:a 32k -t 60 "${audioTmp}" 2>/dev/null`, { timeout: 10000 });
+      } catch (e) {}
+
+      let transcript = "";
+      if (fs.existsSync(audioTmp) && fs.statSync(audioTmp).size > 800) {
+        transcript = await transcribeAudioWithWhisper(audioTmp, apiKey);
+      }
+
+      // 2. Visual Frames: Extract key snapshot frames from the video and analyze with Qwen Vision
+      try {
+        execSync(`ffmpeg -y -i "${videoPath}" -vf "fps=1/5,scale='min(480,iw)':-1" -vframes 2 "${framePattern}" 2>/dev/null`, { timeout: 10000 });
+        for (let i = 1; i <= 3; i++) {
+          const fPath = path.join("/tmp", `vid_frm_${uid}_0${i}.jpg`);
+          if (fs.existsSync(fPath)) {
+            extractedFrames.push(fPath);
+          }
+        }
+      } catch (e) {}
+
+      // Inspect extracted video snapshot frames
+      for (const fPath of extractedFrames) {
+        const frameInspection = await inspectImageWithVision(fPath, apiKey);
+        if (!frameInspection.safe) {
+          return {
+            safe: false,
+            reason: frameInspection.reason || "Inappropriate visual scene detected in video frames.",
+            transcript
+          };
+        }
+      }
+
+      return { safe: true, transcript };
+    } catch (err) {
+      console.warn("Video compound inspection notice:", err);
+      return { safe: true };
+    } finally {
+      try { if (fs.existsSync(audioTmp)) fs.unlinkSync(audioTmp); } catch (e) {}
+      for (const fPath of extractedFrames) {
+        try { if (fs.existsSync(fPath)) fs.unlinkSync(fPath); } catch (e) {}
+      }
+    }
+  }
+
+  // Moderation Endpoint: Multi-Model AI Pipeline (Qwen Vision + Whisper Large V3 + Llama Specdec / Safeguard)
+  app.post("/api/moderate", async (req, res) => {
+    try {
+      const { text, mediaUrl, mediaTitle, mediaType, mediaSize } = req.body;
+
+      let detectedTitle = (mediaTitle || "").trim();
+      let detectedType = (mediaType || "").trim();
+      let detectedSize = parseInt(mediaSize || "0", 10);
+
+      // Extract metadata from mediaUrl if not provided
+      if (mediaUrl) {
+        try {
+          if (mediaUrl.includes("?")) {
+            const parsedU = new URL(mediaUrl, "http://127.0.0.1:3000");
+            if (!detectedTitle) detectedTitle = parsedU.searchParams.get("name") || parsedU.searchParams.get("filename") || "";
+            if (!detectedType) detectedType = parsedU.searchParams.get("type") || "";
+            if (!detectedSize && parsedU.searchParams.get("size")) {
+              detectedSize = parseInt(parsedU.searchParams.get("size") || "0", 10);
+            }
+          }
+          if (mediaUrl.startsWith("/uploads/")) {
+            const fn = path.basename(mediaUrl.split("?")[0]);
+            const storedMeta = fileMetadataStore[fn];
+            if (storedMeta) {
+              if (!detectedTitle) detectedTitle = storedMeta.originalName;
+              if (!detectedType) detectedType = storedMeta.mimeType;
+              if (!detectedSize) detectedSize = storedMeta.size;
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Classify media category: GIF, Video, Image, Audio, or File
+      let mediaCategory = "media attachment";
+      const lowerType = (detectedType || "").toLowerCase();
+      const lowerTitle = (detectedTitle || "").toLowerCase();
+      const lowerUrl = (mediaUrl || "").toLowerCase();
+
+      if (lowerType.includes("gif") || lowerTitle.endsWith(".gif") || lowerUrl.includes(".gif")) {
+        mediaCategory = "GIF animation";
+      } else if (lowerType.startsWith("video/") || /\.(mp4|webm|mkv|mov|avi|wmv|flv|m4v)(\?|$)/.test(lowerTitle || lowerUrl)) {
+        mediaCategory = "video";
+      } else if (lowerType.startsWith("image/") || /\.(png|jpg|jpeg|webp|svg|bmp|avif)(\?|$)/.test(lowerTitle || lowerUrl)) {
+        mediaCategory = "image";
+      } else if (lowerType.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/.test(lowerTitle || lowerUrl)) {
+        mediaCategory = "audio track";
+      }
+
+      // LAYER 1: Fast Offline Profanity Filter on Message Text & Titles
+      const { Filter } = await import("bad-words");
+      const filter = new Filter();
+      filter.addWords('kys', 'kms', 'stfu', 'gtfo');
+
+      const textTokens = (text || "").replace(/[^a-zA-Z0-9]/g, " ");
+      if (text && (filter.isProfane(text) || filter.isProfane(textTokens))) {
+        return res.json({ safe: false, reason: "Inappropriate language or profanity detected in message text." });
+      }
+
+      const titleTokens = (detectedTitle || "").replace(/[^a-zA-Z0-9]/g, " ");
+      if (detectedTitle && (filter.isProfane(detectedTitle) || filter.isProfane(titleTokens))) {
+        return res.json({ safe: false, reason: `Inappropriate language or profanity detected in ${mediaCategory} title ("${detectedTitle}").` });
+      }
+
+      const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+      let audioTranscript = "";
+
+      // LAYER 2: Media-Specific Compound Pipeline (Images -> Qwen Vision, Audio -> Whisper, Video -> Compound)
+      if (mediaUrl) {
+        const localMedia = await getLocalMediaFile(mediaUrl);
+        if (localMedia) {
+          try {
+            if (mediaCategory === "image" || mediaCategory === "GIF animation") {
+              // 🖼️ Analyze Image/GIF with Qwen Vision
+              const visionCheck = await inspectImageWithVision(localMedia.filePath, GROQ_API_KEY);
+              if (!visionCheck.safe) {
+                return res.json({ safe: false, reason: visionCheck.reason || `Inappropriate visual content detected in ${mediaCategory}.` });
+              }
+            } else if (mediaCategory === "audio track") {
+              // 🎵 Transcribe Audio with Whisper Large V3
+              audioTranscript = await transcribeAudioWithWhisper(localMedia.filePath, GROQ_API_KEY);
+              if (audioTranscript) {
+                const audioTokens = audioTranscript.replace(/[^a-zA-Z0-9]/g, " ");
+                if (filter.isProfane(audioTranscript) || filter.isProfane(audioTokens)) {
+                  return res.json({ safe: false, reason: `Inappropriate language detected in audio speech ("${audioTranscript.slice(0, 60)}...").` });
+                }
+              }
+            } else if (mediaCategory === "video") {
+              // 🎬 Compound Video Pipeline (Whisper Audio + Qwen Vision Snapshots)
+              const videoCheck = await inspectVideoCompound(localMedia.filePath, GROQ_API_KEY);
+              if (!videoCheck.safe) {
+                return res.json({ safe: false, reason: videoCheck.reason || "Inappropriate content detected in video." });
+              }
+              if (videoCheck.transcript) {
+                audioTranscript = videoCheck.transcript;
+                const vidAudioTokens = audioTranscript.replace(/[^a-zA-Z0-9]/g, " ");
+                if (filter.isProfane(audioTranscript) || filter.isProfane(vidAudioTokens)) {
+                  return res.json({ safe: false, reason: `Inappropriate language detected in video speech ("${audioTranscript.slice(0, 60)}...").` });
+                }
+              }
+            }
+          } finally {
+            localMedia.cleanup();
+          }
+        }
+      }
+
+      // LAYER 3: Profanity & Context Analysis using llama-3.3-70b-specdec (with safeguard fallback)
+      const contentParts: any[] = [];
+      let evaluationPrompt = "Evaluate the safety and appropriateness of the following submission:\n";
+      if (text) {
+        evaluationPrompt += `- Message Text: "${text}"\n`;
+      }
+      if (detectedTitle) {
+        evaluationPrompt += `- ${mediaCategory} Title: "${detectedTitle}"\n`;
+      }
+      if (audioTranscript) {
+        evaluationPrompt += `- Spoken Audio Transcript: "${audioTranscript}"\n`;
+      }
+      if (detectedSize > 0) {
+        evaluationPrompt += `- File Size: ${(detectedSize / (1024 * 1024)).toFixed(2)} MB\n`;
+      }
+
+      evaluationPrompt += `\nThoroughly check for profanity, slurs, explicit NSFW/sexual content, graphic violence, hate speech, or harassment.`;
+      contentParts.push({ type: "text", text: evaluationPrompt });
+      contentParts.push({ type: "text", text: "Respond ONLY in raw JSON: {\"safe\": boolean, \"reason\": \"string\"}. Set safe to false if inappropriate." });
+
+      const PRIMARY_TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-specdec";
+      const FALLBACK_MODELS = ["openai/gpt-oss-safeguard-20b", "openai/gpt-oss-120b"];
+      let activeModel = PRIMARY_TEXT_MODEL;
+
+      let orRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: activeModel,
+          response_format: { type: "json_object" },
+          messages: [{ role: "user", content: contentParts }]
+        })
+      });
+
+      // If the primary model (e.g. llama-3.3-70b-specdec) is unavailable/decommissioned on Groq, fallback gracefully
+      if (!orRes.ok) {
+        for (const fallback of FALLBACK_MODELS) {
+          activeModel = fallback;
+          orRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${GROQ_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: activeModel,
+              response_format: { type: "json_object" },
+              messages: [{ role: "user", content: contentParts }]
+            })
+          });
+          if (orRes.ok) break;
+        }
+      }
+
+      if (orRes.ok) {
+        const orData = await orRes.json();
+        let resultText = orData.choices?.[0]?.message?.content || "";
+        resultText = resultText.replace(/```json/g, "").replace(/```/g, "").trim();
+        try {
+          const json = JSON.parse(resultText);
+          return res.json(json);
+        } catch (e) {}
+      }
+
+      return res.json({ safe: true });
+    } catch (err) {
+      console.error("Moderation pipeline error:", err);
+      return res.json({ safe: true });
+    }
+  });
+
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
   });

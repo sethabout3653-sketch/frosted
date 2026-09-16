@@ -7,7 +7,7 @@ const GIPHY_API_KEY = "GlVGYHkr3WSBnllca54iNt0yFbjz7L65";
 const gf = new GiphyFetch(GIPHY_API_KEY);
 
 interface GiphyPickerProps {
-  onSelectGif: (url: string) => void;
+  onSelectGif: (url: string, title?: string) => void;
   onClose: () => void;
 }
 
@@ -157,7 +157,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
   const handleCustomUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (customUrl.trim()) {
-      onSelectGif(customUrl.trim());
+      onSelectGif(customUrl.trim(), "Custom GIF");
       onClose();
     }
   };
@@ -309,7 +309,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
                 key={gif.id}
                 type="button"
                 onClick={() => {
-                  onSelectGif(gif.url);
+                  onSelectGif(gif.url, gif.title);
                   onClose();
                 }}
                 className="group relative aspect-video bg-[#070e30] rounded-lg overflow-hidden border border-indigo-950/80 hover:border-indigo-500/80 focus:outline-none transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shadow-sm hover:shadow-indigo-950/80"

@@ -27,64 +27,72 @@ export const cassandra = {
 
       reportProgress(5);
 
-      // 1. Primary high-speed direct server upload with real-time XHR progress tracking
-      const uploadToServer = (): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-        return new Promise((resolve, reject) => {
-          if (abortController?.signal?.aborted) {
-            reject(new Error("Upload cancelled by user"));
-            return;
+      // 1. Primary high-speed direct server upload with real-time chunking & retry resilience
+      const uploadToServer = async (): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
+        const CHUNK_SIZE = 900 * 1024; // 900KB chunk size to easily pass NGINX 1MB limits
+        const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+        const uniqueId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+        let lastResponse: any;
+
+        for (let i = 0; i < totalChunks; i++) {
+          if (abortController?.signal?.aborted) throw new Error("Upload cancelled by user");
+          
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+          
+          let chunkSuccess = false;
+          let lastChunkError: any = null;
+
+          // Retry each chunk up to 3 times for large files
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            if (abortController?.signal?.aborted) throw new Error("Upload cancelled by user");
+            try {
+              const formData = new FormData();
+              formData.append("chunk", chunk);
+              formData.append("chunkIndex", i.toString());
+              formData.append("totalChunks", totalChunks.toString());
+              formData.append("uploadId", uniqueId);
+              formData.append("filename", file.name);
+              formData.append("mimetype", file.type || "application/octet-stream");
+              formData.append("size", file.size.toString());
+
+              const response = await fetch("/api/upload/chunk", {
+                method: "POST",
+                body: formData,
+                signal: abortController?.signal
+              });
+              
+              if (!response.ok) {
+                throw new Error(`Server upload returned status ${response.status}: ${response.statusText}`);
+              }
+              
+              lastResponse = await response.json();
+              chunkSuccess = true;
+              break;
+            } catch (err: any) {
+              lastChunkError = err;
+              if (abortController?.signal?.aborted || err?.message?.includes("cancelled")) {
+                throw err;
+              }
+              if (attempt < 3) {
+                await new Promise((r) => setTimeout(r, 400 * attempt));
+              }
+            }
           }
 
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", "/api/upload", true);
-          xhr.timeout = 10 * 60 * 1000; // 10 minutes timeout for very large files (GBs)
-
-          if (abortController) {
-            abortController.signal.addEventListener("abort", () => {
-              try {
-                xhr.abort();
-              } catch (e) {}
-              reject(new Error("Upload cancelled by user"));
-            });
+          if (!chunkSuccess) {
+            throw lastChunkError || new Error(`Failed to upload chunk ${i + 1}/${totalChunks}`);
           }
 
-          xhr.upload.onprogress = (event) => {
-            if (abortController?.signal?.aborted) return;
-            if (event.lengthComputable && event.total > 0) {
-              const percentComplete = (event.loaded / event.total) * 100;
-              reportProgress(percentComplete);
-            }
-          };
-
-          xhr.onload = () => {
-            if (abortController?.signal?.aborted) return;
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                const response = JSON.parse(xhr.responseText);
-                if (response && response.url) {
-                  reportProgress(100);
-                  resolve(response);
-                  return;
-                }
-              } catch (e) {}
-            }
-            reject(new Error(`Server upload returned status ${xhr.status}: ${xhr.statusText}`));
-          };
-
-          xhr.onerror = () => {
-            if (abortController?.signal?.aborted) {
-              reject(new Error("Upload cancelled by user"));
-            } else {
-              reject(new Error("Network error during file upload"));
-            }
-          };
-          xhr.ontimeout = () => reject(new Error("Upload timed out"));
-          xhr.onabort = () => reject(new Error("Upload cancelled by user"));
-
-          const formData = new FormData();
-          formData.append("file", file);
-          xhr.send(formData);
-        });
+          reportProgress(Math.min(99, Math.round(((i + 1) / totalChunks) * 100)));
+        }
+        
+        if (lastResponse && lastResponse.url) {
+           reportProgress(100);
+           return lastResponse;
+        }
+        throw new Error("Invalid response from server during chunked upload");
       };
 
       try {

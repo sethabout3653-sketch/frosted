@@ -48,6 +48,7 @@ export interface ChatMessage {
   photoURL: string;
   text?: string;
   gif?: string;
+  gifTitle?: string;
   attachment?: string;
   attachmentType?: string;
   attachmentName?: string;

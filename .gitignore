@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+uploads/
+*.sqlite
+*.sqlite3
+*.db
+*.mp4
+*.patch

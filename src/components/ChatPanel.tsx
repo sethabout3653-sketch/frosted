@@ -685,6 +685,33 @@ export default function ChatPanel({
         if (currentSize) msgData.attachmentSize = currentSize;
       }
 
+      // Check moderation for text and media (images, videos, gifs, and their titles)
+      try {
+        const modRes = await fetch("/api/moderate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            text: currentText, 
+            mediaUrl: currentAttachment && !currentAttachment.startsWith("blob:") ? currentAttachment : undefined,
+            mediaTitle: currentName || undefined,
+            mediaType: currentType || undefined,
+            mediaSize: currentSize || undefined,
+          }),
+        });
+
+        if (modRes.ok) {
+          const modData = await modRes.json();
+          if (modData && modData.safe === false) {
+            // Unsafe content or title detected
+            setMessages((prev) => prev.filter((m) => m.id !== msgId));
+            alert(`Message blocked by AI Moderation: ${modData.reason || 'Inappropriate content or title detected.'}`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("Moderation check skipped due to temporary network notice:", err);
+      }
+
       await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
       // Revert optimistic message if writing failed
@@ -693,10 +720,9 @@ export default function ChatPanel({
     }
   };
 
-  const handleSendGif = async (gifUrl: string) => {
+  const handleSendGif = async (gifUrl: string, gifTitle?: string) => {
     if (!gifUrl) return;
     const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-    // const tempId = "temp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     const now = Date.now();
 
     // Optimistically show GIF immediately (0ms latency)
@@ -707,6 +733,7 @@ export default function ChatPanel({
       username: profile.username,
       photoURL: profile.photoURL || "",
       gif: gifUrl,
+      gifTitle: gifTitle || undefined,
       timestamp: now,
       _isOptimistic: true,
     };
@@ -727,6 +754,34 @@ export default function ChatPanel({
         gif: gifUrl,
         timestamp: now,
       };
+      if (gifTitle) {
+        msgData.gifTitle = gifTitle;
+      }
+
+      // Check moderation for GIF and its title
+      try {
+        const modRes = await fetch("/api/moderate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            mediaUrl: gifUrl,
+            mediaTitle: gifTitle || "GIF",
+            mediaType: "image/gif"
+          }),
+        });
+
+        if (modRes.ok) {
+          const modData = await modRes.json();
+          if (modData && modData.safe === false) {
+            // Unsafe GIF or GIF title detected
+            setMessages((prev) => prev.filter((m) => m.id !== msgId));
+            alert(`GIF blocked by AI Moderation: ${modData.reason || 'Inappropriate GIF or title detected.'}`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("GIF moderation check skipped due to temporary network notice:", err);
+      }
 
       await setDoc(doc(db, "messages", msgId), msgData);
     } catch (error) {
@@ -1170,13 +1225,27 @@ export default function ChatPanel({
                   )}
 
                   {msg.gif && (
-                    <img
-                      src={msg.gif}
-                      alt="GIF"
-                      loading="lazy"
-                      decoding="async"
-                      className="rounded-xl mt-2 max-w-xs h-auto border border-indigo-900/40 shadow-md"
-                    />
+                    <div className="mt-2 max-w-xs w-full rounded-xl overflow-hidden border border-indigo-900/40 bg-neutral-950/80 shadow-md group">
+                      <div className="relative bg-black/40 flex items-center justify-center">
+                        <img
+                          src={msg.gif}
+                          alt={msg.gifTitle || "GIF"}
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-auto object-contain rounded-t-xl"
+                        />
+                      </div>
+                      <div className="px-2.5 py-1.5 bg-neutral-900/90 border-t border-neutral-800/70 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-[9px] font-mono font-bold flex-shrink-0">
+                            GIF
+                          </span>
+                          <span className="text-xs text-neutral-300 truncate font-medium" title={msg.gifTitle || "GIF Animation"}>
+                            {msg.gifTitle || "GIF Animation"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   )}
 
                   {msg.attachment && renderAttachment(msg)}

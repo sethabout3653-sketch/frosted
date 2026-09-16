@@ -2339,9 +2339,9 @@ export default function VoiceChannel({
       try {
         displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            frameRate: { ideal: 60, max: 60 },
-            width: { ideal: 1920, max: 1920 },
-            height: { ideal: 1080, max: 1080 },
+            frameRate: { ideal: 24, max: 30 },
+            width: { ideal: 1280, max: 1280 },
+            height: { ideal: 720, max: 720 },
           },
           audio: {
             echoCancellation: false,
@@ -2364,9 +2364,9 @@ export default function VoiceChannel({
         try {
           displayStream = await navigator.mediaDevices.getDisplayMedia({
             video: {
-              frameRate: { ideal: 60, max: 60 },
-              width: { ideal: 1920, max: 1920 },
-              height: { ideal: 1080, max: 1080 },
+              frameRate: { ideal: 24, max: 30 },
+              width: { ideal: 1280, max: 1280 },
+              height: { ideal: 720, max: 720 },
             },
             audio: {
               echoCancellation: false,
@@ -2380,9 +2380,9 @@ export default function VoiceChannel({
           }
           displayStream = await navigator.mediaDevices.getDisplayMedia({
             video: {
-              frameRate: { ideal: 60, max: 60 },
-              width: { ideal: 1920, max: 1920 },
-              height: { ideal: 1080, max: 1080 },
+              frameRate: { ideal: 24, max: 30 },
+              width: { ideal: 1280, max: 1280 },
+              height: { ideal: 720, max: 720 },
             },
             audio: false,
           });
