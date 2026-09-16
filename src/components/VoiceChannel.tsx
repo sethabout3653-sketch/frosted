@@ -25,6 +25,8 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   collection,
@@ -208,6 +210,7 @@ export default function VoiceChannel({
 
   // Screen Sharing states and refs
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [showLocalScreenPreview, setShowLocalScreenPreview] = useState(false);
   const [isScreenShareLoading, setIsScreenShareLoading] = useState(false);
   const [isScreenAudioOn, setIsScreenAudioOn] = useState(false);
   const [screenAudioVolume, setScreenAudioVolume] = useState<number>(1.0);
@@ -3397,21 +3400,65 @@ export default function VoiceChannel({
                       style={{ transform: `scale(${screenZoom})` }}
                     >
                       {activeScreenShare.isLocal ? (
-                        <video
-                          ref={(el) => {
-                            localScreenVideoRef.current = el;
-                            if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
-                              el.srcObject = screenStreamRef.current;
-                              el.play().catch(() => {});
-                            }
-                          }}
-                          autoPlay
-                          playsInline
-                          muted
-                          className={`w-full h-full ${
-                            screenFitMode === "cover" ? "object-cover" : "object-contain"
-                          }`}
-                        />
+                        showLocalScreenPreview ? (
+                          <div className="relative w-full h-full flex items-center justify-center">
+                            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-amber-950/90 backdrop-blur-md border border-amber-500/50 text-amber-200 text-xs px-3 py-1.5 rounded-xl shadow-2xl flex items-center gap-2 max-w-[90%] text-center">
+                              <span>⚠️ Live local preview active. Minimize window to avoid mirror loop.</span>
+                              <button
+                                onClick={() => setShowLocalScreenPreview(false)}
+                                className="px-2 py-0.5 rounded bg-amber-900/90 hover:bg-amber-800 text-white font-bold cursor-pointer"
+                              >
+                                Hide
+                              </button>
+                            </div>
+                            <video
+                              ref={(el) => {
+                                localScreenVideoRef.current = el;
+                                if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                                  el.srcObject = screenStreamRef.current;
+                                  el.play().catch(() => {});
+                                }
+                              }}
+                              autoPlay
+                              playsInline
+                              muted
+                              className={`w-full h-full ${
+                                screenFitMode === "cover" ? "object-cover" : "object-contain"
+                              }`}
+                            />
+                          </div>
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-[#0a0f2b] via-[#050717] to-[#02030a] select-none relative">
+                            <div className="w-16 h-16 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 mb-3 shadow-xl shadow-indigo-950/50 animate-pulse">
+                              <MonitorUp size={32} />
+                            </div>
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span className="text-sm font-extrabold text-white tracking-wide">You are sharing your screen</span>
+                              <span className="text-[10px] bg-indigo-600 text-white font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full animate-pulse shadow">
+                                LIVE
+                              </span>
+                            </div>
+                            <p className="text-xs text-indigo-200/80 max-w-sm mb-4 leading-relaxed font-medium">
+                              Stream preview is hidden locally to prevent recursive hall-of-mirrors screen loops. All other participants can see your screen in high definition.
+                            </p>
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={stopScreenShare}
+                                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow-lg flex items-center gap-1.5 active:scale-95"
+                              >
+                                <ScreenShareOff size={14} />
+                                <span>Stop Sharing</span>
+                              </button>
+                              <button
+                                onClick={() => setShowLocalScreenPreview(true)}
+                                className="px-3.5 py-2 rounded-xl bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white text-xs font-semibold border border-indigo-700/60 transition-all cursor-pointer shadow flex items-center gap-1.5"
+                              >
+                                <Eye size={14} />
+                                <span>Show Live Preview</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
                       ) : (
                         <video
                           ref={(el) => {
@@ -3557,21 +3604,65 @@ export default function VoiceChannel({
                       style={{ transform: `scale(${screenZoom})` }}
                     >
                       {activeScreenShare.isLocal ? (
-                        <video
-                          ref={(el) => {
-                            localScreenVideoRef.current = el;
-                            if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
-                              el.srcObject = screenStreamRef.current;
-                              el.play().catch(() => {});
-                            }
-                          }}
-                          autoPlay
-                          playsInline
-                          muted
-                          className={`w-full h-full ${
-                            screenFitMode === "cover" ? "object-cover" : "object-contain"
-                          }`}
-                        />
+                        showLocalScreenPreview ? (
+                          <div className="relative w-full h-full flex items-center justify-center">
+                            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-amber-950/90 backdrop-blur-md border border-amber-500/50 text-amber-200 text-xs px-3 py-1.5 rounded-xl shadow-2xl flex items-center gap-2 max-w-[90%] text-center">
+                              <span>⚠️ Live local preview active. Minimize window to avoid mirror loop.</span>
+                              <button
+                                onClick={() => setShowLocalScreenPreview(false)}
+                                className="px-2 py-0.5 rounded bg-amber-900/90 hover:bg-amber-800 text-white font-bold cursor-pointer"
+                              >
+                                Hide
+                              </button>
+                            </div>
+                            <video
+                              ref={(el) => {
+                                localScreenVideoRef.current = el;
+                                if (el && screenStreamRef.current && el.srcObject !== screenStreamRef.current) {
+                                  el.srcObject = screenStreamRef.current;
+                                  el.play().catch(() => {});
+                                }
+                              }}
+                              autoPlay
+                              playsInline
+                              muted
+                              className={`w-full h-full ${
+                                screenFitMode === "cover" ? "object-cover" : "object-contain"
+                              }`}
+                            />
+                          </div>
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-[#0a0f2b] via-[#050717] to-[#02030a] select-none relative">
+                            <div className="w-16 h-16 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 mb-3 shadow-xl shadow-indigo-950/50 animate-pulse">
+                              <MonitorUp size={32} />
+                            </div>
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span className="text-sm font-extrabold text-white tracking-wide">You are sharing your screen</span>
+                              <span className="text-[10px] bg-indigo-600 text-white font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full animate-pulse shadow">
+                                LIVE
+                              </span>
+                            </div>
+                            <p className="text-xs text-indigo-200/80 max-w-sm mb-4 leading-relaxed font-medium">
+                              Stream preview is hidden locally to prevent recursive hall-of-mirrors screen loops. All other participants can see your screen in high definition.
+                            </p>
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={stopScreenShare}
+                                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow-lg flex items-center gap-1.5 active:scale-95"
+                              >
+                                <ScreenShareOff size={14} />
+                                <span>Stop Sharing</span>
+                              </button>
+                              <button
+                                onClick={() => setShowLocalScreenPreview(true)}
+                                className="px-3.5 py-2 rounded-xl bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white text-xs font-semibold border border-indigo-700/60 transition-all cursor-pointer shadow flex items-center gap-1.5"
+                              >
+                                <Eye size={14} />
+                                <span>Show Live Preview</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
                       ) : (
                         <video
                           ref={(el) => {

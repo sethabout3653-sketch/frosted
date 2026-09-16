@@ -99,13 +99,13 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
     try {
       let result;
       if (!query || query === "Trending") {
-        result = await gf.trending({ limit: 24, rating: "pg-13" });
+        result = await gf.trending({ limit: 24, rating: "r" });
       } else {
         result = await gf.search(query, {
           limit: 24,
           sort: "relevant",
           lang: "en",
-          rating: "pg-13",
+          rating: "r",
         });
       }
 

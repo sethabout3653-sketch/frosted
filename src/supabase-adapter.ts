@@ -64,6 +64,13 @@ export const cassandra = {
               });
               
               if (!response.ok) {
+                const errJson = await response.json().catch(() => null);
+                if (errJson && (errJson.safe === false || errJson.error?.includes("blocked"))) {
+                  const modErr = new Error(errJson.error || errJson.reason || "File blocked by moderation");
+                  (modErr as any).isModerationBlock = true;
+                  (modErr as any).reason = errJson.reason || errJson.error;
+                  throw modErr;
+                }
                 throw new Error(`Server upload returned status ${response.status}: ${response.statusText}`);
               }
               
@@ -98,6 +105,9 @@ export const cassandra = {
       try {
         return await uploadToServer();
       } catch (serverError: any) {
+        if (serverError?.isModerationBlock) {
+          throw serverError;
+        }
         if (
           abortController?.signal?.aborted ||
           serverError?.message?.includes("cancelled") ||
@@ -254,11 +264,16 @@ export function orderBy(field: string, direction: "asc" | "desc" = "asc") { retu
 export function limit(limitCount: number) { return { type: "limit", limitCount }; }
 
 // =========================================================
-// Real-Time Supabase Engine Manager (Broadcast + Realtime Postgres)
+// Real-Time Supabase Engine Manager (Broadcast + Realtime Postgres + Resilient Sync)
 // =========================================================
+interface ListenerEntry {
+  cb: (snap: any) => void;
+  queryObj: any;
+}
+
 class SupabaseRealtimeManager {
   private static instance: SupabaseRealtimeManager;
-  private listeners: Map<string, Set<(snap: any) => void>> = new Map();
+  private listeners: Map<string, Set<ListenerEntry>> = new Map();
   private cache: Map<string, Record<string, any>> = new Map();
   private syncChannel: any = null;
   private isConnected = false;
@@ -266,6 +281,7 @@ class SupabaseRealtimeManager {
   private constructor() {
     this.initSyncChannel();
     this.initWebSocketBridge();
+    this.initResilientSyncLoop();
   }
 
   public static getInstance(): SupabaseRealtimeManager {
@@ -320,8 +336,42 @@ class SupabaseRealtimeManager {
       .subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
           this.isConnected = true;
+          this.resyncAllActiveCollections();
         }
       });
+  }
+
+  private initResilientSyncLoop() {
+    if (typeof window === "undefined") return;
+
+    const handleReSync = () => {
+      this.resyncAllActiveCollections();
+    };
+
+    window.addEventListener("focus", handleReSync);
+    window.addEventListener("online", handleReSync);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        handleReSync();
+      }
+    });
+
+    // Periodic heartbeat sync every 6 seconds so messages never fail or stall when idle
+    window.setInterval(() => {
+      if (this.listeners.size > 0) {
+        this.resyncAllActiveCollections();
+      }
+    }, 6000);
+  }
+
+  public async resyncAllActiveCollections() {
+    const activeCols = Array.from(this.listeners.keys());
+    for (const colName of activeCols) {
+      if ((this.listeners.get(colName)?.size || 0) > 0) {
+        await this.getCollection(colName, true);
+        this.notify(colName);
+      }
+    }
   }
 
   public applyChange(op: string, collection: string, id: string, data: any) {
@@ -337,25 +387,50 @@ class SupabaseRealtimeManager {
     this.notify(collection);
   }
 
+  public buildSnapshot(dataMap: Record<string, any>, queryObj: any) {
+    const constraints = queryObj?.constraints || [];
+    let list = Object.entries(dataMap).map(([id, val]) => ({ id, ...val }));
+
+    for (const c of constraints) {
+      if (c.type === "where" && c.op === "==") {
+        list = list.filter((item: any) => item[c.field] === c.value);
+      } else if (c.type === "orderBy") {
+        list.sort((a: any, b: any) => {
+          const valA = toTimestampMs(a[c.field]) || a[c.field];
+          const valB = toTimestampMs(b[c.field]) || b[c.field];
+          return c.direction === "asc" ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+        });
+      } else if (c.type === "limit" && typeof c.limitCount === "number") {
+        list = list.slice(0, c.limitCount);
+      }
+    }
+
+    const docs = list.map((d) => ({ id: d.id, data: () => d }));
+    return {
+      docs,
+      forEach: (fn: any) => docs.forEach(fn),
+      empty: docs.length === 0,
+      size: docs.length,
+    };
+  }
+
   public notify(colName: string) {
     const colListeners = this.listeners.get(colName);
     if (colListeners && colListeners.size > 0) {
       const dataMap = this.cache.get(colName) || {};
-      const dataList = Object.entries(dataMap).map(([id, val]) => ({ id, ...val }));
-      const docs = dataList.map((d) => ({ id: d.id, data: () => d }));
-      const snap = {
-        docs,
-        forEach: (fn: any) => docs.forEach(fn),
-        empty: docs.length === 0,
-        size: docs.length,
-      };
-      colListeners.forEach((cb) => {
-        try { cb(snap); } catch (e) {}
+      colListeners.forEach((entry) => {
+        try {
+          const snap = this.buildSnapshot(dataMap, entry.queryObj);
+          entry.cb(snap);
+        } catch (e) {}
       });
     }
   }
 
-  public async getCollection(colName: string): Promise<Record<string, any>> {
+  public async getCollection(colName: string, forceFetch = false): Promise<Record<string, any>> {
+    let supabaseDataMap: Record<string, any> = {};
+    let cassandraDataMap: Record<string, any> = {};
+
     // 1. Try Supabase Postgres Table
     try {
       const { data, error } = await supabase
@@ -363,72 +438,52 @@ class SupabaseRealtimeManager {
         .select("*")
         .eq("collection", colName);
 
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const resultMap: Record<string, any> = {};
+      if (!error && Array.isArray(data)) {
         for (const row of data) {
           let item = row.data;
           if (typeof item === "string") {
             try { item = JSON.parse(item); } catch (e) {}
           }
-          resultMap[row.id] = { ...(item || {}), id: row.id };
+          supabaseDataMap[row.id] = { ...(item || {}), id: row.id };
         }
-        // Update in-memory cache
-        this.cache.set(colName, resultMap);
-        return resultMap;
       }
     } catch (e) {}
 
-    // 2. Resilient local fallback / server storage
+    // 2. Local fallback / server storage
     try {
       const res = await fetch(`/api/cassandra/data?collection=${encodeURIComponent(colName)}`);
       if (res.ok) {
         const serverData = await res.json();
         if (serverData && typeof serverData === "object") {
-          const current = this.cache.get(colName) || {};
-          const merged = { ...serverData, ...current };
-          this.cache.set(colName, merged);
-          return merged;
+          cassandraDataMap = serverData;
         }
       }
     } catch (e) {}
 
-    return this.cache.get(colName) || {};
+    const cachedMap = this.cache.get(colName) || {};
+    // Merge all data sources seamlessly (Supabase + local SQLite server store + memory cache)
+    const mergedMap = { ...cassandraDataMap, ...supabaseDataMap, ...cachedMap };
+    this.cache.set(colName, mergedMap);
+    return mergedMap;
   }
 
   public subscribe(colName: string, queryObj: any, cb: (snap: any) => void) {
     if (!this.listeners.has(colName)) {
       this.listeners.set(colName, new Set());
     }
-    this.listeners.get(colName)!.add(cb);
+    const listenerEntry: ListenerEntry = { cb, queryObj };
+    this.listeners.get(colName)!.add(listenerEntry);
 
-    // Initial load
+    // Initial load + immediate snapshot delivery
     this.getCollection(colName).then((dataMap) => {
-      const constraints = queryObj?.constraints || [];
-      let list = Object.entries(dataMap).map(([id, val]) => ({ id, ...val }));
-
-      for (const c of constraints) {
-        if (c.type === "where" && c.op === "==") {
-          list = list.filter((item: any) => item[c.field] === c.value);
-        } else if (c.type === "orderBy") {
-          list.sort((a: any, b: any) => {
-            const valA = a[c.field];
-            const valB = b[c.field];
-            return c.direction === "asc" ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
-          });
-        }
-      }
-
-      const docs = list.map((d) => ({ id: d.id, data: () => d }));
-      cb({
-        docs,
-        forEach: (fn: any) => docs.forEach(fn),
-        empty: docs.length === 0,
-        size: docs.length,
-      });
+      try {
+        const snap = this.buildSnapshot(dataMap, queryObj);
+        cb(snap);
+      } catch (e) {}
     });
 
     return () => {
-      this.listeners.get(colName)?.delete(cb);
+      this.listeners.get(colName)?.delete(listenerEntry);
     };
   }
 

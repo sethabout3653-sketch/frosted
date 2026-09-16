@@ -35,6 +35,9 @@ import {
   Volume2,
   Video,
   MonitorUp,
+  ShieldAlert,
+  AlertTriangle,
+  Ban,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
@@ -129,6 +132,21 @@ export default function ChatPanel({
   const [attachmentType, setAttachmentType] = useState<string | null>(null);
   const [attachmentName, setAttachmentName] = useState<string | null>(null);
   const [attachmentSize, setAttachmentSize] = useState<number | null>(null);
+  const [moderationWarning, setModerationWarning] = useState<{
+    open: boolean;
+    title: string;
+    reason: string;
+    mediaType?: string;
+  } | null>(null);
+
+  const showModerationAlert = (title: string, reason: string, mediaType?: string) => {
+    setModerationWarning({
+      open: true,
+      title,
+      reason: reason || "Inappropriate language, explicit visuals, profanity, or harmful content detected.",
+      mediaType,
+    });
+  };
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadingFileInfo, setUploadingFileInfo] = useState<{ name: string; size: number } | null>(null);
@@ -704,7 +722,11 @@ export default function ChatPanel({
           if (modData && modData.safe === false) {
             // Unsafe content or title detected
             setMessages((prev) => prev.filter((m) => m.id !== msgId));
-            alert(`Message blocked by AI Moderation: ${modData.reason || 'Inappropriate content or title detected.'}`);
+            showModerationAlert(
+              "Message Blocked by AI Moderation",
+              modData.reason || "Inappropriate text, video, audio, or visual content detected.",
+              currentType || undefined
+            );
             return;
           }
         }
@@ -775,7 +797,11 @@ export default function ChatPanel({
           if (modData && modData.safe === false) {
             // Unsafe GIF or GIF title detected
             setMessages((prev) => prev.filter((m) => m.id !== msgId));
-            alert(`GIF blocked by AI Moderation: ${modData.reason || 'Inappropriate GIF or title detected.'}`);
+            showModerationAlert(
+              "GIF Blocked by AI Moderation",
+              modData.reason || "Inappropriate GIF animation or title detected.",
+              "image/gif"
+            );
             return;
           }
         }
@@ -881,14 +907,58 @@ export default function ChatPanel({
       const resName = typeof result === "object" ? result?.filename : null;
       const resSize = typeof result === "object" ? result?.size : null;
 
+      const finalUrl = url || localBlobUrl;
+      const finalMime = resMime || file.type || "application/octet-stream";
+      const finalName = resName || file.name || "attachment";
+      const finalSize = resSize || file.size || 0;
+
+      // Run immediate pre-moderation on the uploaded/staged file
+      try {
+        const modRes = await fetch("/api/moderate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mediaUrl: finalUrl && !finalUrl.startsWith("blob:") ? finalUrl : undefined,
+            mediaTitle: finalName,
+            mediaType: finalMime,
+            mediaSize: finalSize,
+          }),
+        });
+
+        if (modRes.ok) {
+          const modData = await modRes.json();
+          if (modData && modData.safe === false) {
+            cancelUpload();
+            showModerationAlert(
+              "Attachment Blocked by AI Moderation",
+              modData.reason || `Inappropriate, profane, or harmful content detected in file ("${finalName}").`,
+              finalMime
+            );
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("Pre-moderation file check skipped due to network notice:", err);
+      }
+
       if (url) {
         setAttachment(url);
       }
-      setAttachmentType(resMime || file.type || "application/octet-stream");
-      setAttachmentName(resName || file.name || "attachment");
-      setAttachmentSize(resSize || file.size || 0);
+      setAttachmentType(finalMime);
+      setAttachmentName(finalName);
+      setAttachmentSize(finalSize);
     } catch (error: any) {
       if (uploadSessionIdRef.current !== sessionId) return;
+
+      if (error?.isModerationBlock || error?.message?.includes("blocked")) {
+        cancelUpload();
+        showModerationAlert(
+          "Attachment Blocked by AI Moderation",
+          error.reason || error.message || `Inappropriate, explicit, or profane content detected in file ("${file.name}").`,
+          file.type
+        );
+        return;
+      }
 
       if (error?.message?.includes("cancelled") || error?.message?.includes("aborted")) {
         console.log("Upload cancelled by user");
@@ -1129,6 +1199,27 @@ export default function ChatPanel({
             )}
           </div>
         </div>
+
+        {/* 🛡️ Moderation Alert Banner */}
+        {moderationWarning && moderationWarning.open && (
+          <div className="bg-gradient-to-r from-red-950/95 via-rose-950/90 to-neutral-950 text-white px-4 py-2.5 border-b border-red-500/50 flex items-center justify-between gap-3 text-xs shadow-xl animate-in slide-in-from-top-2 flex-shrink-0 z-10">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-6 h-6 rounded-lg bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400 flex-shrink-0">
+                <ShieldAlert size={14} className="animate-pulse" />
+              </div>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-extrabold text-red-200 tracking-wide">{moderationWarning.title}:</span>
+                <span className="text-neutral-200 truncate font-medium">{moderationWarning.reason}</span>
+              </div>
+            </div>
+            <button
+              onClick={() => setModerationWarning(null)}
+              className="px-2 py-1 rounded-md bg-red-900/40 hover:bg-red-800/60 text-red-200 text-[11px] font-bold transition-all cursor-pointer flex-shrink-0 border border-red-700/50"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Scrollable Chat Area */}
         <div
@@ -1644,6 +1735,48 @@ export default function ChatPanel({
             </div>
           </div>
         </aside>
+      )}
+
+      {/* 🛡️ AI Moderation Warning Shield Modal */}
+      {moderationWarning && moderationWarning.open && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="relative w-full max-w-md bg-[#0b0d17] border border-red-500/40 rounded-3xl p-6 shadow-2xl shadow-red-950/80 overflow-hidden text-white flex flex-col items-center text-center">
+            {/* Top red alert bar */}
+            <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-red-600 via-rose-500 to-amber-500" />
+            
+            <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 mb-4 shadow-inner">
+              <ShieldAlert size={38} className="animate-pulse" />
+            </div>
+
+            <h3 className="text-lg font-black text-white tracking-wide mb-1">
+              {moderationWarning.title || "Submission Blocked"}
+            </h3>
+            <p className="text-[10px] font-extrabold text-red-400 uppercase tracking-widest mb-4 bg-red-500/10 border border-red-500/20 px-3 py-1 rounded-full">
+              AI Content Moderation Shield
+            </p>
+
+            <div className="w-full bg-[#131626] border border-red-900/60 rounded-2xl p-4 mb-5 text-left text-xs leading-relaxed">
+              <div className="flex items-start gap-2 text-rose-300 font-bold mb-1.5">
+                <AlertTriangle size={15} className="flex-shrink-0 mt-0.5 text-amber-400" />
+                <span>Blocked Reason:</span>
+              </div>
+              <p className="text-neutral-200 font-semibold pl-5 break-words">
+                {moderationWarning.reason}
+              </p>
+            </div>
+
+            <p className="text-[11px] text-neutral-400 mb-6 leading-normal max-w-xs">
+              All text, image, video, audio, and GIF content is analyzed prior to distribution. Submissions containing profanity, explicit visual media, inappropriate speech, or harmful material are automatically restricted.
+            </p>
+
+            <button
+              onClick={() => setModerationWarning(null)}
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs uppercase tracking-wider transition-all shadow-lg active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+            >
+              <span>Acknowledge & Dismiss</span>
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

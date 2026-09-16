@@ -5,6 +5,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import multer from "multer";
+import { execSync } from "child_process";
+import { Filter } from "bad-words";
+import Tesseract from "tesseract.js";
 
 import { db } from "./src/db/index.js";
 import { records, webrtcSignals } from "./src/db/schema.js";
@@ -1034,7 +1037,7 @@ const PORT = 3000;
   // ==========================================
   // File Upload Engine
   // ==========================================
-  const handleFileUpload = (req: express.Request, res: express.Response) => {
+  const handleFileUpload = async (req: express.Request, res: express.Response) => {
     try {
       // A. Multipart file from Multer
       const file = (req as any).file || (req as any).files?.[0];
@@ -1050,6 +1053,7 @@ const PORT = 3000;
         const ext = getExtensionFromMime(detectedMime, file.originalname);
         let currentDiskName = file.filename;
         let origName = file.originalname || "attachment";
+        let targetDiskPath = file.path;
 
         // If file on disk lacks extension but we know it, rename on disk
         if (ext && !path.extname(currentDiskName) && file.path && fs.existsSync(file.path)) {
@@ -1058,6 +1062,7 @@ const PORT = 3000;
           try {
             fs.renameSync(file.path, newPath);
             currentDiskName = newDiskName;
+            targetDiskPath = newPath;
           } catch (e) {}
         }
 
@@ -1066,6 +1071,19 @@ const PORT = 3000;
         }
 
         const cleanExt = (path.extname(origName) || ext || "").replace(/^\./, "").toLowerCase();
+
+        // 🛡️ Pre-moderation check on the saved file
+        if (targetDiskPath && fs.existsSync(targetDiskPath)) {
+          const modRes = await performFileModeration(targetDiskPath, origName, detectedMime, file.size);
+          if (!modRes.safe) {
+            try { fs.unlinkSync(targetDiskPath); } catch (e) {}
+            return res.status(400).json({
+              safe: false,
+              error: `Upload blocked by AI moderation: ${modRes.reason || "Inappropriate content"}`,
+              reason: modRes.reason,
+            });
+          }
+        }
 
         // Save original metadata permanently
         fileMetadataStore[currentDiskName] = {
@@ -1103,6 +1121,18 @@ const PORT = 3000;
           const filePath = path.join(uploadsDir, uniqueName);
           try {
             fs.writeFileSync(filePath, Buffer.from(matches[2], "base64"));
+
+            // 🛡️ Pre-moderation check
+            const modRes = await performFileModeration(filePath, origName, resolvedMime, size || fileData.length);
+            if (!modRes.safe) {
+              try { fs.unlinkSync(filePath); } catch (e) {}
+              return res.status(400).json({
+                safe: false,
+                error: `Upload blocked by AI moderation: ${modRes.reason || "Inappropriate content"}`,
+                reason: modRes.reason,
+              });
+            }
+
             fileMetadataStore[uniqueName] = {
               originalName: origName,
               mimeType: resolvedMime,
@@ -1140,7 +1170,7 @@ const PORT = 3000;
   // Support chunked upload for ultra-large files (videos, high-res images, etc.)
   const chunkStore: Record<string, string[]> = {};
   
-  app.post("/api/upload/chunk", upload.any(), (req, res) => {
+  app.post("/api/upload/chunk", upload.any(), async (req, res) => {
     const { uploadId, chunkIndex, totalChunks, filename, mimetype, size } = req.body;
     const chunkFile = req.files && Array.isArray(req.files) ? req.files[0] : null;
     
@@ -1184,6 +1214,17 @@ const PORT = 3000;
        
        const realSize = fs.existsSync(finalPath) ? fs.statSync(finalPath).size : parseInt(size || "0", 10);
        
+       // 🛡️ Pre-moderation check on assembled file
+       const modRes = await performFileModeration(finalPath, filename || "uploaded_file", mimetype || "application/octet-stream", realSize);
+       if (!modRes.safe) {
+         try { fs.unlinkSync(finalPath); } catch (e) {}
+         return res.status(400).json({
+           safe: false,
+           error: `Upload blocked by AI moderation: ${modRes.reason || "Inappropriate content"}`,
+           reason: modRes.reason,
+         });
+       }
+
        fileMetadataStore[uniqueName] = {
            originalName: filename || "uploaded_file",
            mimeType: mimetype || "application/octet-stream",
@@ -1222,20 +1263,39 @@ const PORT = 3000;
   async function getLocalMediaFile(mediaUrl: string): Promise<{ filePath: string; cleanup: () => void } | null> {
     if (!mediaUrl) return null;
 
-    // Check if it is a local upload path
-    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("uploads/")) {
+    // A. Base64 Data URL
+    if (mediaUrl.startsWith("data:")) {
+      try {
+        const parts = mediaUrl.split(",");
+        const base64Data = parts[1];
+        if (base64Data) {
+          const buffer = Buffer.from(base64Data, "base64");
+          const tempPath = path.join("/tmp", `groq_data_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+          fs.writeFileSync(tempPath, buffer);
+          return {
+            filePath: tempPath,
+            cleanup: () => {
+              try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) {}
+            }
+          };
+        }
+      } catch (e) {}
+    }
+
+    // B. Check if it is a local upload path or relative filename
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("uploads/") || !mediaUrl.includes("://")) {
       const fn = path.basename(mediaUrl.split("?")[0]);
-      const localPath = path.join(uploadsDir, fn);
-      if (fs.existsSync(localPath)) {
-        return { filePath: localPath, cleanup: () => {} };
+      const resolvedPath = resolveStoredFilePath(fn);
+      if (resolvedPath && fs.existsSync(resolvedPath)) {
+        return { filePath: resolvedPath, cleanup: () => {} };
       }
     }
 
-    // Remote URL (e.g. GIPHY, CDN, or Supabase)
+    // C. Remote URL (e.g. GIPHY, CDN, or Supabase)
     if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
+        const timeout = setTimeout(() => controller.abort(), 10000);
         const resp = await fetch(mediaUrl, { signal: controller.signal });
         clearTimeout(timeout);
         if (!resp.ok) return null;
@@ -1256,14 +1316,242 @@ const PORT = 3000;
     return null;
   }
 
-  // 🖼️ For Images & Visual Frames: Multimodal Vision using Qwen (qwen/qwen3.8-27b / qwen3.6-27b)
-  async function inspectImageWithVision(imagePath: string, apiKey: string): Promise<{ safe: boolean; reason?: string; description?: string }> {
-    const scaledTmp = path.join("/tmp", `groq_scaled_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`);
+  // 🛡️ Pre-moderation Check on Uploaded Files (Disabled)
+  async function performFileModeration(
+    filePath: string,
+    originalFilename: string,
+    mimeType: string,
+    size: number
+  ): Promise<{ safe: boolean; reason?: string }> {
+    return { safe: true };
+  }
+
+  // Helper: Get media duration in seconds via ffprobe
+  function getMediaDurationInSeconds(mediaPath: string): number {
     try {
-      // Scale down image to 480px to optimize tokens and stay within Groq rate limits
+      const out = execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${mediaPath}" 2>/dev/null`, { timeout: 5000 }).toString().trim();
+      const dur = parseFloat(out);
+      return isNaN(dur) ? 0 : dur;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Instantiate bad-words filter once for high-performance offline safety checks
+  const badWordsFilter = new Filter();
+  try {
+    badWordsFilter.addWords('kys', 'kms', 'stfu', 'gtfo', 'nsfw', 'porn', 'nude', 'naked', 'hentai', 'gore', 'bitch', 'fuck', 'shit', 'asshole', 'bastard', 'cunt', 'dick', 'pussy', 'nigger', 'faggot', 'retard', 'whore', 'slut');
+  } catch (e) {}
+
+  // 🛡️ Synchronous Word & Safety Check (Disabled)
+  function isHarmfulOrProfane(str: string): { bad: boolean; word?: string; reason?: string } {
+    return { bad: false };
+  }
+
+  // 🛡️ Groq Multi-Modal Analysis API Call Helpers (Vision, Audio Whisper, Reasoning)
+  async function callGroqVision(prompt: string, imagePath: string): Promise<{ safe: boolean; reason?: string; description?: string }> {
+    const apiKey = process.env.GROQ_API_KEY;
+    const base64 = fs.readFileSync(imagePath).toString("base64");
+
+    if (!apiKey) {
+      return callGeminiModeration(prompt, { mime_type: "image/jpeg", data: base64 });
+    }
+
+    try {
+      const { Groq } = await import("groq-sdk");
+      const groq = new Groq({ apiKey });
+      const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+      const preferredModel = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
+      const modelsToTry = [preferredModel, "llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview", "qwen/qwen3.8-27b"];
+
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await groq.chat.completions.create({
+            model: modelName,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: prompt },
+                  { type: "image_url", image_url: { url: dataUrl } }
+                ]
+              }
+            ],
+            temperature: 0.1,
+            max_tokens: 500,
+            response_format: { type: "json_object" }
+          });
+
+          const content = response.choices?.[0]?.message?.content || "";
+          const cleanedText = content.replace(/```json/g, "").replace(/```/g, "").trim();
+
+          try {
+            const parsed = JSON.parse(cleanedText);
+            if (parsed.safe === false) {
+              return {
+                safe: false,
+                reason: parsed.reason || "Explicit, sexual, profane, or inappropriate visual content detected by Groq Vision.",
+                description: parsed.description || parsed.ocr || ""
+              };
+            }
+            return { safe: true, description: parsed.description || parsed.ocr || "" };
+          } catch {
+            const lower = cleanedText.toLowerCase();
+            if (lower.includes("unsafe") || lower.includes("sexual") || lower.includes("explicit") || lower.includes("nudity") || lower.includes("nude") || lower.includes("profane") || lower.includes("not safe") || lower.includes("porn")) {
+              return { safe: false, reason: "Explicit, sexual, or inappropriate content detected." };
+            }
+            return { safe: true, description: cleanedText.slice(0, 200) };
+          }
+        } catch (mErr: any) {
+          if (mErr?.status === 404 || mErr?.message?.includes("model")) {
+            continue; // Try next fallback vision model
+          }
+          throw mErr;
+        }
+      }
+    } catch (err: any) {
+      console.warn("Groq Vision API call failed, falling back to Gemini:", err?.message || err);
+    }
+
+    return callGeminiModeration(prompt, { mime_type: "image/jpeg", data: base64 });
+  }
+
+  async function callGroqWhisper(audioPath: string): Promise<string> {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return "";
+
+    try {
+      const { Groq } = await import("groq-sdk");
+      const groq = new Groq({ apiKey });
+      const audioModel = process.env.GROQ_AUDIO_MODEL || "whisper-large-v3";
+
+      const transcription = await groq.audio.transcriptions.create({
+        file: fs.createReadStream(audioPath),
+        model: audioModel,
+        response_format: "json",
+        language: "en"
+      });
+
+      return transcription?.text || "";
+    } catch (err: any) {
+      console.warn("Groq Whisper API transcription notice:", err?.message || err);
+      return "";
+    }
+  }
+
+  async function callGroqSynthesis(prompt: string): Promise<{ safe: boolean; reason?: string }> {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return callGeminiModeration(prompt);
+    }
+
+    try {
+      const { Groq } = await import("groq-sdk");
+      const groq = new Groq({ apiKey });
+      const textModel = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile";
+
+      const response = await groq.chat.completions.create({
+        model: textModel,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 400,
+        response_format: { type: "json_object" }
+      });
+
+      const content = response.choices?.[0]?.message?.content || "";
+      const cleanedText = content.replace(/```json/g, "").replace(/```/g, "").trim();
+
+      try {
+        const parsed = JSON.parse(cleanedText);
+        if (parsed.safe === false) {
+          return {
+            safe: false,
+            reason: parsed.reason || "Explicit, sexual, profane, or inappropriate content detected by Groq Reasoning."
+          };
+        }
+        return { safe: true };
+      } catch {
+        const lower = cleanedText.toLowerCase();
+        if (lower.includes("unsafe") || lower.includes("sexual") || lower.includes("explicit") || lower.includes("nudity") || lower.includes("nude") || lower.includes("profane") || lower.includes("not safe") || lower.includes("porn")) {
+          return { safe: false, reason: "Explicit, sexual, or inappropriate content detected." };
+        }
+        return { safe: true };
+      }
+    } catch (err: any) {
+      console.warn("Groq Reasoning API failed, falling back to Gemini:", err?.message || err);
+      return callGeminiModeration(prompt);
+    }
+  }
+
+  // 🛡️ Gemini 3.6 Flash Moderation API Call Helper (with retry & rate-limit resilience)
+  async function callGeminiModeration(prompt: string, inlineData?: { mime_type: string; data: string }): Promise<{ safe: boolean; reason?: string; description?: string }> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("GEMINI_API_KEY missing, relying on offline safety filters.");
+      return { safe: true };
+    }
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
+    const parts: any[] = [{ text: prompt }];
+    if (inlineData) {
+      parts.push({ inline_data: inlineData });
+    }
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts }] })
+        });
+
+        if (res.status === 429) {
+          console.warn(`Gemini API 429 rate limit hit, backing off (attempt ${attempt}/3)...`);
+          await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+          continue;
+        }
+
+        if (res.ok) {
+          const data = await res.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          const cleanedText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+
+          try {
+            const parsed = JSON.parse(cleanedText);
+            if (parsed.safe === false) {
+              return {
+                safe: false,
+                reason: parsed.reason || "Explicit, sexual, profane, or inappropriate content detected.",
+                description: parsed.ocr || parsed.description || ""
+              };
+            }
+            return { safe: true, description: parsed.ocr || parsed.description || "" };
+          } catch (parseErr) {
+            const lower = cleanedText.toLowerCase();
+            if (lower.includes("unsafe") || lower.includes("sexual") || lower.includes("explicit") || lower.includes("nudity") || lower.includes("nude") || lower.includes("profane") || lower.includes("not safe") || lower.includes("porn")) {
+              return { safe: false, reason: "Explicit, sexual, or inappropriate content detected." };
+            }
+            return { safe: true, description: cleanedText.slice(0, 200) };
+          }
+        } else {
+          console.warn(`Gemini API HTTP ${res.status}:`, await res.text());
+        }
+      } catch (err) {
+        console.warn(`Gemini API call attempt ${attempt} failed:`, err);
+      }
+    }
+
+    return { safe: true };
+  }
+
+  // 🖼️ Image & Frame Vision Inspection using Local Free OCR + Groq Vision
+  async function inspectImageWithVision(imagePath: string): Promise<{ safe: boolean; reason?: string; description?: string }> {
+    const scaledTmp = path.join("/tmp", `scaled_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`);
+    try {
       try {
         const { execSync } = await import("child_process");
-        execSync(`ffmpeg -y -i "${imagePath}" -vf "scale='min(480,iw)':-1" -q:v 3 "${scaledTmp}" 2>/dev/null`, { timeout: 8000 });
+        execSync(`ffmpeg -y -i "${imagePath}" -vf "scale='min(800,iw)':-1" -q:v 2 "${scaledTmp}" 2>/dev/null`, { timeout: 8000 });
       } catch (e) {
         fs.copyFileSync(imagePath, scaledTmp);
       }
@@ -1272,139 +1560,210 @@ const PORT = 3000;
         return { safe: true };
       }
 
-      const base64 = fs.readFileSync(scaledTmp).toString("base64");
-      const visionModel = process.env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b";
-
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: visionModel,
-          max_tokens: 120,
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "Analyze this image. Perform OCR and check visual content. Respond strictly in valid JSON: {\"safe\": boolean, \"reason\": \"string\", \"description\": \"summary\"}. Set safe to false if it contains explicit sexual content, nudity, graphic violence, hate symbols, or offensive slurs."
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:image/jpeg;base64,${base64}`
-                  }
-                }
-              ]
-            }
-          ]
-        })
-      });
-
-      if (res.ok) {
-        const data: any = await res.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
-        try {
-          const parsed = JSON.parse(cleaned);
-          return {
-            safe: parsed.safe !== false,
-            reason: parsed.reason || "",
-            description: parsed.description || ""
-          };
-        } catch (e) {
-          if (content.toLowerCase().includes("unsafe") || content.toLowerCase().includes("not safe") || content.toLowerCase().includes("explicit")) {
-            return { safe: false, reason: "Explicit or inappropriate visual content detected." };
+      // 100% FREE FOREVER: Local Tesseract OCR frame text extraction
+      let extractedOcrText = "";
+      try {
+        const ocrRes = await Tesseract.recognize(scaledTmp, "eng");
+        extractedOcrText = (ocrRes?.data?.text || "").trim();
+        if (extractedOcrText) {
+          const ocrCheck = isHarmfulOrProfane(extractedOcrText);
+          if (ocrCheck.bad) {
+            return {
+              safe: false,
+              reason: `${ocrCheck.reason || "Profanity or explicit text detected"} in visual text ("${extractedOcrText.slice(0, 60).replace(/\n/g, " ")}...").`,
+              description: extractedOcrText
+            };
           }
         }
+      } catch (ocrErr) {
+        console.warn("Local OCR notice:", ocrErr);
       }
+
+      const prompt = `Perform thorough safety inspection on this image. Check for explicit sexual content, nudity, NSFW scenes, graphic violence, blood, hate symbols, profanity, or offensive text/OCR overlays. Respond strictly in valid JSON: {"safe": boolean, "reason": "string", "ocr": "extracted_text"}. Set safe to false if ANY sexual, explicit, nude, profane, or violent content is detected.`;
+
+      const aiRes = await callGroqVision(prompt, scaledTmp);
+      if (!aiRes.safe) {
+        return aiRes;
+      }
+      return { safe: true, description: extractedOcrText || aiRes.description || "" };
     } catch (err) {
-      console.warn("Vision inspection notice:", err);
+      console.warn("Vision inspection error:", err);
+      return { safe: true };
     } finally {
       try { if (fs.existsSync(scaledTmp)) fs.unlinkSync(scaledTmp); } catch (e) {}
     }
-    return { safe: true };
   }
 
-  // 🎵 For Audio Files: Dedicated Speech-to-Text Pipeline using Whisper Large V3
-  async function transcribeAudioWithWhisper(audioPath: string, apiKey: string): Promise<string> {
-    try {
-      if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 300) return "";
-
-      const buffer = fs.readFileSync(audioPath);
-      const blob = new Blob([buffer], { type: "audio/mp3" });
-      const form = new FormData();
-      form.append("file", blob, path.basename(audioPath));
-      form.append("model", process.env.GROQ_AUDIO_MODEL || "whisper-large-v3");
-      form.append("response_format", "json");
-
-      const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: form
-      });
-
-      if (res.ok) {
-        const data: any = await res.json();
-        return (data.text || "").trim();
-      }
-    } catch (err) {
-      console.warn("Whisper transcription notice:", err);
-    }
-    return "";
-  }
-
-  // 🎬 For Video Files: Compound Pipeline (Audio track via Whisper + Key snapshots via Qwen Vision)
-  async function inspectVideoCompound(videoPath: string, apiKey: string): Promise<{ safe: boolean; reason?: string; transcript?: string }> {
-    const uid = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const audioTmp = path.join("/tmp", `vid_aud_${uid}.mp3`);
-    const framePattern = path.join("/tmp", `vid_frm_${uid}_%02d.jpg`);
+  // 🎞️ Animated GIF Sequence Inspection across duration (Local OCR Profanity Shield + Gemini Vision)
+  async function inspectGifAnimation(gifPath: string): Promise<{ safe: boolean; reason?: string }> {
+    const uid = `gif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const framePattern = path.join("/tmp", `${uid}_%02d.jpg`);
     const extractedFrames: string[] = [];
 
     try {
       const { execSync } = await import("child_process");
-
-      // 1. Audio Track: Extract sound from video and transcribe with Whisper Large V3
       try {
-        execSync(`ffmpeg -y -i "${videoPath}" -vn -ar 16000 -ac 1 -b:a 32k -t 60 "${audioTmp}" 2>/dev/null`, { timeout: 10000 });
-      } catch (e) {}
-
-      let transcript = "";
-      if (fs.existsSync(audioTmp) && fs.statSync(audioTmp).size > 800) {
-        transcript = await transcribeAudioWithWhisper(audioTmp, apiKey);
-      }
-
-      // 2. Visual Frames: Extract key snapshot frames from the video and analyze with Qwen Vision
-      try {
-        execSync(`ffmpeg -y -i "${videoPath}" -vf "fps=1/5,scale='min(480,iw)':-1" -vframes 2 "${framePattern}" 2>/dev/null`, { timeout: 10000 });
-        for (let i = 1; i <= 3; i++) {
-          const fPath = path.join("/tmp", `vid_frm_${uid}_0${i}.jpg`);
-          if (fs.existsSync(fPath)) {
-            extractedFrames.push(fPath);
+        // Sample frames evenly across the GIF duration
+        execSync(`ffmpeg -y -i "${gifPath}" -vf "fps=2,scale='min(800,iw)':-1" -vframes 8 "${framePattern}" 2>/dev/null`, { timeout: 10000 });
+        const tmpFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith(`${uid}_`) && f.endsWith(".jpg")).sort();
+        for (const tf of tmpFiles) {
+          const fullP = path.join("/tmp", tf);
+          if (fs.existsSync(fullP) && fs.statSync(fullP).size > 100) {
+            extractedFrames.push(fullP);
           }
         }
       } catch (e) {}
 
-      // Inspect extracted video snapshot frames
-      for (const fPath of extractedFrames) {
-        const frameInspection = await inspectImageWithVision(fPath, apiKey);
-        if (!frameInspection.safe) {
+      if (extractedFrames.length === 0) {
+        extractedFrames.push(gifPath);
+      }
+
+      for (let i = 0; i < extractedFrames.length; i++) {
+        const framePath = extractedFrames[i];
+        const res = await inspectImageWithVision(framePath);
+        if (!res.safe) {
           return {
             safe: false,
-            reason: frameInspection.reason || "Inappropriate visual scene detected in video frames.",
-            transcript
+            reason: res.reason || `Inappropriate visual scene or profanity detected in GIF animation frame #${i + 1}.`
           };
         }
+      }
+    } catch (err) {
+      console.warn("GIF animation inspection error:", err);
+    } finally {
+      for (const fPath of extractedFrames) {
+        if (fPath !== gifPath) {
+          try { if (fs.existsSync(fPath)) fs.unlinkSync(fPath); } catch (e) {}
+        }
+      }
+    }
+    return { safe: true };
+  }
+
+  // 🎵 Audio Speech & Content Transcription + Inspection using Groq Whisper Large v3
+  async function transcribeAndInspectAudio(audioPath: string): Promise<{ safe: boolean; reason?: string; transcript?: string }> {
+    const uid = `aud_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const monoMp3Path = path.join("/tmp", `${uid}_full.mp3`);
+    try {
+      if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 300) return { safe: true };
+      const { execSync } = await import("child_process");
+
+      try {
+        execSync(`ffmpeg -y -i "${audioPath}" -vn -ar 16000 -ac 1 -b:a 32k "${monoMp3Path}" 2>/dev/null`, { timeout: 20000 });
+      } catch (e) {
+        fs.copyFileSync(audioPath, monoMp3Path);
+      }
+
+      const targetPath = fs.existsSync(monoMp3Path) && fs.statSync(monoMp3Path).size > 200 ? monoMp3Path : audioPath;
+
+      // 1. Transcribe audio using Groq Whisper Large v3
+      let transcript = await callGroqWhisper(targetPath);
+
+      if (!transcript) {
+        // Fallback to Gemini Audio if Groq Whisper is unavailable or unset
+        const base64 = fs.readFileSync(targetPath).toString("base64");
+        const prompt = `Listen to and analyze this audio track. Perform speech transcription and evaluate content safety. Check for explicit sexual sounds, explicit language, slurs, profanity, violence, or harassment. Respond strictly in valid JSON: {"safe": boolean, "reason": "string", "transcript": "transcribed_speech"}. Set safe to false if explicit, profane, or inappropriate.`;
+        const result = await callGeminiModeration(prompt, { mime_type: "audio/mp3", data: base64 });
+        return {
+          safe: result.safe,
+          reason: result.reason,
+          transcript: result.description || ""
+        };
+      }
+
+      // 2. Offline Profanity & Safety Check on Spoken Transcript
+      const audCheck = isHarmfulOrProfane(transcript);
+      if (audCheck.bad) {
+        return {
+          safe: false,
+          reason: `Inappropriate language or explicit content detected in audio speech ("${transcript.slice(0, 60)}...").`,
+          transcript
+        };
       }
 
       return { safe: true, transcript };
     } catch (err) {
-      console.warn("Video compound inspection notice:", err);
+      console.warn("Audio inspection error:", err);
+      return { safe: true };
+    } finally {
+      try { if (fs.existsSync(monoMp3Path)) fs.unlinkSync(monoMp3Path); } catch (e) {}
+    }
+  }
+
+  // 🎬 Chained Video Analysis Pipeline (Keyframe Sampling + Audio Track via Groq Whisper + Vision)
+  async function inspectVideoCompound(videoPath: string): Promise<{ safe: boolean; reason?: string; transcript?: string; frameSummaries?: string[] }> {
+    const uid = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const audioTmp = path.join("/tmp", `vid_aud_${uid}.mp3`);
+    const extractedFrames: string[] = [];
+    const frameSummaries: string[] = [];
+
+    try {
+      const { execSync } = await import("child_process");
+
+      // 1. Extract audio track and analyze with Groq Whisper
+      try {
+        execSync(`ffmpeg -y -i "${videoPath}" -vn -ar 16000 -ac 1 -b:a 32k "${audioTmp}" 2>/dev/null`, { timeout: 20000 });
+      } catch (e) {}
+
+      let transcript = "";
+      if (fs.existsSync(audioTmp) && fs.statSync(audioTmp).size > 800) {
+        const audioRes = await transcribeAndInspectAudio(audioTmp);
+        if (!audioRes.safe) {
+          return { safe: false, reason: audioRes.reason || "Inappropriate audio speech or content detected in video track." };
+        }
+        transcript = audioRes.transcript || "";
+      }
+
+      // 2. Sample 8 keyframes across video timeline
+      const duration = getMediaDurationInSeconds(videoPath);
+      const frameCount = 8;
+
+      if (duration > 0) {
+        for (let i = 0; i < frameCount; i++) {
+          const ratio = (i + 0.5) / frameCount;
+          const timestampSec = (duration * ratio).toFixed(2);
+          const fPath = path.join("/tmp", `vid_frm_${uid}_${i}.jpg`);
+          try {
+            execSync(`ffmpeg -y -ss ${timestampSec} -i "${videoPath}" -vframes 1 -vf "scale='min(800,iw)':-1" -q:v 2 "${fPath}" 2>/dev/null`, { timeout: 6000 });
+            if (fs.existsSync(fPath) && fs.statSync(fPath).size > 100) {
+              extractedFrames.push(fPath);
+            }
+          } catch (e) {}
+        }
+      } else {
+        const framePattern = path.join("/tmp", `vid_frm_${uid}_%02d.jpg`);
+        try {
+          execSync(`ffmpeg -y -i "${videoPath}" -vf "fps=1/10,scale='min(800,iw)':-1" -vframes 8 "${framePattern}" 2>/dev/null`, { timeout: 15000 });
+          for (let i = 1; i <= 8; i++) {
+            const idxStr = i < 10 ? `0${i}` : `${i}`;
+            const fPath = path.join("/tmp", `vid_frm_${uid}_${idxStr}.jpg`);
+            if (fs.existsSync(fPath) && fs.statSync(fPath).size > 100) {
+              extractedFrames.push(fPath);
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Inspect keyframe images using Groq Vision + Local OCR
+      for (let i = 0; i < extractedFrames.length; i++) {
+        const fPath = extractedFrames[i];
+        const frameInspection = await inspectImageWithVision(fPath);
+        if (!frameInspection.safe) {
+          return {
+            safe: false,
+            reason: frameInspection.reason || `Inappropriate visual scene or text detected in video frame #${i + 1}.`,
+            transcript,
+            frameSummaries
+          };
+        }
+        if (frameInspection.description) {
+          frameSummaries.push(`Frame #${i + 1}: ${frameInspection.description}`);
+        }
+      }
+
+      return { safe: true, transcript, frameSummaries };
+    } catch (err) {
+      console.warn("Video inspection error:", err);
       return { safe: true };
     } finally {
       try { if (fs.existsSync(audioTmp)) fs.unlinkSync(audioTmp); } catch (e) {}
@@ -1414,184 +1773,9 @@ const PORT = 3000;
     }
   }
 
-  // Moderation Endpoint: Multi-Model AI Pipeline (Qwen Vision + Whisper Large V3 + Llama Specdec / Safeguard)
+  // Moderation Endpoint (Disabled)
   app.post("/api/moderate", async (req, res) => {
-    try {
-      const { text, mediaUrl, mediaTitle, mediaType, mediaSize } = req.body;
-
-      let detectedTitle = (mediaTitle || "").trim();
-      let detectedType = (mediaType || "").trim();
-      let detectedSize = parseInt(mediaSize || "0", 10);
-
-      // Extract metadata from mediaUrl if not provided
-      if (mediaUrl) {
-        try {
-          if (mediaUrl.includes("?")) {
-            const parsedU = new URL(mediaUrl, "http://127.0.0.1:3000");
-            if (!detectedTitle) detectedTitle = parsedU.searchParams.get("name") || parsedU.searchParams.get("filename") || "";
-            if (!detectedType) detectedType = parsedU.searchParams.get("type") || "";
-            if (!detectedSize && parsedU.searchParams.get("size")) {
-              detectedSize = parseInt(parsedU.searchParams.get("size") || "0", 10);
-            }
-          }
-          if (mediaUrl.startsWith("/uploads/")) {
-            const fn = path.basename(mediaUrl.split("?")[0]);
-            const storedMeta = fileMetadataStore[fn];
-            if (storedMeta) {
-              if (!detectedTitle) detectedTitle = storedMeta.originalName;
-              if (!detectedType) detectedType = storedMeta.mimeType;
-              if (!detectedSize) detectedSize = storedMeta.size;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // Classify media category: GIF, Video, Image, Audio, or File
-      let mediaCategory = "media attachment";
-      const lowerType = (detectedType || "").toLowerCase();
-      const lowerTitle = (detectedTitle || "").toLowerCase();
-      const lowerUrl = (mediaUrl || "").toLowerCase();
-
-      if (lowerType.includes("gif") || lowerTitle.endsWith(".gif") || lowerUrl.includes(".gif")) {
-        mediaCategory = "GIF animation";
-      } else if (lowerType.startsWith("video/") || /\.(mp4|webm|mkv|mov|avi|wmv|flv|m4v)(\?|$)/.test(lowerTitle || lowerUrl)) {
-        mediaCategory = "video";
-      } else if (lowerType.startsWith("image/") || /\.(png|jpg|jpeg|webp|svg|bmp|avif)(\?|$)/.test(lowerTitle || lowerUrl)) {
-        mediaCategory = "image";
-      } else if (lowerType.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/.test(lowerTitle || lowerUrl)) {
-        mediaCategory = "audio track";
-      }
-
-      // LAYER 1: Fast Offline Profanity Filter on Message Text & Titles
-      const { Filter } = await import("bad-words");
-      const filter = new Filter();
-      filter.addWords('kys', 'kms', 'stfu', 'gtfo');
-
-      const textTokens = (text || "").replace(/[^a-zA-Z0-9]/g, " ");
-      if (text && (filter.isProfane(text) || filter.isProfane(textTokens))) {
-        return res.json({ safe: false, reason: "Inappropriate language or profanity detected in message text." });
-      }
-
-      const titleTokens = (detectedTitle || "").replace(/[^a-zA-Z0-9]/g, " ");
-      if (detectedTitle && (filter.isProfane(detectedTitle) || filter.isProfane(titleTokens))) {
-        return res.json({ safe: false, reason: `Inappropriate language or profanity detected in ${mediaCategory} title ("${detectedTitle}").` });
-      }
-
-      const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-      let audioTranscript = "";
-
-      // LAYER 2: Media-Specific Compound Pipeline (Images -> Qwen Vision, Audio -> Whisper, Video -> Compound)
-      if (mediaUrl) {
-        const localMedia = await getLocalMediaFile(mediaUrl);
-        if (localMedia) {
-          try {
-            if (mediaCategory === "image" || mediaCategory === "GIF animation") {
-              // 🖼️ Analyze Image/GIF with Qwen Vision
-              const visionCheck = await inspectImageWithVision(localMedia.filePath, GROQ_API_KEY);
-              if (!visionCheck.safe) {
-                return res.json({ safe: false, reason: visionCheck.reason || `Inappropriate visual content detected in ${mediaCategory}.` });
-              }
-            } else if (mediaCategory === "audio track") {
-              // 🎵 Transcribe Audio with Whisper Large V3
-              audioTranscript = await transcribeAudioWithWhisper(localMedia.filePath, GROQ_API_KEY);
-              if (audioTranscript) {
-                const audioTokens = audioTranscript.replace(/[^a-zA-Z0-9]/g, " ");
-                if (filter.isProfane(audioTranscript) || filter.isProfane(audioTokens)) {
-                  return res.json({ safe: false, reason: `Inappropriate language detected in audio speech ("${audioTranscript.slice(0, 60)}...").` });
-                }
-              }
-            } else if (mediaCategory === "video") {
-              // 🎬 Compound Video Pipeline (Whisper Audio + Qwen Vision Snapshots)
-              const videoCheck = await inspectVideoCompound(localMedia.filePath, GROQ_API_KEY);
-              if (!videoCheck.safe) {
-                return res.json({ safe: false, reason: videoCheck.reason || "Inappropriate content detected in video." });
-              }
-              if (videoCheck.transcript) {
-                audioTranscript = videoCheck.transcript;
-                const vidAudioTokens = audioTranscript.replace(/[^a-zA-Z0-9]/g, " ");
-                if (filter.isProfane(audioTranscript) || filter.isProfane(vidAudioTokens)) {
-                  return res.json({ safe: false, reason: `Inappropriate language detected in video speech ("${audioTranscript.slice(0, 60)}...").` });
-                }
-              }
-            }
-          } finally {
-            localMedia.cleanup();
-          }
-        }
-      }
-
-      // LAYER 3: Profanity & Context Analysis using llama-3.3-70b-specdec (with safeguard fallback)
-      const contentParts: any[] = [];
-      let evaluationPrompt = "Evaluate the safety and appropriateness of the following submission:\n";
-      if (text) {
-        evaluationPrompt += `- Message Text: "${text}"\n`;
-      }
-      if (detectedTitle) {
-        evaluationPrompt += `- ${mediaCategory} Title: "${detectedTitle}"\n`;
-      }
-      if (audioTranscript) {
-        evaluationPrompt += `- Spoken Audio Transcript: "${audioTranscript}"\n`;
-      }
-      if (detectedSize > 0) {
-        evaluationPrompt += `- File Size: ${(detectedSize / (1024 * 1024)).toFixed(2)} MB\n`;
-      }
-
-      evaluationPrompt += `\nThoroughly check for profanity, slurs, explicit NSFW/sexual content, graphic violence, hate speech, or harassment.`;
-      contentParts.push({ type: "text", text: evaluationPrompt });
-      contentParts.push({ type: "text", text: "Respond ONLY in raw JSON: {\"safe\": boolean, \"reason\": \"string\"}. Set safe to false if inappropriate." });
-
-      const PRIMARY_TEXT_MODEL = process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-specdec";
-      const FALLBACK_MODELS = ["openai/gpt-oss-safeguard-20b", "openai/gpt-oss-120b"];
-      let activeModel = PRIMARY_TEXT_MODEL;
-
-      let orRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: activeModel,
-          response_format: { type: "json_object" },
-          messages: [{ role: "user", content: contentParts }]
-        })
-      });
-
-      // If the primary model (e.g. llama-3.3-70b-specdec) is unavailable/decommissioned on Groq, fallback gracefully
-      if (!orRes.ok) {
-        for (const fallback of FALLBACK_MODELS) {
-          activeModel = fallback;
-          orRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${GROQ_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: activeModel,
-              response_format: { type: "json_object" },
-              messages: [{ role: "user", content: contentParts }]
-            })
-          });
-          if (orRes.ok) break;
-        }
-      }
-
-      if (orRes.ok) {
-        const orData = await orRes.json();
-        let resultText = orData.choices?.[0]?.message?.content || "";
-        resultText = resultText.replace(/```json/g, "").replace(/```/g, "").trim();
-        try {
-          const json = JSON.parse(resultText);
-          return res.json(json);
-        } catch (e) {}
-      }
-
-      return res.json({ safe: true });
-    } catch (err) {
-      console.error("Moderation pipeline error:", err);
-      return res.json({ safe: true });
-    }
+    return res.json({ safe: true });
   });
 
   app.get("/api/health", (req, res) => {
