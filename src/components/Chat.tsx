@@ -369,10 +369,20 @@ export default function Chat({
     <>
       {/* 1. Main Discord Chat Shell (only shown when chat is open) */}
       {isOpen && (
-        <div className="flex-1 w-full flex bg-[#03040c]/98 border border-indigo-950/40 animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl">
+        <div
+          id="frosted-chat-shell"
+          style={{
+            backgroundColor: "var(--theme-chat-bg)",
+            borderColor: "var(--theme-border-subtle)",
+          }}
+          className="flex-1 w-full flex border animate-in fade-in min-h-0 overflow-hidden text-white backdrop-blur-xl"
+        >
           {!profile || activeTab === "profile" ? (
             /* If not logged in or editing profile, show Profile Setup modal */
-            <div className="flex-1 w-full flex items-center justify-center bg-[#03040c]">
+            <div
+              style={{ backgroundColor: "var(--theme-chat-bg)" }}
+              className="flex-1 w-full flex items-center justify-center"
+            >
               <ProfileSetup
                 initialUsername={profile?.username}
                 initialPhotoURL={profile?.photoURL}
@@ -384,26 +394,44 @@ export default function Chat({
             /* Discord Main App Shell */
             <div className="flex-1 flex w-full h-full overflow-hidden">
           {/* Column 1: Leftmost Narrow Server Rail (~60px) matching Image 2 */}
-          <aside className="w-16 bg-[#02030a] border-r border-indigo-950/40 flex flex-col items-center justify-between py-4 flex-shrink-0 z-20">
+          <aside
+            style={{
+              backgroundColor: "var(--theme-chat-rail)",
+              borderColor: "var(--theme-border-subtle)",
+            }}
+            className="w-16 border-r flex flex-col items-center justify-between py-4 flex-shrink-0 z-20 transition-colors duration-200"
+          >
             {/* Top Gamepad Button (Go back to games list) */}
             <div className="flex flex-col items-center gap-3">
               <button
                 onClick={onClose}
-                className="w-11 h-11 rounded-2xl bg-[#0b143c] border border-indigo-900/60 text-indigo-300 hover:text-white hover:bg-[#12205a] hover:border-indigo-600/80 flex items-center justify-center transition-all cursor-pointer shadow-sm group"
+                style={{
+                  backgroundColor: "var(--theme-accent)",
+                  borderColor: "var(--theme-border)",
+                  color: "var(--theme-text-accent)",
+                }}
+                className="w-11 h-11 rounded-2xl border hover:text-white hover:brightness-110 flex items-center justify-center transition-all cursor-pointer shadow-sm group"
                 title="Return to Games Catalog"
               >
                 <Gamepad2 size={20} className="group-hover:scale-110 transition-transform" />
               </button>
 
-              <div className="w-8 h-[1px] bg-indigo-950/80 my-1" />
+              <div
+                style={{ backgroundColor: "var(--theme-border-subtle)" }}
+                className="w-8 h-[1px] my-1"
+              />
 
-              {/* Active Chat Button (Navy Blue Squircle with MessageSquare icon) */}
+              {/* Active Chat Button (Squircle with MessageSquare icon) */}
               <button
                 onClick={() => setActiveTab("chat")}
-                className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer shadow-lg ${
+                style={{
+                  backgroundColor: activeTab === "chat" ? "var(--theme-accent)" : "var(--theme-surface)",
+                  borderColor: activeTab === "chat" ? "var(--theme-border-strong)" : "var(--theme-border-subtle)",
+                }}
+                className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer shadow-lg border hover:brightness-110 ${
                   activeTab === "chat"
-                    ? "bg-[#0c1a59] text-indigo-200 border-2 border-indigo-500/80 shadow-indigo-950/60 scale-105"
-                    : "bg-[#0b143c] text-indigo-400/80 border border-indigo-900/60 hover:text-indigo-200 hover:bg-[#12205a]"
+                    ? "text-white scale-105"
+                    : "text-neutral-400"
                 }`}
                 title="Community Chat"
               >
@@ -418,20 +446,29 @@ export default function Chat({
                 className="relative group cursor-pointer"
                 title="Edit Profile"
               >
-                <div className="w-10 h-10 rounded-full overflow-hidden bg-[#0a1236] border border-indigo-900/80 group-hover:border-indigo-400 transition-colors">
+                <div
+                  style={{
+                    backgroundColor: "var(--theme-surface)",
+                    borderColor: "var(--theme-border-subtle)",
+                  }}
+                  className="w-10 h-10 rounded-full overflow-hidden border group-hover:border-white transition-colors"
+                >
                   <img
                     src={profile.photoURL}
                     alt={profile.username}
                     className="w-full h-full object-cover"
                   />
                 </div>
-                {/* Navy blue online dot badge */}
-                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-indigo-500 border-2 border-[#02030a] shadow-sm" />
+                {/* Online dot badge matching theme accent */}
+                <span
+                  style={{ backgroundColor: "var(--theme-text-accent)" }}
+                  className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#02030a] shadow-sm"
+                />
               </button>
 
               <button
                 onClick={handleLogoutProfile}
-                className="p-2 text-indigo-400/60 hover:text-red-400 transition-colors rounded-lg hover:bg-[#0c1642]"
+                className="p-2 text-neutral-400 hover:text-red-400 transition-colors rounded-lg hover:bg-white/10"
                 title="Switch Profile / Logout"
               >
                 <LogOut size={16} />
@@ -439,18 +476,31 @@ export default function Chat({
             </div>
           </aside>
 
-          {/* Column 2: Channels Sidebar (~220px) matching Image 2 */}
-          <aside className="w-56 bg-[#040614] border-r border-indigo-950/40 flex flex-col h-full flex-shrink-0 hidden sm:flex">
+          {/* Column 2: Channels Sidebar (~220px) */}
+          <aside
+            style={{
+              backgroundColor: "var(--theme-darkest)",
+              borderColor: "var(--theme-border-subtle)",
+            }}
+            className="w-56 border-r flex flex-col h-full flex-shrink-0 hidden sm:flex transition-colors duration-200"
+          >
             {/* Top Channel Search */}
-            <div className="p-3 border-b border-indigo-950/40">
+            <div
+              style={{ borderColor: "var(--theme-border-subtle)" }}
+              className="p-3 border-b"
+            >
               <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-indigo-400/60" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--theme-text-muted)]" />
                 <input
                   type="text"
                   value={channelSearch}
                   onChange={(e) => setChannelSearch(e.target.value)}
                   placeholder="Find a channel"
-                  className="w-full bg-[#070b24] border border-indigo-950/60 text-xs text-white placeholder-indigo-300/40 rounded-md pl-8 pr-2.5 py-1.5 focus:outline-none focus:border-indigo-600/60 focus:ring-1 focus:ring-indigo-600/30 transition-all duration-150"
+                  style={{
+                    backgroundColor: "var(--theme-surface)",
+                    borderColor: "var(--theme-border-subtle)",
+                  }}
+                  className="w-full border text-xs text-white placeholder-neutral-400 rounded-md pl-8 pr-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[var(--theme-border-strong)] transition-all duration-150"
                 />
               </div>
             </div>
@@ -459,7 +509,7 @@ export default function Chat({
             <div className="flex-1 overflow-y-auto p-2 space-y-4">
               {/* CHANNELS Section */}
               <div>
-                <div className="flex items-center gap-1 text-[10px] font-bold text-indigo-300/50 tracking-wider uppercase px-2.5 py-1.5">
+                <div className="flex items-center gap-1 text-[10px] font-bold text-[var(--theme-text-muted)] tracking-wider uppercase px-2.5 py-1.5">
                   <ChevronDown size={12} />
                   <span>CHANNELS</span>
                 </div>
@@ -469,13 +519,17 @@ export default function Chat({
                       setActiveTab("chat");
                       setActiveChannel("general");
                     }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer ${
+                    style={{
+                      backgroundColor: activeTab === "chat" && activeChannel === "general" ? "var(--theme-accent)" : "transparent",
+                      borderColor: activeTab === "chat" && activeChannel === "general" ? "var(--theme-border-strong)" : "transparent",
+                    }}
+                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer border ${
                       activeTab === "chat" && activeChannel === "general"
-                        ? "bg-[#0c1642] text-white border border-indigo-700/50 shadow-sm"
-                        : "text-neutral-400 hover:bg-[#080d28] hover:text-white"
+                        ? "text-white shadow-sm"
+                        : "text-neutral-400 hover:bg-white/5 hover:text-white"
                     }`}
                   >
-                    <span className="text-base text-indigo-400 font-bold">#</span>
+                    <span className="text-base text-[var(--theme-text-accent)] font-bold">#</span>
                     <span>general</span>
                   </button>
                 </div>
@@ -483,7 +537,7 @@ export default function Chat({
 
               {/* VOICE Section */}
               <div>
-                <div className="flex items-center gap-1 text-[10px] font-bold text-indigo-300/50 tracking-wider uppercase px-2.5 py-1.5">
+                <div className="flex items-center gap-1 text-[10px] font-bold text-[var(--theme-text-muted)] tracking-wider uppercase px-2.5 py-1.5">
                   <ChevronDown size={12} />
                   <span>VOICE</span>
                 </div>
@@ -493,10 +547,14 @@ export default function Chat({
                       setActiveTab("voice");
                       setIsInVoiceSession(true);
                     }}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer ${
+                    style={{
+                      backgroundColor: activeTab === "voice" ? "var(--theme-accent)" : "transparent",
+                      borderColor: activeTab === "voice" ? "var(--theme-border-strong)" : "transparent",
+                    }}
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer border ${
                       activeTab === "voice"
-                        ? "bg-[#0c1642] text-white border border-indigo-700/50 shadow-sm"
-                        : "text-neutral-400 hover:bg-[#080d28] hover:text-white"
+                        ? "text-white shadow-sm"
+                        : "text-neutral-400 hover:bg-white/5 hover:text-white"
                     }`}
                   >
                     <div className="flex items-center gap-2">
@@ -504,14 +562,20 @@ export default function Chat({
                         size={15}
                         className={
                           activeTab === "voice"
-                            ? "text-indigo-400"
+                            ? "text-[var(--theme-text-accent)]"
                             : "text-neutral-400"
                         }
                       />
                       <span>General Voice</span>
                     </div>
                     {voiceUsers.length > 0 && (
-                      <span className="text-[10px] font-bold bg-[#0c1642] text-indigo-200 px-1.5 py-0.2 rounded-full border border-indigo-800/40">
+                      <span
+                        style={{
+                          backgroundColor: "var(--theme-surface)",
+                          borderColor: "var(--theme-border-subtle)",
+                        }}
+                        className="text-[10px] font-bold text-white px-1.5 py-0.2 rounded-full border"
+                      >
                         {voiceUsers.length}
                       </span>
                     )}
@@ -567,18 +631,33 @@ export default function Chat({
 
             {/* Discord Voice Connected Bar in Left Sidebar when viewing text chat */}
             {isInVoiceSession && activeTab === "chat" && (
-              <div className="px-3 py-2 border-t border-indigo-950/50 bg-[#060a24] flex items-center justify-between">
+              <div
+                style={{
+                  backgroundColor: "var(--theme-surface)",
+                  borderColor: "var(--theme-border-subtle)",
+                }}
+                className="px-3 py-2 border-t flex items-center justify-between"
+              >
                 <button
                   onClick={() => setActiveTab("voice")}
                   className="flex items-center gap-2 text-left cursor-pointer group min-w-0 flex-1"
                   title="Switch to Voice Channel"
                 >
-                  <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse flex-shrink-0" />
+                  <span
+                    style={{ backgroundColor: "var(--theme-accent)" }}
+                    className="w-2 h-2 rounded-full animate-pulse flex-shrink-0"
+                  />
                   <div className="min-w-0">
-                    <p className="text-[11px] font-bold text-indigo-400 group-hover:underline truncate">
+                    <p
+                      style={{ color: "var(--theme-text-accent)" }}
+                      className="text-[11px] font-bold group-hover:underline truncate"
+                    >
                       Voice Connected
                     </p>
-                    <p className="text-[10px] text-indigo-300/70 truncate">
+                    <p
+                      style={{ color: "var(--theme-text-muted)" }}
+                      className="text-[10px] truncate"
+                    >
                       General Voice
                     </p>
                   </div>
@@ -595,7 +674,7 @@ export default function Chat({
                     }
                     setIsInVoiceSession(false);
                   }}
-                  className="p-1.5 text-neutral-400 hover:text-rose-400 rounded-md hover:bg-indigo-950/50 transition-colors cursor-pointer flex-shrink-0 ml-1"
+                  className="p-1.5 text-neutral-400 hover:text-rose-400 rounded-md hover:bg-white/10 transition-colors cursor-pointer flex-shrink-0 ml-1"
                   title="Disconnect from Voice"
                 >
                   <PhoneOff size={14} />
@@ -604,17 +683,29 @@ export default function Chat({
             )}
 
             {/* Bottom User Bar matching Image 2 */}
-            <div className="p-3 border-t border-indigo-950/50 bg-[#030514] flex items-center justify-between">
+            <div
+              style={{
+                backgroundColor: "var(--theme-chat-rail)",
+                borderColor: "var(--theme-border-subtle)",
+              }}
+              className="p-3 border-t flex items-center justify-between"
+            >
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="relative">
-                  <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border border-indigo-950">
+                  <div
+                    style={{ borderColor: "var(--theme-border-subtle)" }}
+                    className="w-8 h-8 rounded-full overflow-hidden bg-neutral-800 border"
+                  >
                     <img
                       src={profile.photoURL}
                       alt={profile.username}
                       className="w-full h-full object-cover"
                     />
                   </div>
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-indigo-500 border-2 border-[#030514]" />
+                  <span
+                    style={{ backgroundColor: "var(--theme-text-accent)" }}
+                    className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-black"
+                  />
                 </div>
                 <span className="text-xs font-bold text-white truncate max-w-[100px]">
                   {profile.username}
@@ -623,7 +714,8 @@ export default function Chat({
 
               <button
                 onClick={() => setActiveTab("profile")}
-                className="p-1.5 text-indigo-300/70 hover:text-white rounded-lg hover:bg-indigo-950/50 transition-colors duration-150 cursor-pointer active:scale-90"
+                style={{ color: "var(--theme-text-accent)" }}
+                className="p-1.5 hover:text-white rounded-lg hover:bg-white/10 transition-colors duration-150 cursor-pointer active:scale-90"
                 title="Edit Profile"
               >
                 <UserIcon size={15} />
@@ -632,7 +724,10 @@ export default function Chat({
           </aside>
 
           {/* Column 3 & 4: Main Chat view */}
-          <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-[#03040c] relative">
+          <div
+            style={{ backgroundColor: "var(--theme-chat-bg)" }}
+            className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative"
+          >
             <ChatPanel
               profile={profile}
               activeChannel={activeChannel}

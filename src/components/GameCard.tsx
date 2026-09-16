@@ -33,7 +33,7 @@ const GameCard = memo(function GameCard({
     <div
       id={`game-card-${game.id}`}
       onClick={() => onSelect(game)}
-      className="game-card-item group relative cursor-pointer overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-2 text-left shadow-lg transition-all duration-200 ease-out hover:-translate-y-1.5 hover:border-white/15 hover:bg-white/[0.06] hover:shadow-xl hover:shadow-indigo-500/5 active:scale-[0.98]"
+      className="game-card-item group relative cursor-pointer overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-2 text-left shadow-lg transition-all duration-200 ease-out hover:-translate-y-1.5 hover:border-white/15 hover:bg-white/[0.06] hover:shadow-xl hover:shadow-[var(--theme-glow)]/10 active:scale-[0.98]"
     >
       {/* Cover Image Container */}
       <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-neutral-950">
@@ -42,11 +42,11 @@ const GameCard = memo(function GameCard({
         {/* Tags Overlay */}
         <div className="absolute bottom-2 left-2 z-10 flex flex-wrap gap-1">
           {isMod ? (
-            <span className="rounded-md bg-indigo-500 text-white px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider shadow-sm">
+            <span className="rounded-md bg-[var(--theme-indigo-500)] text-white px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider shadow-sm">
               FNF Mod
             </span>
           ) : isFnf ? (
-            <span className="rounded-md bg-black/85 px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider text-indigo-200 border border-white/10">
+            <span className="rounded-md bg-black/85 px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider text-[var(--theme-indigo-200)] border border-white/10">
               FNF
             </span>
           ) : null}

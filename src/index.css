@@ -1,5 +1,236 @@
 @import "tailwindcss";
 
+:root {
+  --theme-r: 10;
+  --theme-g: 14;
+  --theme-b: 41;
+
+  --theme-darkest: #040616;
+  --theme-surface: #070b22;
+  --theme-hover: #0a0f30;
+  --theme-accent: #0c1642;
+  --theme-accent-hover: #122060;
+  --theme-border: rgba(99, 102, 241, 0.4);
+  --theme-border-subtle: rgba(99, 102, 241, 0.2);
+  --theme-border-strong: rgba(129, 140, 248, 0.7);
+  --theme-text-accent: #c7d2fe;
+  --theme-text-muted: #818cf8;
+  --theme-glow: #0a0e29;
+}
+
+/* Universal dynamic overrides: transforms all navy blue and indigo elements across the entire app to the active theme color */
+[class*="bg-[#0c1642]"],
+[class*="bg-[#0b143c]"],
+[class*="bg-[#0c1a59]"],
+[class*="bg-[#0e1b52]"],
+[class*="bg-[#0e1c50]"],
+[class*="bg-[#182d82]"],
+[class*="bg-[#0a1540]"],
+[class*="bg-[#0b1642]"] {
+  background-color: var(--theme-accent) !important;
+}
+
+[class*="bg-[#02030a]"],
+[class*="bg-[#020410]"],
+[class*="bg-[#03040c]"],
+[class*="bg-[#030514]"],
+[class*="bg-[#030616]"],
+[class*="bg-[#030617]"],
+[class*="bg-[#03061a]"],
+[class*="bg-[#040614]"],
+[class*="bg-[#040616]"],
+[class*="bg-[#04071c]"],
+[class*="bg-[#04081c]"],
+[class*="bg-[#05081c]"],
+[class*="bg-[#050924]"],
+[class*="bg-[#050a24]"],
+[class*="bg-[#050a26]"],
+[class*="bg-[#060920]"],
+[class*="bg-[#060922]"],
+[class*="bg-[#060a24]"],
+[class*="bg-[#060b22]"],
+[class*="bg-[#060b24]"],
+[class*="bg-[#060c24]"],
+[class*="bg-[#070e2b]"] {
+  background-color: var(--theme-chat-bg, var(--theme-darkest)) !important;
+}
+
+[class*="bg-[#070b22]"],
+[class*="bg-[#070b24]"],
+[class*="bg-[#070c26]"],
+[class*="bg-[#070c28]"],
+[class*="bg-[#070e2f]"],
+[class*="bg-[#070e30]"],
+[class*="bg-[#080d28]"],
+[class*="bg-[#080f33]"],
+[class*="bg-[#080f35]"],
+[class*="bg-[#081034]"],
+[class*="bg-[#081138]"],
+[class*="bg-[#091238]"],
+[class*="bg-[#0a1133]"],
+[class*="bg-[#0a1236]"] {
+  background-color: var(--theme-surface) !important;
+}
+
+[class*="bg-[#0a0f30]"],
+[class*="bg-[#090f30]"],
+[class*="bg-[#090f33]"],
+[class*="bg-[#0e1b56]"] {
+  background-color: var(--theme-hover) !important;
+}
+
+[class*="hover:bg-[#070e2f]"]:hover,
+[class*="hover:bg-[#0e1b56]"]:hover,
+[class*="hover:bg-[#0e1c50]"]:hover,
+[class*="hover:bg-[#060c24]"]:hover,
+[class*="hover:bg-[#12205a]"]:hover,
+[class*="hover:bg-[#122060]"]:hover,
+[class*="hover:bg-[#15256e]"]:hover,
+[class*="hover:bg-[#101e58]"]:hover,
+[class*="hover:bg-[#0b143c]"]:hover,
+[class*="hover:bg-[#080d28]"]:hover {
+  background-color: var(--theme-hover) !important;
+}
+
+[class*="bg-[#122060]"],
+[class*="bg-[#12205a]"],
+[class*="bg-[#15256e]"],
+[class*="bg-[#122166]"] {
+  background-color: var(--theme-accent-hover) !important;
+}
+
+/* Tailwind Indigo Background Scale Overrides */
+[class*="bg-indigo-950"] {
+  background-color: var(--theme-indigo-950, var(--theme-darkest)) !important;
+}
+[class*="bg-indigo-900"] {
+  background-color: var(--theme-indigo-900, var(--theme-surface)) !important;
+}
+[class*="bg-indigo-800"] {
+  background-color: var(--theme-indigo-800, var(--theme-hover)) !important;
+}
+[class*="bg-indigo-700"] {
+  background-color: var(--theme-indigo-700, var(--theme-accent)) !important;
+}
+[class*="bg-indigo-600"] {
+  background-color: var(--theme-indigo-600, var(--theme-accent-hover)) !important;
+}
+[class*="bg-indigo-500"] {
+  background-color: var(--theme-indigo-500, var(--theme-primary)) !important;
+}
+
+[class*="hover:bg-indigo-600"]:hover,
+[class*="hover:bg-indigo-500"]:hover {
+  background-color: var(--theme-indigo-500, var(--theme-primary)) !important;
+}
+[class*="hover:bg-indigo-700"]:hover {
+  background-color: var(--theme-indigo-600, var(--theme-accent-hover)) !important;
+}
+[class*="hover:bg-indigo-950"]:hover {
+  background-color: var(--theme-hover) !important;
+}
+
+/* Borders */
+[class*="border-indigo-950"],
+[class*="border-indigo-900"] {
+  border-color: var(--theme-border-subtle) !important;
+}
+
+[class*="border-indigo-800"],
+[class*="border-indigo-700"],
+[class*="border-indigo-600"] {
+  border-color: var(--theme-border) !important;
+}
+
+[class*="border-indigo-500"],
+[class*="border-indigo-400"] {
+  border-color: var(--theme-border-strong) !important;
+}
+
+[class*="hover:border-indigo-600"]:hover,
+[class*="hover:border-indigo-500"]:hover {
+  border-color: var(--theme-border-strong) !important;
+}
+
+/* Text */
+[class*="text-indigo-100"] {
+  color: var(--theme-indigo-100, var(--theme-text-accent)) !important;
+}
+[class*="text-indigo-200"] {
+  color: var(--theme-indigo-200, var(--theme-text-accent)) !important;
+}
+[class*="text-indigo-300"] {
+  color: var(--theme-indigo-300, var(--theme-text-muted)) !important;
+}
+[class*="text-indigo-400"] {
+  color: var(--theme-indigo-400, var(--theme-text-muted)) !important;
+}
+[class*="text-indigo-500"] {
+  color: var(--theme-indigo-500, var(--theme-primary)) !important;
+}
+
+[class*="hover:text-indigo-200"]:hover,
+[class*="hover:text-indigo-100"]:hover {
+  color: var(--theme-indigo-100, var(--theme-text-accent)) !important;
+}
+
+/* Rings & Focus */
+[class*="ring-indigo-500"],
+[class*="ring-indigo-600"] {
+  --tw-ring-color: var(--theme-indigo-500, var(--theme-primary)) !important;
+}
+
+[class*="focus:border-indigo-500"]:focus,
+[class*="focus:border-indigo-600"]:focus,
+[class*="focus-within:border-indigo-600"]:focus-within {
+  border-color: var(--theme-border-strong) !important;
+}
+
+[class*="accent-indigo-400"],
+[class*="accent-indigo-500"] {
+  accent-color: var(--theme-indigo-500, var(--theme-primary)) !important;
+}
+
+/* Shadows */
+[class*="shadow-indigo-950"],
+[class*="shadow-indigo-900"],
+[class*="shadow-indigo-500"] {
+  --tw-shadow-color: var(--theme-darkest) !important;
+}
+
+/* Gradients */
+[class*="from-indigo-600"],
+[class*="from-indigo-500"] {
+  --tw-gradient-from: var(--theme-indigo-600) !important;
+}
+[class*="via-indigo-700"],
+[class*="via-indigo-600"] {
+  --tw-gradient-via: var(--theme-indigo-700) !important;
+}
+[class*="to-indigo-800"],
+[class*="to-indigo-950"] {
+  --tw-gradient-to: var(--theme-indigo-950) !important;
+}
+
+[class*="from-[#0c1642]"] {
+  --tw-gradient-from: var(--theme-accent) !important;
+}
+[class*="from-[#122166]"] {
+  --tw-gradient-from: var(--theme-accent-hover) !important;
+}
+[class*="via-[#0b1642]"] {
+  --tw-gradient-via: var(--theme-accent) !important;
+}
+[class*="to-[#0c1642]"] {
+  --tw-gradient-to: var(--theme-accent) !important;
+}
+[class*="to-[#04081c]"],
+[class*="to-[#030514]"],
+[class*="to-[#04071c]"],
+[class*="to-[#03040c]"] {
+  --tw-gradient-to: var(--theme-chat-bg, var(--theme-darkest)) !important;
+}
+
 /* Keep the page viewport fixed while a standard game is open; the game itself retains input and internal scrolling. */
 body:has(#game-player-wrapper:not(.allow-scroll)) {
   overflow: hidden;

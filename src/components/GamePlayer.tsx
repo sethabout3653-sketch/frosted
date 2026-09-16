@@ -408,11 +408,11 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
             <p className="text-[10px] text-neutral-300 font-medium flex items-center gap-1.5">
               <span>{game.author ? `by ${game.author}` : "Classic"}</span>
               {isMod ? (
-                <span className="px-1.5 py-0.2 rounded bg-indigo-500 text-white font-extrabold text-[8px] uppercase tracking-wider">
+                <span className="px-1.5 py-0.2 rounded bg-[var(--theme-indigo-500)] text-white font-extrabold text-[8px] uppercase tracking-wider">
                   FNF Mod
                 </span>
               ) : isFnf ? (
-                <span className="px-1.5 py-0.2 rounded bg-black/50 text-indigo-200 border border-white/10 font-extrabold text-[8px] uppercase tracking-wider">
+                <span className="px-1.5 py-0.2 rounded bg-black/50 text-[var(--theme-indigo-200)] border border-white/10 font-extrabold text-[8px] uppercase tracking-wider">
                   FNF
                 </span>
               ) : null}
@@ -430,7 +430,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
             <RefreshCw size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Reload</span>
           </button>
-          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-indigo-500 hover:bg-indigo-600 px-3 text-xs font-extrabold text-white shadow-md transition-all" title="Fullscreen">
+          <button id="player-fullscreen-btn" onClick={handleFullscreen} className="flex h-8 items-center justify-center rounded-lg bg-[var(--theme-indigo-500)] hover:bg-[var(--theme-indigo-600)] px-3 text-xs font-extrabold text-white shadow-md transition-all cursor-pointer" title="Fullscreen">
             <Maximize2 size={13} className="mr-0 sm:mr-1.5" />
             <span className="hidden sm:inline">Fullscreen</span>
           </button>
@@ -497,12 +497,12 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
                   filter: "blur(10px)",
                   transition: { duration: 0.35, ease: "easeInOut" },
                 }}
-                className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#020410]/95 backdrop-blur-md rounded-2xl select-none"
+                className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[var(--theme-darkest)]/95 backdrop-blur-md rounded-2xl select-none"
               >
                 <div className="relative flex items-center justify-center w-20 h-20 mb-4">
-                  <div className="absolute inset-0 rounded-full border border-indigo-500/30 border-t-cyan-400 animate-spin" />
-                  <div className="absolute inset-1.5 rounded-full border border-dashed border-indigo-400/40 animate-spin [animation-duration:5s] [animation-direction:reverse]" />
-                  <div className="w-12 h-12 rounded-2xl bg-[#091238] border border-indigo-500/50 flex items-center justify-center shadow-xl shadow-indigo-950/80">
+                  <div className="absolute inset-0 rounded-full border border-[var(--theme-border)] border-t-cyan-400 animate-spin" />
+                  <div className="absolute inset-1.5 rounded-full border border-dashed border-[var(--theme-border-strong)] animate-spin [animation-duration:5s] [animation-direction:reverse]" />
+                  <div className="w-12 h-12 rounded-2xl bg-[var(--theme-surface)] border border-[var(--theme-border-strong)] flex items-center justify-center shadow-xl shadow-[var(--theme-darkest)]">
                     <Gamepad2 size={24} className="text-cyan-300 animate-pulse" />
                   </div>
                 </div>
@@ -511,7 +511,7 @@ export default function GamePlayer({ game, onBack }: GamePlayerProps) {
                 </h3>
                 <div className="flex items-center gap-2 mt-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-                  <span className="text-[10px] font-mono text-indigo-300/80 tracking-widest uppercase">
+                  <span className="text-[10px] font-mono text-[var(--theme-text-muted)] tracking-widest uppercase">
                     ESTABLISHING SESSION • SYNCING
                   </span>
                 </div>

@@ -22,12 +22,12 @@ export default function ActivityBadge({
     const title = gameName ? `Playing ${gameName}` : text || "Playing Game";
     return (
       <div
-        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-indigo-950/80 border border-indigo-500/40 text-indigo-200 font-semibold shadow-sm ${
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[var(--theme-indigo-950)] border border-[var(--theme-border)] text-[var(--theme-text-accent)] font-semibold shadow-sm ${
           compact ? "text-[10px]" : "text-xs"
         } ${className}`}
         title={title}
       >
-        <Gamepad2 size={compact ? 11 : 13} className="text-indigo-400 animate-pulse flex-shrink-0" />
+        <Gamepad2 size={compact ? 11 : 13} className="text-[var(--theme-indigo-400)] animate-pulse flex-shrink-0" />
         <span className="truncate max-w-[140px] font-bold text-white tracking-wide">
           {title}
         </span>
@@ -58,13 +58,13 @@ export default function ActivityBadge({
     const title = channel ? `In #${channel}` : text || "In Frosted Chat";
     return (
       <div
-        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#0a1540] border border-blue-500/30 text-blue-200 font-medium ${
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[var(--theme-accent)] border border-[var(--theme-border)] text-[var(--theme-text-accent)] font-medium ${
           compact ? "text-[10px]" : "text-xs"
         } ${className}`}
         title={title}
       >
-        <MessageSquare size={compact ? 10 : 12} className="text-blue-400 flex-shrink-0" />
-        <span className="truncate max-w-[140px] text-blue-100">
+        <MessageSquare size={compact ? 10 : 12} className="text-[var(--theme-indigo-400)] flex-shrink-0" />
+        <span className="truncate max-w-[140px] text-[var(--theme-text-accent)]">
           {title}
         </span>
       </div>

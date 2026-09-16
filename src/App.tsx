@@ -12,6 +12,7 @@ import SettingsModal from "./components/SettingsModal";
 import LoadingScreen from "./components/LoadingScreen";
 import { applyTabCloak, getSavedTabCloak } from "./tabCloaks";
 import { useActivityTracker } from "./lib/activity-tracker";
+import { applyTheme, getSavedTheme } from "./utils/theme";
 import localZones from "./zones.json";
 
 const SOUNDBOARD_GAME: Game = {
@@ -86,6 +87,7 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("frosted_background") || "null") || DEFAULT_BACKGROUND; } catch { return DEFAULT_BACKGROUND; }
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isThemeOpen, setIsThemeOpen] = useState(false);
 
   useEffect(() => {
     // Automatically restore saved tab cloak on initial mount
@@ -93,6 +95,9 @@ export default function App() {
     if (saved) {
       applyTabCloak(saved);
     }
+    // Automatically apply saved theme color across the app
+    const savedTheme = getSavedTheme();
+    applyTheme(savedTheme.r, savedTheme.g, savedTheme.b);
   }, []);
 
   useEffect(() => {
@@ -269,6 +274,7 @@ export default function App() {
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenTheme={() => setIsThemeOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -320,7 +326,7 @@ export default function App() {
                   <span>Games ({processedGames.length})</span>
                 </h2>
                 {loadingLive && (
-                  <span className="text-[10px] text-indigo-300/60 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
+                  <span className="text-[10px] text-[var(--theme-text-muted)]/60 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
                     Loading games...
                   </span>
                 )}
@@ -360,16 +366,16 @@ export default function App() {
 
       {/* Footer Branding Area (Home view only) */}
       {currentView === "home" && (
-        <footer id="app-footer" className="border-t border-indigo-950/40 bg-[#040616] px-4 py-6 md:px-8 text-center text-xs text-indigo-300/60">
+        <footer id="app-footer" className="border-t border-[var(--theme-border-subtle)] bg-[var(--theme-darkest)] px-4 py-6 md:px-8 text-center text-xs text-[var(--theme-text-muted)] transition-colors duration-200">
           <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="font-medium text-neutral-300">
               &copy; 2026 FrostedStudying. Fast, unblocked browser games library.
             </p>
-            <div className="flex flex-wrap gap-4 font-semibold text-indigo-300/80">
+            <div className="flex flex-wrap gap-4 font-semibold text-[var(--theme-text-accent)]">
               <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
                 Community
               </a>
-              <span className="text-indigo-950">|</span>
+              <span className="text-[var(--theme-border-subtle)]">|</span>
               <a href="https://github.com/gn-math" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
                 GN-Math
               </a>
@@ -377,8 +383,20 @@ export default function App() {
           </div>
         </footer>
       )}
-  <BackgroundEditor background={background} onChange={setBackground} />
-  <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+  <BackgroundEditor
+    background={background}
+    onChange={setBackground}
+    isOpen={isThemeOpen}
+    onOpenChange={setIsThemeOpen}
+  />
+  <SettingsModal
+    isOpen={isSettingsOpen}
+    onClose={() => setIsSettingsOpen(false)}
+    onOpenTheme={() => {
+      setIsSettingsOpen(false);
+      setIsThemeOpen(true);
+    }}
+  />
   
   </div>
   </>

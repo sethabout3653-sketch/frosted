@@ -1007,15 +1007,32 @@ export default function ChatPanel({
         </div>
       )}
       {/* Center Chat View matching Image 2 */}
-      <div className="flex-1 flex flex-col min-w-0 h-full bg-[#03040c]">
+      <div
+        style={{ backgroundColor: "var(--theme-chat-bg)" }}
+        className="flex-1 flex flex-col min-w-0 h-full"
+      >
         {/* Chat Header Bar */}
-        <div className="h-12 px-4 border-b border-indigo-950/50 bg-[#04071c] flex items-center justify-between flex-shrink-0">
+        <div
+          style={{
+            backgroundColor: "var(--theme-surface)",
+            borderColor: "var(--theme-border-subtle)",
+          }}
+          className="h-12 px-4 border-b flex items-center justify-between flex-shrink-0"
+        >
           <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-indigo-400">#</span>
+            <span
+              style={{ color: "var(--theme-text-accent)" }}
+              className="text-xl font-bold"
+            >
+              #
+            </span>
             <span className="text-sm font-bold text-white tracking-wide">
               {activeChannel}
             </span>
-            <span className="text-xs text-indigo-300/60 font-normal hidden sm:inline ml-1">
+            <span
+              style={{ color: "var(--theme-text-muted)" }}
+              className="text-xs font-normal hidden sm:inline ml-1 opacity-80"
+            >
               main room
             </span>
           </div>
@@ -1023,13 +1040,20 @@ export default function ChatPanel({
           <div className="flex items-center gap-2">
             {/* Search Bar */}
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-indigo-400/60" />
+              <Search
+                style={{ color: "var(--theme-text-muted)" }}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5"
+              />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search messages"
-                className="h-8 w-32 sm:w-44 bg-[#070e2f]/90 border border-indigo-900/40 rounded-md pl-8 pr-3 text-xs text-white placeholder-indigo-300/40 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all duration-150"
+                style={{
+                  backgroundColor: "var(--theme-darkest)",
+                  borderColor: "var(--theme-border-subtle)",
+                }}
+                className="h-8 w-32 sm:w-44 border rounded-md pl-8 pr-3 text-xs text-white placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-[var(--theme-border-strong)] transition-all duration-150"
               />
             </div>
 
@@ -1037,11 +1061,12 @@ export default function ChatPanel({
             {setShowMembersSidebar && (
               <button
                 onClick={() => setShowMembersSidebar((prev) => !prev)}
-                className={`p-1.5 rounded-md transition-all duration-150 active:scale-95 ${
-                  showMembersSidebar
-                    ? "bg-indigo-950/70 text-indigo-200 border border-indigo-800/40 shadow-sm"
-                    : "text-neutral-400 hover:bg-[#070e2f] hover:text-white"
-                }`}
+                style={{
+                  backgroundColor: showMembersSidebar ? "var(--theme-accent)" : "transparent",
+                  borderColor: showMembersSidebar ? "var(--theme-border-strong)" : "transparent",
+                  color: showMembersSidebar ? "#ffffff" : "var(--theme-text-muted)",
+                }}
+                className="p-1.5 rounded-md border transition-all duration-150 active:scale-95 hover:text-white"
                 title="Toggle Member List"
               >
                 <Users size={18} />
@@ -1329,15 +1354,30 @@ export default function ChatPanel({
         )}
 
         {/* Bottom Message Input Bar matching Image 2 */}
-        <div className="px-4 pt-3 pb-2 sm:pb-2.5 bg-[#03040c] border-t border-indigo-950/50 flex-shrink-0">
+        <div
+          style={{
+            backgroundColor: "var(--theme-chat-bg)",
+            borderColor: "var(--theme-border-subtle)",
+          }}
+          className="px-4 pt-3 pb-2 sm:pb-2.5 border-t flex-shrink-0"
+        >
           {typingUsers.length > 0 && (
-            <div className="flex items-center gap-2 text-xs text-indigo-300/80 mb-2 pl-2 animate-in fade-in duration-150">
+            <div
+              style={{ color: "var(--theme-text-muted)" }}
+              className="flex items-center gap-2 text-xs mb-2 pl-2 animate-in fade-in duration-150"
+            >
               <div className="flex items-center gap-1">
                 <span className="relative flex h-1.5 w-1.5 mr-1">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
+                  <span
+                    style={{ backgroundColor: "var(--theme-accent)" }}
+                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                  />
+                  <span
+                    style={{ backgroundColor: "var(--theme-text-accent)" }}
+                    className="relative inline-flex rounded-full h-1.5 w-1.5"
+                  />
                 </span>
-                <span className="font-bold text-indigo-200">
+                <span style={{ color: "var(--theme-text-accent)" }} className="font-bold">
                   {typingUsers.length <= 3 
                     ? typingUsers.map((u) => u.username).join(", ") 
                     : "Several people"}
@@ -1349,7 +1389,11 @@ export default function ChatPanel({
           <form
             onSubmit={handleSendMessage}
             onPaste={handlePaste}
-            className="bg-[#070c28]/95 border border-indigo-950/70 rounded-xl px-4 py-2.5 flex items-center gap-3 focus-within:border-indigo-600/70 focus-within:ring-1 focus-within:ring-indigo-600/30 transition-all duration-150 shadow-lg shadow-black/40"
+            style={{
+              backgroundColor: "var(--theme-chat-input)",
+              borderColor: "var(--theme-border-subtle)",
+            }}
+            className="border rounded-xl px-4 py-2.5 flex items-center gap-3 transition-all duration-150 shadow-lg shadow-black/40 focus-within:border-[var(--theme-border-strong)]"
           >
             <input
               ref={inputRef}
@@ -1380,7 +1424,7 @@ export default function ChatPanel({
                 }
               }}
               placeholder={isLoadingMessages ? "Loading..." : `Message #${activeChannel}...`}
-              className="flex-1 bg-transparent text-sm text-white placeholder-indigo-300/40 focus:outline-none disabled:opacity-50"
+              className="flex-1 bg-transparent text-sm text-white placeholder-neutral-400 focus:outline-none disabled:opacity-50"
             />
 
             {/* Action Tools: File, GIF, Send */}
@@ -1389,7 +1433,8 @@ export default function ChatPanel({
                 type="button"
                 disabled={isLoadingMessages}
                 onClick={() => fileInputRef.current?.click()}
-                className="text-indigo-300/70 hover:text-white p-1.5 rounded-lg hover:bg-indigo-950/40 transition-colors duration-150 disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer active:scale-90"
+                style={{ color: "var(--theme-text-muted)" }}
+                className="hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors duration-150 disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer active:scale-90"
                 title="Attach Any File"
               >
                 <Plus size={18} />
@@ -1406,11 +1451,12 @@ export default function ChatPanel({
                 type="button"
                 disabled={isLoadingMessages}
                 onClick={() => setShowGiphy(!showGiphy)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold tracking-wider transition-all duration-150 disabled:opacity-40 cursor-pointer active:scale-95 ${
-                  showGiphy
-                    ? "bg-[#182d82] text-white border border-indigo-400 shadow-md shadow-indigo-950"
-                    : "bg-[#0b143c] hover:bg-[#122060] border border-indigo-800/60 text-indigo-200 hover:text-white"
-                }`}
+                style={{
+                  backgroundColor: showGiphy ? "var(--theme-accent)" : "var(--theme-hover)",
+                  borderColor: showGiphy ? "var(--theme-border-strong)" : "var(--theme-border-subtle)",
+                  color: showGiphy ? "#ffffff" : "var(--theme-text-accent)",
+                }}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold tracking-wider transition-all duration-150 disabled:opacity-40 cursor-pointer active:scale-95 border"
                 title="Choose GIF"
               >
                 GIF
@@ -1419,7 +1465,12 @@ export default function ChatPanel({
               <button
                 type="submit"
                 disabled={isLoadingMessages || (!text.trim() && !attachment) || isUploading}
-                className="p-2 rounded-lg bg-[#0e1b52] hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-700/50 hover:border-indigo-500 disabled:opacity-40 disabled:hover:bg-[#0e1b52] disabled:hover:border-indigo-700/50 transition-all duration-150 ml-1 cursor-pointer active:scale-90"
+                style={{
+                  backgroundColor: "var(--theme-accent)",
+                  borderColor: "var(--theme-border)",
+                  color: "#ffffff",
+                }}
+                className="p-2 rounded-lg hover:brightness-110 border disabled:opacity-40 transition-all duration-150 ml-1 cursor-pointer active:scale-90"
                 title="Send Message"
               >
                 <Send size={15} />
@@ -1431,7 +1482,13 @@ export default function ChatPanel({
 
       {/* Right Members Sidebar ("ONLINE — N" & "OFFLINE / LEFT — N") matching Image 2 */}
       {showMembersSidebar && (
-        <aside className="w-56 bg-[#040614] border-l border-indigo-950/40 flex flex-col h-full flex-shrink-0">
+        <aside
+          style={{
+            backgroundColor: "var(--theme-chat-sidebar)",
+            borderColor: "var(--theme-border-subtle)",
+          }}
+          className="w-56 border-l flex flex-col h-full flex-shrink-0"
+        >
           <div className="flex-1 overflow-y-auto p-3 space-y-5">
             {/* ONLINE SECTION */}
             <div>
