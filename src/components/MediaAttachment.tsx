@@ -4,7 +4,6 @@ import {
   Pause,
   Volume2,
   VolumeX,
-  Maximize2,
   Download,
   FileText,
   FileCode,
@@ -321,142 +320,87 @@ export default function MediaAttachment({
   // 2. Video Attachment
   if (effectiveType === "video") {
     return (
-      <>
-        <div className="mt-2.5 max-w-md w-full rounded-2xl overflow-hidden border border-neutral-800/90 bg-neutral-950/80 shadow-xl group">
-          {/* Header with Title & Download */}
-          <div className="px-3.5 py-2 bg-neutral-900/90 border-b border-neutral-800/80 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-5 h-5 rounded-md bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 flex-shrink-0">
-                <Film size={12} />
-              </div>
-              <span className="text-xs font-semibold text-neutral-200 truncate" title={displayName}>
-                {displayName}
+      <div className="mt-2.5 max-w-md w-full rounded-2xl overflow-hidden border border-neutral-800/90 bg-neutral-950/80 shadow-xl group">
+        {/* Header with Title & Download */}
+        <div className="px-3.5 py-2 bg-neutral-900/90 border-b border-neutral-800/80 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-5 h-5 rounded-md bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 flex-shrink-0">
+              <Film size={12} />
+            </div>
+            <span className="text-xs font-semibold text-neutral-200 truncate" title={displayName}>
+              {displayName}
+            </span>
+            {ext && (
+              <span className="px-1.5 py-0.5 rounded bg-neutral-800 text-[9px] font-mono font-bold text-neutral-400">
+                {ext}
               </span>
-              {ext && (
-                <span className="px-1.5 py-0.5 rounded bg-neutral-800 text-[9px] font-mono font-bold text-neutral-400">
-                  {ext}
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              <button
-                onClick={() => setShowModal(true)}
-                className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-colors border border-neutral-700/60"
-                title="Theater mode / Fullscreen"
-              >
-                <Maximize2 size={13} />
-              </button>
-              <button
-                onClick={handleDownloadClick}
-                disabled={isDownloading}
-                className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white transition-all border border-neutral-700/60 shadow-sm flex items-center gap-1.5 text-xs font-medium"
-                title="Download video file"
-              >
-                {isDownloading ? (
-                  <Loader2 size={13} className="animate-spin text-indigo-400" />
-                ) : downloadSuccess ? (
-                  <>
-                    <Check size={13} className="text-indigo-400" />
-                    <span className="text-[11px] text-indigo-400">Saved</span>
-                  </>
-                ) : (
-                  <>
-                    <Download size={13} />
-                    <span className="text-[11px]">Download</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Embedded Video Player */}
-          <div className="relative bg-black flex items-center justify-center min-h-[160px]">
-            <video
-              ref={videoRef}
-              src={displayUrl}
-              controls
-              playsInline
-              preload="metadata"
-              onError={() => setVideoError(true)}
-              className="w-full max-h-[380px] object-contain rounded-b-xl"
-            />
-
-            {videoError && (
-              <div className="absolute inset-0 bg-neutral-950/95 flex flex-col items-center justify-center p-4 text-center gap-2.5">
-                <Film size={28} className="text-neutral-500" />
-                <div>
-                  <p className="text-xs font-semibold text-neutral-300">
-                    Video format requires external player
-                  </p>
-                  <p className="text-[11px] text-neutral-500 mt-0.5">
-                    Download file to watch in your preferred video application
-                  </p>
-                </div>
-                <button
-                  onClick={handleDownloadClick}
-                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors shadow-md"
-                >
-                  <Download size={13} />
-                  Download Video ({ext})
-                </button>
-              </div>
             )}
           </div>
 
-          {size ? (
-            <div className="px-3.5 py-1.5 bg-neutral-950 text-[10px] text-neutral-500 border-t border-neutral-900 font-mono">
-              Size: {formatFileSize(size)}
-            </div>
-          ) : null}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              onClick={handleDownloadClick}
+              disabled={isDownloading}
+              className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white transition-all border border-neutral-700/60 shadow-sm flex items-center gap-1.5 text-xs font-medium cursor-pointer"
+              title="Download video file"
+            >
+              {isDownloading ? (
+                <Loader2 size={13} className="animate-spin text-indigo-400" />
+              ) : downloadSuccess ? (
+                <>
+                  <Check size={13} className="text-indigo-400" />
+                  <span className="text-[11px] text-indigo-400">Saved</span>
+                </>
+              ) : (
+                <>
+                  <Download size={13} />
+                  <span className="text-[11px]">Download</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Fullscreen Video Theater Modal */}
-        {showModal && (
-          <div
-            className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-in fade-in duration-200"
-            onClick={() => setShowModal(false)}
-          >
-            <div
-              className="relative w-full max-w-4xl bg-neutral-950 border border-neutral-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-4 py-3 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Film size={16} className="text-indigo-400" />
-                  <span className="text-sm font-bold text-white truncate">
-                    {displayName}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleDownloadClick}
-                    className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-medium flex items-center gap-1.5 transition-colors border border-neutral-700"
-                  >
-                    <Download size={14} />
-                    Download Video
-                  </button>
-                  <button
-                    onClick={() => setShowModal(false)}
-                    className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-colors border border-neutral-700"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
+        {/* Embedded Video Player with Native Fullscreen Controls */}
+        <div className="relative bg-black flex items-center justify-center min-h-[160px]">
+          <video
+            ref={videoRef}
+            src={displayUrl}
+            controls
+            playsInline
+            preload="metadata"
+            onError={() => setVideoError(true)}
+            className="w-full max-h-[380px] object-contain rounded-b-xl"
+          />
+
+          {videoError && (
+            <div className="absolute inset-0 bg-neutral-950/95 flex flex-col items-center justify-center p-4 text-center gap-2.5">
+              <Film size={28} className="text-neutral-500" />
+              <div>
+                <p className="text-xs font-semibold text-neutral-300">
+                  Video format requires external player
+                </p>
+                <p className="text-[11px] text-neutral-500 mt-0.5">
+                  Download file to watch in your preferred video application
+                </p>
               </div>
-              <div className="bg-black flex items-center justify-center max-h-[75vh]">
-                <video
-                  src={displayUrl}
-                  controls
-                  autoPlay
-                  playsInline
-                  className="w-full max-h-[70vh] object-contain"
-                />
-              </div>
+              <button
+                onClick={handleDownloadClick}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors shadow-md"
+              >
+                <Download size={13} />
+                Download Video ({ext})
+              </button>
             </div>
+          )}
+        </div>
+
+        {size ? (
+          <div className="px-3.5 py-1.5 bg-neutral-950 text-[10px] text-neutral-500 border-t border-neutral-900 font-mono">
+            Size: {formatFileSize(size)}
           </div>
-        )}
-      </>
+        ) : null}
+      </div>
     );
   }
 
