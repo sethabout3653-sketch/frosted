@@ -65,9 +65,10 @@ interface MemberUser {
 
 let globalMessagesCache: ChatMessage[] = [];
 let globalMessagesLoaded = false;
-const CACHE_KEY = "lumos_chat_messages_v4";
+const CACHE_KEY = "lumos_chat_messages_v5";
 
 try {
+  localStorage.removeItem("lumos_chat_messages_v4");
   localStorage.removeItem("lumos_chat_messages_v3");
   localStorage.removeItem("lumos_chat_messages_v2");
   localStorage.removeItem("lumos_chat_messages_v1");
@@ -1377,7 +1378,7 @@ export default function ChatPanel({
                       {emoji}
                     </button>
                   ))}
-                  {isMe && (
+                  {(isMe || msg.uid === "ai-assistant" || msg.username === "AI Assistant" || msg.uid?.startsWith("ai")) && (
                     <button
                       onClick={() => handleDeleteMessage(msg.id)}
                       className="p-1.5 text-neutral-400 hover:text-red-400 hover:bg-[#0e1b56] rounded transition-colors duration-150 cursor-pointer ml-1 border-l border-indigo-950/60 active:scale-90"
