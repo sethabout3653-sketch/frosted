@@ -242,18 +242,18 @@ export default function BackgroundEditor({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Edit Theme & Colors"
-        title="Theme & Color Wheel (Click to customize whole app theme)"
-        className="fixed bottom-5 left-5 z-30 flex h-11 px-3 items-center gap-2 rounded-xl border border-white/20 bg-black/75 text-white shadow-2xl backdrop-blur-xl transition-all hover:bg-black/90 hover:scale-105 active:scale-95 cursor-pointer group"
+        aria-label="Customize theme"
+        title="Customize theme"
+        className="fixed bottom-5 left-5 z-30 flex h-10 px-3.5 items-center gap-2 rounded-xl border border-white/15 bg-[#121420]/90 text-white shadow-xl backdrop-blur-md transition-all hover:bg-[#181b2c] hover:border-white/25 active:scale-95 cursor-pointer group"
       >
         <div
-          className="w-4 h-4 rounded-full border border-white/70 shadow-sm flex-shrink-0 group-hover:rotate-45 transition-transform duration-300"
+          className="w-3.5 h-3.5 rounded-full border border-white/60 shadow-sm flex-shrink-0"
           style={{
             background:
-              "conic-gradient(from 0deg, #00ffff, #00ff66, #80ff00, #ffff00, #ff0000, #ff00ff, #0000ff, #00ffff)",
+              "conic-gradient(from 0deg, #38bdf8, #818cf8, #c084fc, #f472b6, #fb7185, #f59e0b, #34d399, #38bdf8)",
           }}
         />
-        <span className="text-xs font-bold tracking-wide">Theme</span>
+        <span className="text-xs font-semibold tracking-normal text-neutral-200 group-hover:text-white">Theme</span>
       </button>
 
       <AnimatePresence>
@@ -262,33 +262,33 @@ export default function BackgroundEditor({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-4 sm:items-center backdrop-blur-sm"
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-4 sm:items-center backdrop-blur-sm"
             onClick={() => setOpen(false)}
           >
             <motion.section
               role="dialog"
               aria-modal="true"
               aria-labelledby="background-editor-title"
-              initial={{ opacity: 0, scale: 0.97, y: 8 }}
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.97, y: 8 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-              className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0e0e14] p-5 sm:p-6 text-white shadow-2xl custom-scrollbar"
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#121420] p-5 sm:p-6 text-white shadow-2xl custom-scrollbar"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
               <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
                 <div className="flex items-center gap-2.5">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-indigo-500 to-pink-500 shadow-md">
-                    <Sparkles size={16} className="text-white" />
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-400">
+                    <Palette size={16} />
                   </div>
                   <div>
-                    <h2 id="background-editor-title" className="text-sm font-bold tracking-tight text-white">
-                      App Theme & Color Picker
+                    <h2 id="background-editor-title" className="text-sm font-semibold tracking-tight text-white">
+                      Theme & Appearance
                     </h2>
-                    <p className="text-[11px] text-neutral-400">
-                      Changes the background & all navy blue elements across the entire app
+                    <p className="text-xs text-neutral-400">
+                      Personalize your background and accent colors
                     </p>
                   </div>
                 </div>
@@ -296,7 +296,7 @@ export default function BackgroundEditor({
                   type="button"
                   onClick={() => setOpen(false)}
                   className="rounded-lg p-1.5 text-neutral-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-                  aria-label="Close background editor"
+                  aria-label="Close theme editor"
                 >
                   <X size={16} />
                 </button>
@@ -304,7 +304,7 @@ export default function BackgroundEditor({
 
               <div className="flex flex-col gap-4">
                 {/* Main Color Picker Card */}
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                <div className="rounded-xl border border-white/10 bg-black/30 p-4">
                   {/* Top Bar: Selector Tabs & Glow/Solid Switch */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3.5">
                     {/* Picker Type: Wheel vs Sliders */}
@@ -312,7 +312,7 @@ export default function BackgroundEditor({
                       <button
                         type="button"
                         onClick={() => setPickerTab("wheel")}
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition-all cursor-pointer ${
                           pickerTab === "wheel"
                             ? "bg-white/20 text-white shadow-sm"
                             : "text-neutral-400 hover:text-white"
@@ -324,7 +324,7 @@ export default function BackgroundEditor({
                       <button
                         type="button"
                         onClick={() => setPickerTab("sliders")}
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md font-medium transition-all cursor-pointer ${
                           pickerTab === "sliders"
                             ? "bg-white/20 text-white shadow-sm"
                             : "text-neutral-400 hover:text-white"
@@ -336,16 +336,16 @@ export default function BackgroundEditor({
                     </div>
 
                     {/* Mode Switcher: Glow vs Solid */}
-                    <div className="flex rounded-lg bg-white/5 p-0.5 border border-white/10 text-[11px]">
+                    <div className="flex rounded-lg bg-white/5 p-0.5 border border-white/10 text-xs">
                       <button
                         type="button"
                         onClick={() => applyColor(r, g, b, "glow")}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded font-medium transition-all cursor-pointer ${
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-all cursor-pointer ${
                           colorMode === "glow"
                             ? "bg-indigo-600 text-white shadow-sm"
                             : "text-neutral-400 hover:text-neutral-200"
                         }`}
-                        title="Ambient Radial Glow (like default navy blue)"
+                        title="Ambient radial glow"
                       >
                         <SunMedium size={12} />
                         <span>Glow</span>
@@ -353,12 +353,12 @@ export default function BackgroundEditor({
                       <button
                         type="button"
                         onClick={() => applyColor(r, g, b, "solid")}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded font-medium transition-all cursor-pointer ${
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-all cursor-pointer ${
                           colorMode === "solid"
                             ? "bg-indigo-600 text-white shadow-sm"
                             : "text-neutral-400 hover:text-neutral-200"
                         }`}
-                        title="Full Solid Background"
+                        title="Solid background"
                       >
                         <Paintbrush size={12} />
                         <span>Solid</span>
@@ -366,7 +366,7 @@ export default function BackgroundEditor({
                     </div>
                   </div>
 
-                  {/* Tab 1: Circular Chromatic Color Wheel (matching the uploaded image) */}
+                  {/* Tab 1: Circular Chromatic Color Wheel */}
                   {pickerTab === "wheel" && (
                     <div className="py-2 flex flex-col items-center">
                       <ColorWheel
@@ -382,7 +382,7 @@ export default function BackgroundEditor({
                     <div className="space-y-3 py-2">
                       {/* Red Slider */}
                       <div className="flex items-center gap-2.5">
-                        <span className="w-4 text-xs font-bold text-red-400">R</span>
+                        <span className="w-4 text-xs font-semibold text-red-400">R</span>
                         <input
                           type="range"
                           min={0}
@@ -403,7 +403,7 @@ export default function BackgroundEditor({
 
                       {/* Green Slider */}
                       <div className="flex items-center gap-2.5">
-                        <span className="w-4 text-xs font-bold text-emerald-400">G</span>
+                        <span className="w-4 text-xs font-semibold text-emerald-400">G</span>
                         <input
                           type="range"
                           min={0}
@@ -424,7 +424,7 @@ export default function BackgroundEditor({
 
                       {/* Blue Slider */}
                       <div className="flex items-center gap-2.5">
-                        <span className="w-4 text-xs font-bold text-blue-400">B</span>
+                        <span className="w-4 text-xs font-semibold text-blue-400">B</span>
                         <input
                           type="range"
                           min={0}
@@ -457,30 +457,30 @@ export default function BackgroundEditor({
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                        <span className="text-xs font-mono font-semibold text-white uppercase tracking-wider">
                           {currentHex}
                         </span>
                         <span className="text-[10px] font-mono text-neutral-400">
                           RGB({r}, {g}, {b})
                         </span>
                       </div>
-                      <div className="text-[10px] text-neutral-400 truncate">
-                        {isDefaultNavy ? "Default Navy Blue active" : "Custom theme applied to entire app"}
+                      <div className="text-[11px] text-neutral-400 truncate">
+                        {isDefaultNavy ? "Midnight Navy (Default)" : "Custom color active"}
                       </div>
                     </div>
                     <input
                       type="color"
                       value={currentHex}
                       onChange={(e) => handleHexChange(e.target.value)}
-                      title="Native Color Picker"
+                      title="Choose custom color"
                       className="h-8 w-8 cursor-pointer rounded-md bg-transparent border border-white/10"
                     />
                   </div>
 
-                  {/* Quick Color Swatches */}
+                  {/* Popular Color Swatches */}
                   <div className="mt-3 pt-3 border-t border-white/10">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 mb-2">
-                      Quick Color Swatches
+                    <p className="text-[11px] font-medium text-neutral-400 mb-2">
+                      Popular colors
                     </p>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                       {COLOR_PRESETS.map((preset) => {
@@ -490,10 +490,10 @@ export default function BackgroundEditor({
                             key={preset.name}
                             type="button"
                             onClick={() => applyColor(preset.r, preset.g, preset.b, colorMode)}
-                            title={`${preset.name} (R:${preset.r} G:${preset.g} B:${preset.b})`}
-                            className={`flex items-center gap-2 p-1.5 rounded-lg border text-left text-[11px] transition-all cursor-pointer ${
+                            title={`${preset.name}`}
+                            className={`flex items-center gap-2 p-1.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
                               isSelected
-                                ? "border-white bg-white/20 text-white font-bold ring-1 ring-white/30"
+                                ? "border-white/80 bg-white/20 text-white font-medium shadow-sm"
                                 : "border-white/10 bg-white/5 text-neutral-300 hover:border-white/20 hover:text-white"
                             }`}
                           >
@@ -509,10 +509,10 @@ export default function BackgroundEditor({
                   </div>
                 </div>
 
-                {/* Preset Ambient Gradient Themes */}
+                {/* Preset Themes */}
                 <div>
-                  <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest text-neutral-400">
-                    Curated Gradient Themes
+                  <p className="mb-2 text-xs font-medium text-neutral-400">
+                    Themes
                   </p>
                   <div className="grid grid-cols-4 gap-2">
                     {THEME_PRESETS.map((preset) => (
@@ -552,24 +552,24 @@ export default function BackgroundEditor({
                   <div className="flex items-center gap-2.5">
                     <ImagePlus size={16} className="text-indigo-400" />
                     <div className="flex flex-col">
-                      <span className="font-bold">Custom Image Background</span>
-                      <span className="text-[10px] text-neutral-400">Upload your own wallpaper or picture</span>
+                      <span className="font-medium text-white">Custom wallpaper</span>
+                      <span className="text-[11px] text-neutral-400">Upload your own photo or picture</span>
                     </div>
                   </div>
                 </button>
                 <input ref={inputRef} type="file" accept="image/*" onChange={handleImage} className="sr-only" />
 
-                {/* Reset to Default (Midnight Navy) */}
+                {/* Reset to Default */}
                 <button
                   type="button"
                   onClick={() => {
                     updateBackground(DEFAULT_BACKGROUND);
                     applyColor(DEFAULT_NAVY_THEME.r, DEFAULT_NAVY_THEME.g, DEFAULT_NAVY_THEME.b, "glow");
                   }}
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] py-2.5 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white transition-all cursor-pointer"
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] py-2.5 text-xs font-medium text-neutral-300 hover:bg-white/[0.06] hover:text-white transition-all cursor-pointer"
                 >
                   <RotateCcw size={13} />
-                  <span>Reset to Default (Midnight Navy)</span>
+                  <span>Reset to default theme</span>
                 </button>
               </div>
             </motion.section>

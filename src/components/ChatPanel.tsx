@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   db,
   collection,
@@ -39,6 +40,7 @@ import {
   ShieldAlert,
   AlertTriangle,
   Ban,
+  Upload,
 } from "lucide-react";
 
 import GiphyPicker from "./GiphyPicker";
@@ -141,11 +143,15 @@ export default function ChatPanel({
     mediaType?: string;
   } | null>(null);
 
-  const showModerationAlert = (title: string, reason: string, mediaType?: string) => {
+  const showModerationAlert = (
+    title?: string, 
+    reason?: string, 
+    mediaType?: string
+  ) => {
     setModerationWarning({
       open: true,
-      title,
-      reason: reason || "Inappropriate language, explicit visuals, profanity, or harmful content detected.",
+      title: title || "Hold on a second",
+      reason: reason || "Your message contains language or content that doesn't follow community guidelines. Please adjust your message and try again.",
       mediaType,
     });
   };
@@ -632,13 +638,22 @@ export default function ChatPanel({
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
+    if (isUploading || (currentAttachment && currentAttachment.startsWith("blob:"))) {
+      showModerationAlert(
+        "Still uploading",
+        "Please wait a moment for your file to finish uploading before sending.",
+        currentType || undefined
+      );
+      return;
+    }
+
     // Strict moderation check for text content
     if (currentText) {
       const textCheck = checkTextModeration(currentText);
       if (!textCheck.safe) {
         showModerationAlert(
-          "Message Blocked by Moderation",
-          textCheck.reason || "Your message contains prohibited slurs, curse words, or sexual terms. (Note: 'damn' and 'hell' are permitted).",
+          "Can't send this message",
+          textCheck.reason || "Your message contains words that aren't allowed in chat. Please edit it and try again.",
           currentType || undefined
         );
         return;
@@ -650,8 +665,8 @@ export default function ChatPanel({
       const nameCheck = checkTextModeration(currentName);
       if (!nameCheck.safe) {
         showModerationAlert(
-          "Attachment Blocked by Moderation",
-          nameCheck.reason || "The attachment name contains prohibited language.",
+          "Can't send this file",
+          nameCheck.reason || "The file name contains words that aren't allowed.",
           currentType || undefined
         );
         return;
@@ -751,8 +766,8 @@ export default function ChatPanel({
             // Unsafe content or title detected
             setMessages((prev) => prev.filter((m) => m.id !== msgId));
             showModerationAlert(
-              "Message Blocked by AI Moderation",
-              modData.reason || "Inappropriate text, video, audio, or visual content detected.",
+              "Can't send this message",
+              modData.reason || "This content doesn't meet our community guidelines. Please adjust it and try again.",
               currentType || undefined
             );
             return;
@@ -778,8 +793,8 @@ export default function ChatPanel({
       const titleCheck = checkTextModeration(gifTitle);
       if (!titleCheck.safe) {
         showModerationAlert(
-          "GIF Blocked by Moderation",
-          titleCheck.reason || "The selected GIF title contains prohibited language.",
+          "Can't send this GIF",
+          titleCheck.reason || "This GIF contains words that aren't allowed in chat. Please choose a different one.",
           "image/gif"
         );
         return;
@@ -840,8 +855,8 @@ export default function ChatPanel({
             // Unsafe GIF or GIF title detected
             setMessages((prev) => prev.filter((m) => m.id !== msgId));
             showModerationAlert(
-              "GIF Blocked by AI Moderation",
-              modData.reason || "Inappropriate GIF animation or title detected.",
+              "Can't send this GIF",
+              modData.reason || "This GIF doesn't meet our community guidelines. Please pick another one.",
               "image/gif"
             );
             return;
@@ -912,8 +927,8 @@ export default function ChatPanel({
     const nameCheck = checkTextModeration(file.name);
     if (!nameCheck.safe) {
       showModerationAlert(
-        "File Blocked by Moderation",
-        `The file "${file.name}" was blocked: ${nameCheck.reason || "Filename contains prohibited language."}`,
+        "Can't attach this file",
+        `The file "${file.name}" has a name that isn't allowed: ${nameCheck.reason || "Please rename the file and try again."}`,
         file.type
       );
       if (fileInputRef.current) {
@@ -968,37 +983,8 @@ export default function ChatPanel({
       const finalName = resName || file.name || "attachment";
       const finalSize = resSize || file.size || 0;
 
-      // Run immediate pre-moderation on the uploaded/staged file
-      try {
-        const modRes = await fetch("/api/moderate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mediaUrl: finalUrl && !finalUrl.startsWith("blob:") ? finalUrl : undefined,
-            mediaTitle: finalName,
-            mediaType: finalMime,
-            mediaSize: finalSize,
-          }),
-        });
-
-        if (modRes.ok) {
-          const modData = await modRes.json();
-          if (modData && modData.safe === false) {
-            cancelUpload();
-            showModerationAlert(
-              "Attachment Blocked by AI Moderation",
-              modData.reason || `Inappropriate, profane, or harmful content detected in file ("${finalName}").`,
-              finalMime
-            );
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn("Pre-moderation file check skipped due to network notice:", err);
-      }
-
-      if (url) {
-        setAttachment(url);
+      if (finalUrl) {
+        setAttachment(finalUrl);
       }
       setAttachmentType(finalMime);
       setAttachmentName(finalName);
@@ -1009,8 +995,8 @@ export default function ChatPanel({
       if (error?.isModerationBlock || error?.message?.includes("blocked")) {
         cancelUpload();
         showModerationAlert(
-          "Attachment Blocked by AI Moderation",
-          error.reason || error.message || `Inappropriate, explicit, or profane content detected in file ("${file.name}").`,
+          "Can't attach this file",
+          error.reason || error.message || `This file doesn't meet our community guidelines. Please choose a different file.`,
           file.type
         );
         return;
@@ -1177,13 +1163,15 @@ export default function ChatPanel({
       }`}
     >
       {isDragging && (
-        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center border-4 border-dashed border-indigo-500 m-4 rounded-2xl pointer-events-none animate-in fade-in">
-          <div className="p-4 bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl flex flex-col items-center gap-3">
-            <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-400">
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-bounce"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+        <div className="absolute inset-0 bg-black/75 backdrop-blur-sm z-50 flex flex-col items-center justify-center border-2 border-dashed border-indigo-500/60 m-3 rounded-2xl pointer-events-none animate-in fade-in duration-150">
+          <div className="p-6 bg-[#121420] border border-white/10 rounded-2xl shadow-2xl flex flex-col items-center gap-3 text-center max-w-xs">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+              <Upload size={22} className="animate-pulse" />
             </div>
-            <p className="text-sm font-bold text-white">Drop to upload file</p>
-            <p className="text-xs text-neutral-500">Upload video, audio, image, document, or ZIP of any size</p>
+            <div>
+              <p className="text-sm font-semibold text-white">Drop your file here</p>
+              <p className="text-xs text-neutral-400 mt-1">Photos, videos, audio clips, or documents</p>
+            </div>
           </div>
         </div>
       )}
@@ -1301,8 +1289,8 @@ export default function ChatPanel({
           {isLoadingMessages ? (
             <div className="flex flex-col items-center justify-center py-10 opacity-75">
               <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-400 mb-4"></div>
-              <p className="text-neutral-400 text-sm animate-pulse text-center px-4">
-                Wait a second until its done loading... please do not chat or type yet.
+              <p className="text-indigo-200/80 text-sm animate-pulse text-center px-4">
+                Loading messages... getting the chat ready
               </p>
             </div>
           ) : (
@@ -1476,98 +1464,107 @@ export default function ChatPanel({
         )}
 
         {/* Attachment Preview Drawer */}
-        {(attachment || isUploading) && (
-          <div className="p-3 border-t border-indigo-950/40 bg-[#03040c] flex items-center justify-between gap-4 flex-shrink-0 animate-in slide-in-from-bottom duration-200">
-            <div className="flex items-center gap-3 min-w-0 flex-1 max-w-xl">
-              <div className="relative flex-shrink-0">
-                {(() => {
-                  const stagedType = detectMediaType(attachment || "", attachmentType || "", attachmentName || "");
-                  if (stagedType === "image" && attachment && attachment !== "pending") {
+        <AnimatePresence>
+          {(attachment || isUploading) && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              className="p-3 border-t border-white/10 bg-[#0c0e18] flex items-center justify-between gap-4 flex-shrink-0 overflow-hidden"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1 max-w-xl">
+                <div className="relative flex-shrink-0">
+                  {(() => {
+                    const stagedType = detectMediaType(attachment || "", attachmentType || "", attachmentName || "");
+                    if (stagedType === "image" && attachment && attachment !== "pending") {
+                      return (
+                        <img
+                          src={attachment}
+                          alt="Preview"
+                          className="h-11 w-11 object-cover rounded-xl border border-white/10 bg-neutral-900 shadow-sm"
+                        />
+                      );
+                    }
+                    if (stagedType === "video") {
+                      return (
+                        <div className="h-11 w-11 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shadow-sm">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                        </div>
+                      );
+                    }
+                    if (stagedType === "audio") {
+                      return (
+                        <div className="h-11 w-11 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shadow-sm">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                        </div>
+                      );
+                    }
                     return (
-                      <img
-                        src={attachment}
-                        alt="Preview"
-                        className="h-11 w-11 object-cover rounded-lg border border-neutral-800 bg-neutral-950"
-                      />
-                    );
-                  }
-                  if (stagedType === "video") {
-                    return (
-                      <div className="h-11 w-11 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                      <div className="h-11 w-11 rounded-xl bg-neutral-800 border border-white/10 flex items-center justify-center text-neutral-300 shadow-sm">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
                       </div>
                     );
-                  }
-                  if (stagedType === "audio") {
-                    return (
-                      <div className="h-11 w-11 rounded-lg bg-indigo-950/50 border border-indigo-800/40 flex items-center justify-center text-indigo-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="h-11 w-11 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                  })()}
+
+                  {isUploading && (
+                    <div className="absolute -bottom-1 -right-1 bg-indigo-500 text-white rounded-full p-0.5 shadow-md">
+                      <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
                     </div>
-                  );
-                })()}
-
-                {isUploading && (
-                  <div className="absolute -bottom-1 -right-1 bg-indigo-600 text-white rounded-full p-0.5 shadow-md">
-                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="text-xs font-bold text-white truncate">
-                    {attachmentName || uploadingFileInfo?.name || "Attached file"}
-                  </span>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {(attachmentSize || uploadingFileInfo?.size) && (
-                      <span className="text-[11px] text-neutral-400 font-medium">
-                        {formatFileSize(attachmentSize || uploadingFileInfo?.size || 0)}
-                      </span>
-                    )}
-                    {isUploading ? (
-                      <span className="text-[11px] text-indigo-400 font-bold">
-                        {uploadProgress !== null ? `${uploadProgress}%` : "Uploading..."}
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-indigo-300 font-medium bg-[#0b143c] px-1.5 py-0.5 rounded border border-indigo-700/50 shadow-sm">
-                        Ready
-                      </span>
-                    )}
-                  </div>
+                  )}
                 </div>
 
-                {isUploading ? (
-                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
-                    <div 
-                      className="bg-indigo-500 h-1.5 rounded-full transition-all duration-150 ease-out shadow-sm shadow-indigo-500/50"
-                      style={{ width: `${Math.max(5, uploadProgress ?? 5)}%` }}
-                    />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-xs font-semibold text-white truncate">
+                      {attachmentName || uploadingFileInfo?.name || "Attached file"}
+                    </span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {(attachmentSize || uploadingFileInfo?.size) && (
+                        <span className="text-[11px] text-neutral-400 font-medium">
+                          {formatFileSize(attachmentSize || uploadingFileInfo?.size || 0)}
+                        </span>
+                      )}
+                      {isUploading ? (
+                        <span className="text-[11px] text-indigo-400 font-medium">
+                          {uploadProgress !== null ? `${Math.round(uploadProgress)}%` : "Uploading..."}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-emerald-300 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                          Ready
+                        </span>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <p className="text-[11px] text-neutral-500 truncate">Press Enter or click Send to share</p>
-                )}
-              </div>
-            </div>
 
-            <button
-              type="button"
-              onClick={cancelUpload}
-              title={isUploading ? "Cancel upload" : "Remove attachment"}
-              className="p-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 transition-colors flex-shrink-0 cursor-pointer"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
+                  {isUploading ? (
+                    <div className="w-full bg-neutral-800 rounded-full h-1.5 overflow-hidden">
+                      <div 
+                        className="bg-indigo-500 h-1.5 rounded-full transition-all duration-150 ease-out"
+                        style={{ width: `${Math.max(5, uploadProgress ?? 5)}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-neutral-400 truncate">Ready to send with your message</p>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={cancelUpload}
+                title={isUploading ? "Cancel upload" : "Remove file"}
+                aria-label={isUploading ? "Cancel upload" : "Remove file"}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-white border border-white/10 transition-colors flex-shrink-0 cursor-pointer"
+              >
+                <X size={15} />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Bottom Message Input Bar matching Image 2 */}
         <div
@@ -1793,47 +1790,51 @@ export default function ChatPanel({
         </aside>
       )}
 
-      {/* 🛡️ AI Moderation Warning Shield Modal */}
-      {moderationWarning && moderationWarning.open && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="relative w-full max-w-md bg-[#0b0d17] border border-red-500/40 rounded-3xl p-6 shadow-2xl shadow-red-950/80 overflow-hidden text-white flex flex-col items-center text-center">
-            {/* Top red alert bar */}
-            <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-red-600 via-rose-500 to-amber-500" />
-            
-            <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 mb-4 shadow-inner">
-              <ShieldAlert size={38} className="animate-pulse" />
-            </div>
-
-            <h3 className="text-lg font-black text-white tracking-wide mb-1">
-              {moderationWarning.title || "Submission Blocked"}
-            </h3>
-            <p className="text-[10px] font-extrabold text-red-400 uppercase tracking-widest mb-4 bg-red-500/10 border border-red-500/20 px-3 py-1 rounded-full">
-              AI Content Moderation Shield
-            </p>
-
-            <div className="w-full bg-[#131626] border border-red-900/60 rounded-2xl p-4 mb-5 text-left text-xs leading-relaxed">
-              <div className="flex items-start gap-2 text-rose-300 font-bold mb-1.5">
-                <AlertTriangle size={15} className="flex-shrink-0 mt-0.5 text-amber-400" />
-                <span>Blocked Reason:</span>
+      {/* Moderation Warning Modal */}
+      <AnimatePresence>
+        {moderationWarning && moderationWarning.open && (
+          <motion.div
+            key="moderation-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            onClick={() => setModerationWarning(null)}
+            className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+          >
+            <motion.div
+              key="moderation-card"
+              initial={{ opacity: 0, scale: 0.94, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-sm bg-[#121420] border border-white/10 rounded-2xl p-6 shadow-2xl overflow-hidden text-white flex flex-col items-center text-center"
+            >
+              {/* Soft friendly warning icon */}
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 mb-3.5 shadow-sm">
+                <AlertTriangle size={24} />
               </div>
-              <p className="text-neutral-200 font-semibold pl-5 break-words">
+
+              <h3 className="text-base font-bold text-white tracking-tight mb-2">
+                {moderationWarning.title || "Hold on a second"}
+              </h3>
+
+              <p className="text-xs text-neutral-300 leading-relaxed mb-5 max-w-xs break-words">
                 {moderationWarning.reason}
               </p>
-            </div>
 
-            <p className="text-[11px] text-neutral-400 mb-6 leading-normal max-w-xs">
-              All text, image, video, audio, and GIF content is analyzed prior to distribution. Submissions containing profanity, explicit visual media, inappropriate speech, or harmful material are automatically restricted.
-            </p>
-
-            <button
-              onClick={() => setModerationWarning(null)}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs uppercase tracking-wider transition-all shadow-lg active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-            >
-              <span>Acknowledge & Dismiss</span>
-            </button>
-          </div>
-        </div>
-      )}
+              <button
+                type="button"
+                onClick={() => setModerationWarning(null)}
+                className="w-full py-2.5 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs tracking-wide transition-all shadow-sm active:scale-[0.98] cursor-pointer"
+              >
+                Acknowledge & Dismiss
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

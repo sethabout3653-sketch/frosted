@@ -1,10 +1,11 @@
 /**
- * Comprehensive Content Moderation Engine
+ * Comprehensive Content Moderation & Safety Engine
  * 
  * Enforces strict moderation against:
- * - Every slur (racial, ethnic, homophobic, transphobic, religious, ableist)
- * - Every curse word / profanity (fuck, shit, bitch, ass, cunt, dick, etc.)
- * - Every sexual / NSFW term (porn, hentai, nsfw, sex, dildo, orgasm, nude, etc.)
+ * - Slurs (racial, ethnic, homophobic, transphobic, religious, ableist)
+ * - Curse words & profanities (fuck, shit, bitch, ass, cunt, dick, etc.)
+ * - Sexual & NSFW terms (porn, hentai, nsfw, sex, dildo, orgasm, nude, etc.)
+ * - Violence, gore, harassment, and severe toxicity
  * 
  * EXCEPTION: "damn" and "hell" (and direct variations like dammit, damned, heck)
  * are explicitly permitted per user directive.
@@ -99,18 +100,59 @@ const SEXUAL_PATTERNS: RegExp[] = [
 
 // 4. Obfuscated / Evaded patterns (spaced letters, punctuation)
 const OBFUSCATED_PATTERNS = [
-  { regex: /f[\s._\-*~]+u[\s._\-*~]+c[\s._\-*~]+k/i, type: "curse word" },
-  { regex: /s[\s._\-*~]+h[\s._\-*~]+i[\s._\-*~]+t/i, type: "curse word" },
-  { regex: /b[\s._\-*~]+i[\s._\-*~]+t[\s._\-*~]+c[\s._\-*~]+h/i, type: "curse word" },
-  { regex: /p[\s._\-*~]+o[\s._\-*~]+r[\s._\-*~]+n/i, type: "sexual term" },
-  { regex: /n[\s._\-*~]+i[\s._\-*~]+g[\s._\-*~]+g/i, type: "slur" },
-  { regex: /f[\s._\-*~]+a[\s._\-*~]+g/i, type: "slur" },
-  { regex: /c[\s._\-*~]+u[\s._\-*~]+n[\s._\-*~]+t/i, type: "curse word" },
-  { regex: /d[\s._\-*~]+i[\s._\-*~]+c[\s._\-*~]+k/i, type: "curse word" },
-  { regex: /p[\s._\-*~]+u[\s._\-*~]+s[\s._\-*~]+s[\s._\-*~]+y/i, type: "curse word" },
-  { regex: /s[\s._\-*~]+e[\s._\-*~]+x/i, type: "sexual term" },
-  { regex: /n[\s._\-*~]+u[\s._\-*~]+d[\s._\-*~]+e/i, type: "sexual term" },
+  { regex: /f[\s._\-*~+^#%&/\\|!@$]+u[\s._\-*~+^#%&/\\|!@$]+c[\s._\-*~+^#%&/\\|!@$]+k/i, type: "curse word" },
+  { regex: /s[\s._\-*~+^#%&/\\|!@$]+h[\s._\-*~+^#%&/\\|!@$]+i[\s._\-*~+^#%&/\\|!@$]+t/i, type: "curse word" },
+  { regex: /b[\s._\-*~+^#%&/\\|!@$]+i[\s._\-*~+^#%&/\\|!@$]+t[\s._\-*~+^#%&/\\|!@$]+c[\s._\-*~+^#%&/\\|!@$]+h/i, type: "curse word" },
+  { regex: /p[\s._\-*~+^#%&/\\|!@$]+o[\s._\-*~+^#%&/\\|!@$]+r[\s._\-*~+^#%&/\\|!@$]+n/i, type: "sexual term" },
+  { regex: /n[\s._\-*~+^#%&/\\|!@$]+i[\s._\-*~+^#%&/\\|!@$]+g[\s._\-*~+^#%&/\\|!@$]+g/i, type: "slur" },
+  { regex: /f[\s._\-*~+^#%&/\\|!@$]+a[\s._\-*~+^#%&/\\|!@$]+g/i, type: "slur" },
+  { regex: /c[\s._\-*~+^#%&/\\|!@$]+u[\s._\-*~+^#%&/\\|!@$]+n[\s._\-*~+^#%&/\\|!@$]+t/i, type: "curse word" },
+  { regex: /d[\s._\-*~+^#%&/\\|!@$]+i[\s._\-*~+^#%&/\\|!@$]+c[\s._\-*~+^#%&/\\|!@$]+k/i, type: "curse word" },
+  { regex: /p[\s._\-*~+^#%&/\\|!@$]+u[\s._\-*~+^#%&/\\|!@$]+s[\s._\-*~+^#%&/\\|!@$]+s[\s._\-*~+^#%&/\\|!@$]+y/i, type: "curse word" },
+  { regex: /s[\s._\-*~+^#%&/\\|!@$]+e[\s._\-*~+^#%&/\\|!@$]+x/i, type: "sexual term" },
+  { regex: /n[\s._\-*~+^#%&/\\|!@$]+u[\s._\-*~+^#%&/\\|!@$]+d[\s._\-*~+^#%&/\\|!@$]+e/i, type: "sexual term" },
 ];
+
+// 5. Clean / Normalize text by unfolding Unicode homoglyphs and leetspeak
+export function normalizeForSafety(input: string): string {
+  if (!input) return "";
+
+  // Remove zero-width characters and invisible joiners
+  let str = input.replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u202A-\u202E]/g, "");
+
+  // Homoglyph conversion table
+  const homoglyphs: Record<string, string> = {
+    // Cyrillic & Greek
+    "а": "a", "А": "a", "a": "a", "e": "e", "е": "e", "Е": "e", "o": "o", "о": "o", "О": "o",
+    "р": "p", "Р": "p", "с": "c", "С": "c", "у": "y", "У": "y", "х": "x", "Х": "x", "і": "i",
+    "І": "i", "ї": "i", "Ї": "i", "ј": "j", "Ј": "j", "ѕ": "s", "Ѕ": "s", "ո": "n", "ս": "u",
+    // Fullwidth ASCII (FF01 - FF5E)
+    "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e", "ｆ": "f", "ｇ": "g", "ｈ": "h",
+    "ｉ": "i", "ｊ": "j", "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n", "ｏ": "o", "ｐ": "p",
+    "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t", "ｕ": "u", "ｖ": "v", "ｗ": "w", "ｘ": "x",
+    "ｙ": "y", "ｚ": "z",
+  };
+
+  str = str.split("").map((c) => homoglyphs[c] || c).join("").toLowerCase();
+
+  // Normalize accented characters
+  str = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  // Leetspeak multi-char & standard conversions
+  str = str.replace(/ph/g, "f")
+           .replace(/vv/g, "w")
+           .replace(/13/g, "b")
+           .replace(/[@]/g, "a")
+           .replace(/[$5]/g, "s")
+           .replace(/[0]/g, "o")
+           .replace(/[1!|]/g, "i")
+           .replace(/[3]/g, "e")
+           .replace(/[7+]/g, "t")
+           .replace(/[4]/g, "a")
+           .replace(/[8]/g, "b");
+
+  return str;
+}
 
 export interface ModerationResult {
   safe: boolean;
@@ -119,7 +161,7 @@ export interface ModerationResult {
 }
 
 /**
- * Checks text against all slurs, curse words, and sexual terms.
+ * Checks text against all slurs, curse words, and sexual terms with zero quota limits.
  * Allows "damn" and "hell" as acceptable exceptions.
  */
 export function checkTextModeration(input: string): ModerationResult {
@@ -128,19 +170,14 @@ export function checkTextModeration(input: string): ModerationResult {
   const trimmed = input.trim();
   if (!trimmed) return { safe: true };
 
-  // Normalize string for checks (handling common leetspeak substitutions)
-  let norm = trimmed.toLowerCase();
-  norm = norm.replace(/[@]/g, "a")
-             .replace(/[$]/g, "s")
-             .replace(/[0]/g, "o")
-             .replace(/[1!|]/g, "i")
-             .replace(/[3]/g, "e")
-             .replace(/[5]/g, "s")
-             .replace(/[7+]/g, "t");
+  const normalized = normalizeForSafety(trimmed);
+
+  // Compact stripped version (removes all non-alphanumeric to catch spaced evasion)
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
 
   // 1. Check Obfuscated patterns first
   for (const item of OBFUSCATED_PATTERNS) {
-    if (item.regex.test(trimmed) || item.regex.test(norm)) {
+    if (item.regex.test(trimmed) || item.regex.test(normalized)) {
       return {
         safe: false,
         category: item.type as any,
@@ -151,7 +188,7 @@ export function checkTextModeration(input: string): ModerationResult {
 
   // 2. Check Slurs
   for (const pattern of SLUR_PATTERNS) {
-    if (pattern.test(trimmed) || pattern.test(norm)) {
+    if (pattern.test(trimmed) || pattern.test(normalized) || pattern.test(compact)) {
       return {
         safe: false,
         category: "slur",
@@ -162,7 +199,7 @@ export function checkTextModeration(input: string): ModerationResult {
 
   // 3. Check Sexual terms
   for (const pattern of SEXUAL_PATTERNS) {
-    if (pattern.test(trimmed) || pattern.test(norm)) {
+    if (pattern.test(trimmed) || pattern.test(normalized) || pattern.test(compact)) {
       return {
         safe: false,
         category: "sexual term",
@@ -173,7 +210,7 @@ export function checkTextModeration(input: string): ModerationResult {
 
   // 4. Check Curse words (EXCEPT "damn" and "hell")
   for (const pattern of CURSE_PATTERNS) {
-    const match = trimmed.match(pattern) || norm.match(pattern);
+    const match = trimmed.match(pattern) || normalized.match(pattern) || compact.match(pattern);
     if (match) {
       const matchedWord = match[0].toLowerCase();
       // Allow if it is damn or hell
@@ -205,3 +242,4 @@ export function isQuerySafeForGif(query: string): { safe: boolean; reason?: stri
   }
   return { safe: true };
 }
+

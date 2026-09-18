@@ -221,6 +221,13 @@ export function applyTheme(r: number, g: number, b: number) {
 
   try {
     localStorage.setItem("frosted_theme_color", JSON.stringify({ r: shades.r, g: shades.g, b: shades.b }));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("frosted-theme-change", {
+          detail: { r: shades.r, g: shades.g, b: shades.b },
+        })
+      );
+    }
   } catch {}
 }
 

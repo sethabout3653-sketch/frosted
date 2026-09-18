@@ -102,7 +102,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
       const queryCheck = isQuerySafeForGif(query);
       if (!queryCheck.safe) {
         setModerationWarning(
-          queryCheck.reason || "PG Filter: Search query contains prohibited slurs, curse words, or sexual terms."
+          queryCheck.reason || "That search term isn't allowed. Try searching for something else."
         );
         setGifs(FALLBACK_GIFS);
         setLoading(false);
@@ -180,7 +180,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
 
     const urlCheck = checkTextModeration(url);
     if (!urlCheck.safe) {
-      setModerationWarning(`Custom link blocked: ${urlCheck.reason || "Contains prohibited terms."}`);
+      setModerationWarning("That link can't be used. Please try another link.");
       return;
     }
 
@@ -192,7 +192,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
     if (gif.title) {
       const titleCheck = checkTextModeration(gif.title);
       if (!titleCheck.safe) {
-        setModerationWarning(`GIF blocked: ${titleCheck.reason || "Contains prohibited title."}`);
+        setModerationWarning("This GIF isn't available. Please choose another one.");
         return;
       }
     }

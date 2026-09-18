@@ -17,6 +17,8 @@ import {
   X,
   Check,
   Loader2,
+  ShieldAlert,
+  Ban,
 } from "lucide-react";
 import {
   detectMediaType,
@@ -28,6 +30,7 @@ import {
   getFileTypeBadge,
   MediaType,
 } from "../utils/mediaUtils";
+import { checkTextModeration } from "../utils/moderation";
 
 interface MediaAttachmentProps {
   url: string;
@@ -88,11 +91,64 @@ export default function MediaAttachment({
   const [showModal, setShowModal] = useState(false);
   const [videoError, setVideoError] = useState(false);
   const [isUnavailable, setIsUnavailable] = useState(false);
+  const [moderationBlocked, setModerationBlocked] = useState<{ blocked: boolean; reason?: string } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const [displayUrl, setDisplayUrl] = useState<string>(initialUrl);
+
+  // Proactive moderation check: Run immediately when media is loaded / mounted (without playing)
+  useEffect(() => {
+    let isCancelled = false;
+    const targetName = effectiveName || displayName || "";
+    const targetUrl = displayUrl || url || "";
+
+    // 1. Instant local text check on filename and URL
+    if (targetName) {
+      const nameCheck = checkTextModeration(targetName);
+      if (!nameCheck.safe) {
+        setModerationBlocked({ blocked: true, reason: nameCheck.reason || "Filename contains prohibited language." });
+        return;
+      }
+    }
+    if (targetUrl) {
+      const urlCheck = checkTextModeration(decodeURIComponent(targetUrl));
+      if (!urlCheck.safe) {
+        setModerationBlocked({ blocked: true, reason: urlCheck.reason || "Media link contains prohibited language." });
+        return;
+      }
+    }
+
+    // 2. Proactive server check for media frames / audio sounds (without waiting for play)
+    if (targetUrl && !targetUrl.startsWith("blob:") && !targetUrl.startsWith("data:")) {
+      fetch("/api/moderate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mediaUrl: targetUrl,
+          mediaTitle: targetName,
+          mediaType: effectiveType === "video" ? "video/mp4" : effectiveType === "audio" ? "audio/mp3" : effectiveType === "image" ? "image/jpeg" : undefined,
+          mediaSize: effectiveSize,
+        }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (isCancelled || !data) return;
+          if (data.safe === false) {
+            setModerationBlocked({
+              blocked: true,
+              reason: data.reason || "Prohibited or inappropriate content detected in media.",
+            });
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [displayUrl, url, effectiveName, effectiveType, effectiveSize]);
 
   // Probe media metadata in background to accurately recognize ANY file type
   useEffect(() => {
@@ -210,6 +266,24 @@ export default function MediaAttachment({
       setIsDownloading(false);
     }
   };
+
+  if (moderationBlocked?.blocked) {
+    return (
+      <div className="mt-2.5 max-w-sm w-fit inline-flex items-start gap-3 p-3 rounded-xl border border-red-500/20 bg-red-500/10 shadow-sm relative overflow-hidden animate-in fade-in">
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-red-500/15 text-red-400 flex-shrink-0 mt-0.5">
+          <ShieldAlert size={17} />
+        </div>
+        <div className="min-w-0 pr-2">
+          <p className="text-xs font-semibold text-red-200">
+            Content unavailable
+          </p>
+          <p className="text-[11px] text-red-300/80 mt-0.5 leading-snug">
+            {moderationBlocked.reason || "This attachment was removed for not following our community guidelines."}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isUnavailable) {
     return (

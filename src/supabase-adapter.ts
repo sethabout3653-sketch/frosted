@@ -27,30 +27,98 @@ export const cassandra = {
 
       reportProgress(5);
 
-      // 1. Primary high-speed direct server upload with real-time chunking & retry resilience
+      // 1. Primary high-speed direct server upload with instant progress and zero chunking overhead for standard files
       const uploadToServer = async (): Promise<{ url: string; filename: string; mimetype: string; size: number }> => {
-        const CHUNK_SIZE = 900 * 1024; // 900KB chunk size to easily pass NGINX 1MB limits
+        // Direct single-stream upload via XHR for maximum network throughput on files <= 50MB
+        if (file.size <= 50 * 1024 * 1024) {
+          return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            const formData = new FormData();
+            formData.append("file", file, file.name);
+
+            if (abortController?.signal) {
+              abortController.signal.addEventListener("abort", () => {
+                xhr.abort();
+                reject(new Error("Upload cancelled by user"));
+              });
+            }
+
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable && e.total > 0) {
+                const percent = Math.min(95, Math.round((e.loaded / e.total) * 90) + 5);
+                reportProgress(percent);
+              }
+            };
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                  const res = JSON.parse(xhr.responseText);
+                  if (res && res.safe === false) {
+                    const modErr = new Error(res.error || res.reason || "File blocked by moderation");
+                    (modErr as any).isModerationBlock = true;
+                    (modErr as any).reason = res.reason || res.error;
+                    return reject(modErr);
+                  }
+                  reportProgress(100);
+                  resolve(res);
+                } catch (e) {
+                  reject(new Error("Invalid server response"));
+                }
+              } else {
+                try {
+                  const errJson = JSON.parse(xhr.responseText);
+                  if (errJson && (errJson.safe === false || errJson.error?.includes("blocked") || errJson.reason)) {
+                    const modErr = new Error(errJson.error || errJson.reason || "File blocked by moderation");
+                    (modErr as any).isModerationBlock = true;
+                    (modErr as any).reason = errJson.reason || errJson.error;
+                    return reject(modErr);
+                  }
+                } catch (e) {}
+                reject(new Error(`Server upload failed with status ${xhr.status}`));
+              }
+            };
+
+            xhr.onerror = () => reject(new Error("Network connection error during upload"));
+            xhr.ontimeout = () => reject(new Error("Upload timed out"));
+            xhr.timeout = 60000; // 60s safety timeout
+
+            xhr.open("POST", "/api/upload");
+            xhr.send(formData);
+          });
+        }
+
+        // High-Speed Parallel Chunked upload for ultra-large files (> 50MB)
+        const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunk size for high-bandwidth transfers
         const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
         const uniqueId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
-        let lastResponse: any;
+        let finalResponse: any = null;
+        const uploadedBytesMap = new Map<number, number>();
 
-        for (let i = 0; i < totalChunks; i++) {
+        const updateParallelProgress = () => {
+          let loaded = 0;
+          for (const b of uploadedBytesMap.values()) {
+            loaded += b;
+          }
+          const pct = Math.min(95, Math.round((loaded / file.size) * 90) + 5);
+          reportProgress(pct);
+        };
+
+        // Upload worker function for an individual chunk
+        const uploadSingleChunk = async (chunkIndex: number) => {
           if (abortController?.signal?.aborted) throw new Error("Upload cancelled by user");
           
-          const start = i * CHUNK_SIZE;
+          const start = chunkIndex * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, file.size);
           const chunk = file.slice(start, end);
-          
-          let chunkSuccess = false;
-          let lastChunkError: any = null;
+          const chunkSize = end - start;
 
-          // Retry each chunk up to 3 times for large files
-          for (let attempt = 1; attempt <= 3; attempt++) {
+          for (let attempt = 1; attempt <= 2; attempt++) {
             if (abortController?.signal?.aborted) throw new Error("Upload cancelled by user");
             try {
               const formData = new FormData();
               formData.append("chunk", chunk);
-              formData.append("chunkIndex", i.toString());
+              formData.append("chunkIndex", chunkIndex.toString());
               formData.append("totalChunks", totalChunks.toString());
               formData.append("uploadId", uniqueId);
               formData.append("filename", file.name);
@@ -71,35 +139,46 @@ export const cassandra = {
                   (modErr as any).reason = errJson.reason || errJson.error;
                   throw modErr;
                 }
-                throw new Error(`Server upload returned status ${response.status}: ${response.statusText}`);
+                throw new Error(`Server upload returned status ${response.status}`);
               }
               
-              lastResponse = await response.json();
-              chunkSuccess = true;
-              break;
+              const resData = await response.json();
+              if (resData && resData.url) {
+                finalResponse = resData;
+              }
+              uploadedBytesMap.set(chunkIndex, chunkSize);
+              updateParallelProgress();
+              return resData;
             } catch (err: any) {
-              lastChunkError = err;
               if (abortController?.signal?.aborted || err?.message?.includes("cancelled")) {
                 throw err;
               }
-              if (attempt < 3) {
-                await new Promise((r) => setTimeout(r, 400 * attempt));
-              }
+              if (attempt === 2) throw err;
+              await new Promise((r) => setTimeout(r, 200));
             }
           }
+        };
 
-          if (!chunkSuccess) {
-            throw lastChunkError || new Error(`Failed to upload chunk ${i + 1}/${totalChunks}`);
+        // Run chunks with concurrency of 4 parallel streams
+        const CONCURRENCY = 4;
+        const chunkIndices = Array.from({ length: totalChunks }, (_, i) => i);
+        let nextIndex = 0;
+
+        const worker = async () => {
+          while (nextIndex < chunkIndices.length) {
+            const idx = nextIndex++;
+            await uploadSingleChunk(idx);
           }
+        };
 
-          reportProgress(Math.min(99, Math.round(((i + 1) / totalChunks) * 100)));
+        const workers = Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, () => worker());
+        await Promise.all(workers);
+
+        if (finalResponse && finalResponse.url) {
+          reportProgress(100);
+          return finalResponse;
         }
-        
-        if (lastResponse && lastResponse.url) {
-           reportProgress(100);
-           return lastResponse;
-        }
-        throw new Error("Invalid response from server during chunked upload");
+        throw new Error("Failed to receive completed upload confirmation from server");
       };
 
       try {
