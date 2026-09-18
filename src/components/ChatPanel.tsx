@@ -22,6 +22,7 @@ import { ChatMessage, ChatProfile, UserActivity } from "../types";
 import { wsClient } from "../lib/websocket-client";
 import { getCurrentActivity, onActivityChanged } from "../lib/activity-tracker";
 import ActivityBadge from "./ActivityBadge";
+import { checkTextModeration } from "../utils/moderation";
 import {
   Send,
   Image as ImageIcon,
@@ -631,6 +632,32 @@ export default function ChatPanel({
     const currentSize = attachmentSize;
     if (!currentText && !currentAttachment) return;
 
+    // Strict moderation check for text content
+    if (currentText) {
+      const textCheck = checkTextModeration(currentText);
+      if (!textCheck.safe) {
+        showModerationAlert(
+          "Message Blocked by Moderation",
+          textCheck.reason || "Your message contains prohibited slurs, curse words, or sexual terms. (Note: 'damn' and 'hell' are permitted).",
+          currentType || undefined
+        );
+        return;
+      }
+    }
+
+    // Strict moderation check for attachment name
+    if (currentName) {
+      const nameCheck = checkTextModeration(currentName);
+      if (!nameCheck.safe) {
+        showModerationAlert(
+          "Attachment Blocked by Moderation",
+          nameCheck.reason || "The attachment name contains prohibited language.",
+          currentType || undefined
+        );
+        return;
+      }
+    }
+
     // Attach original file name, MIME type, and size to the URL so all other users receive exact name & extension
     if (currentAttachment && currentName && !currentAttachment.startsWith("data:") && !currentAttachment.includes("?name=") && !currentAttachment.includes("&name=")) {
       const sep = currentAttachment.includes("?") ? "&" : "?";
@@ -745,6 +772,20 @@ export default function ChatPanel({
 
   const handleSendGif = async (gifUrl: string, gifTitle?: string) => {
     if (!gifUrl) return;
+
+    // Check GIF title and URL text before sending
+    if (gifTitle) {
+      const titleCheck = checkTextModeration(gifTitle);
+      if (!titleCheck.safe) {
+        showModerationAlert(
+          "GIF Blocked by Moderation",
+          titleCheck.reason || "The selected GIF title contains prohibited language.",
+          "image/gif"
+        );
+        return;
+      }
+    }
+
     const msgId = "doc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     const now = Date.now();
 
@@ -865,6 +906,20 @@ export default function ChatPanel({
         URL.revokeObjectURL(stagedBlobUrlRef.current);
       } catch (e) {}
       stagedBlobUrlRef.current = null;
+    }
+
+    // Pre-check filename against slurs, curse words, and sexual terms
+    const nameCheck = checkTextModeration(file.name);
+    if (!nameCheck.safe) {
+      showModerationAlert(
+        "File Blocked by Moderation",
+        `The file "${file.name}" was blocked: ${nameCheck.reason || "Filename contains prohibited language."}`,
+        file.type
+      );
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
     }
 
     const sessionId = ++uploadSessionIdRef.current;

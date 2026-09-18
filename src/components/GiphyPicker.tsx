@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, X, Loader2, Sparkles, RefreshCw } from "lucide-react";
+import { Search, X, Loader2, Sparkles, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { GiphyFetch } from "@giphy/js-fetch-api";
+import { isQuerySafeForGif, checkTextModeration } from "../utils/moderation";
 
 // Active working Giphy API key
 const GIPHY_API_KEY = "GlVGYHkr3WSBnllca54iNt0yFbjz7L65";
@@ -92,20 +93,37 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
   const [loading, setLoading] = useState(true);
   const [customUrl, setCustomUrl] = useState("");
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [moderationWarning, setModerationWarning] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const fetchGiphyData = useCallback(async (query: string) => {
+    // Check if query is safe under PG moderation
+    if (query && query !== "Trending") {
+      const queryCheck = isQuerySafeForGif(query);
+      if (!queryCheck.safe) {
+        setModerationWarning(
+          queryCheck.reason || "PG Filter: Search query contains prohibited slurs, curse words, or sexual terms."
+        );
+        setGifs(FALLBACK_GIFS);
+        setLoading(false);
+        return;
+      }
+    }
+
+    setModerationWarning(null);
     setLoading(true);
     try {
       let result;
       if (!query || query === "Trending") {
-        result = await gf.trending({ limit: 24, rating: "r" });
+        // Enforce PG rating for all trending GIFs
+        result = await gf.trending({ limit: 24, rating: "pg" });
       } else {
+        // Enforce PG rating for all search queries
         result = await gf.search(query, {
           limit: 24,
           sort: "relevant",
           lang: "en",
-          rating: "r",
+          rating: "pg",
         });
       }
 
@@ -152,14 +170,34 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
   const handleSelectCategory = (cat: string) => {
     setActiveCategory(cat);
     setSearchTerm("");
+    setModerationWarning(null);
   };
 
   const handleCustomUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (customUrl.trim()) {
-      onSelectGif(customUrl.trim(), "Custom GIF");
-      onClose();
+    const url = customUrl.trim();
+    if (!url) return;
+
+    const urlCheck = checkTextModeration(url);
+    if (!urlCheck.safe) {
+      setModerationWarning(`Custom link blocked: ${urlCheck.reason || "Contains prohibited terms."}`);
+      return;
     }
+
+    onSelectGif(url, "Custom GIF");
+    onClose();
+  };
+
+  const handleSelectGifItem = (gif: GifItem) => {
+    if (gif.title) {
+      const titleCheck = checkTextModeration(gif.title);
+      if (!titleCheck.safe) {
+        setModerationWarning(`GIF blocked: ${titleCheck.reason || "Contains prohibited title."}`);
+        return;
+      }
+    }
+    onSelectGif(gif.url, gif.title);
+    onClose();
   };
 
   return (
@@ -175,6 +213,10 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
           </span>
           <span className="text-xs font-bold text-white">
             Choose a GIF
+          </span>
+          <span className="px-1.5 py-0.5 rounded bg-emerald-950/90 border border-emerald-600/70 text-emerald-300 font-semibold text-[9px] tracking-wider uppercase flex items-center gap-1 shadow-sm">
+            <ShieldCheck size={10} className="text-emerald-400" />
+            PG RATED
           </span>
           <span className="text-[10px] text-indigo-300/50 hidden sm:inline">
             Powered by GIPHY
@@ -212,6 +254,23 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Moderation Warning Banner */}
+      {moderationWarning && (
+        <div className="px-3 py-1.5 bg-rose-950/80 border-b border-rose-800/60 flex items-center justify-between gap-2 text-rose-200 text-xs flex-shrink-0 animate-in fade-in duration-150">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={14} className="text-rose-400 flex-shrink-0" />
+            <span className="text-[11px] font-medium leading-tight">{moderationWarning}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setModerationWarning(null)}
+            className="text-rose-400 hover:text-white p-0.5 rounded"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       {/* Custom URL Input Field (Optional Bar) in Navy Blue */}
       {showUrlInput && (
@@ -308,10 +367,7 @@ export const GiphyPicker: React.FC<GiphyPickerProps> = ({
               <button
                 key={gif.id}
                 type="button"
-                onClick={() => {
-                  onSelectGif(gif.url, gif.title);
-                  onClose();
-                }}
+                onClick={() => handleSelectGifItem(gif)}
                 className="group relative aspect-video bg-[#070e30] rounded-lg overflow-hidden border border-indigo-950/80 hover:border-indigo-500/80 focus:outline-none transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shadow-sm hover:shadow-indigo-950/80"
                 title={gif.title}
               >

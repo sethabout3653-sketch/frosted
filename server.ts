@@ -8,6 +8,7 @@ import multer from "multer";
 import { execSync } from "child_process";
 import { Filter } from "bad-words";
 import Tesseract from "tesseract.js";
+import { checkTextModeration } from "./src/utils/moderation.js";
 
 import { db } from "./src/db/index.js";
 import { records, webrtcSignals } from "./src/db/schema.js";
@@ -1316,14 +1317,64 @@ const PORT = 3000;
     return null;
   }
 
-  // 🛡️ Pre-moderation Check on Uploaded Files (Disabled)
+  // 🛡️ Pre-moderation Check on Uploaded Files
   async function performFileModeration(
     filePath: string,
     originalFilename: string,
     mimeType: string,
     size: number
   ): Promise<{ safe: boolean; reason?: string }> {
-    return { safe: true };
+    try {
+      // 1. Check filename against slurs, curse words, and sexual terms
+      if (originalFilename) {
+        const nameCheck = checkTextModeration(originalFilename);
+        if (!nameCheck.safe) {
+          return { safe: false, reason: `Filename rejected: ${nameCheck.reason}` };
+        }
+      }
+
+      // 2. Check text file contents if small enough
+      if (mimeType.startsWith("text/") || originalFilename.endsWith(".txt") || originalFilename.endsWith(".md") || originalFilename.endsWith(".json")) {
+        try {
+          const content = fs.readFileSync(filePath, "utf-8").slice(0, 30000);
+          const contentCheck = checkTextModeration(content);
+          if (!contentCheck.safe) {
+            return { safe: false, reason: `File content rejected: ${contentCheck.reason}` };
+          }
+        } catch (e) {}
+      }
+
+      // 3. Inspect Animated GIF
+      if (mimeType.startsWith("image/gif") || originalFilename.toLowerCase().endsWith(".gif")) {
+        return await inspectGifAnimation(filePath);
+      }
+
+      // 4. Inspect Image
+      if (mimeType.startsWith("image/")) {
+        return await inspectImageWithVision(filePath);
+      }
+
+      // 5. Inspect Audio Speech
+      if (mimeType.startsWith("audio/")) {
+        const audRes = await transcribeAndInspectAudio(filePath);
+        if (!audRes.safe) {
+          return { safe: false, reason: audRes.reason };
+        }
+      }
+
+      // 6. Inspect Video Compound
+      if (mimeType.startsWith("video/")) {
+        const vidRes = await inspectVideoCompound(filePath);
+        if (!vidRes.safe) {
+          return { safe: false, reason: vidRes.reason };
+        }
+      }
+
+      return { safe: true };
+    } catch (err: any) {
+      console.warn("File moderation check exception:", err);
+      return { safe: true };
+    }
   }
 
   // Helper: Get media duration in seconds via ffprobe
@@ -1337,14 +1388,19 @@ const PORT = 3000;
     }
   }
 
-  // Instantiate bad-words filter once for high-performance offline safety checks
+  // Instantiate bad-words filter with allowed exceptions (damn, hell)
   const badWordsFilter = new Filter();
   try {
-    badWordsFilter.addWords('kys', 'kms', 'stfu', 'gtfo', 'nsfw', 'porn', 'nude', 'naked', 'hentai', 'gore', 'bitch', 'fuck', 'shit', 'asshole', 'bastard', 'cunt', 'dick', 'pussy', 'nigger', 'faggot', 'retard', 'whore', 'slut');
+    badWordsFilter.removeWords('hell', 'damn', 'dammit', 'damned');
   } catch (e) {}
 
-  // 🛡️ Synchronous Word & Safety Check (Disabled)
+  // 🛡️ Synchronous Word & Safety Check
   function isHarmfulOrProfane(str: string): { bad: boolean; word?: string; reason?: string } {
+    if (!str || typeof str !== "string") return { bad: false };
+    const res = checkTextModeration(str);
+    if (!res.safe) {
+      return { bad: true, word: res.category, reason: res.reason };
+    }
     return { bad: false };
   }
 
@@ -1773,9 +1829,83 @@ const PORT = 3000;
     }
   }
 
-  // Moderation Endpoint (Disabled)
+  // Moderation Endpoint
   app.post("/api/moderate", async (req, res) => {
-    return res.json({ safe: true });
+    try {
+      const { text, mediaUrl, mediaTitle, mediaType } = req.body || {};
+
+      // 1. Check message text against slurs, curse words, and sexual terms
+      if (text && typeof text === "string") {
+        const textCheck = checkTextModeration(text);
+        if (!textCheck.safe) {
+          return res.json({
+            safe: false,
+            reason: textCheck.reason,
+            category: textCheck.category
+          });
+        }
+      }
+
+      // 2. Check media/attachment title
+      if (mediaTitle && typeof mediaTitle === "string") {
+        const titleCheck = checkTextModeration(mediaTitle);
+        if (!titleCheck.safe) {
+          return res.json({
+            safe: false,
+            reason: `Media title prohibited: ${titleCheck.reason}`,
+            category: titleCheck.category
+          });
+        }
+      }
+
+      // 3. Check media file content if mediaUrl is provided
+      if (mediaUrl && typeof mediaUrl === "string") {
+        // Also check if mediaUrl itself contains prohibited words in filename or query params
+        const urlCheck = checkTextModeration(decodeURIComponent(mediaUrl));
+        if (!urlCheck.safe) {
+          return res.json({
+            safe: false,
+            reason: `Media link prohibited: ${urlCheck.reason}`,
+            category: urlCheck.category
+          });
+        }
+
+        const local = await getLocalMediaFile(mediaUrl);
+        if (local) {
+          try {
+            const mType = (mediaType || "").toLowerCase();
+            if (mType.includes("gif") || mediaUrl.toLowerCase().includes(".gif")) {
+              const gifRes = await inspectGifAnimation(local.filePath);
+              if (!gifRes.safe) {
+                return res.json({ safe: false, reason: gifRes.reason });
+              }
+            } else if (mType.startsWith("image/")) {
+              const imgRes = await inspectImageWithVision(local.filePath);
+              if (!imgRes.safe) {
+                return res.json({ safe: false, reason: imgRes.reason });
+              }
+            } else if (mType.startsWith("audio/")) {
+              const audRes = await transcribeAndInspectAudio(local.filePath);
+              if (!audRes.safe) {
+                return res.json({ safe: false, reason: audRes.reason });
+              }
+            } else if (mType.startsWith("video/")) {
+              const vidRes = await inspectVideoCompound(local.filePath);
+              if (!vidRes.safe) {
+                return res.json({ safe: false, reason: vidRes.reason });
+              }
+            }
+          } finally {
+            local.cleanup();
+          }
+        }
+      }
+
+      return res.json({ safe: true });
+    } catch (err: any) {
+      console.warn("Moderation route error:", err);
+      return res.json({ safe: true });
+    }
   });
 
   app.get("/api/health", (req, res) => {
