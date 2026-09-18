@@ -156,7 +156,8 @@ export default function AiAssistant() {
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
+        const errJson = await response.json().catch(() => null);
+        throw new Error(errJson?.error || `Server error (${response.status})`);
       }
 
       const data = await response.json();
@@ -168,11 +169,11 @@ export default function AiAssistant() {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (err) {
+    } catch (err: any) {
       const errorMessage: ChatMessage = {
         id: `assistant-err-${Date.now()}`,
         role: "assistant",
-        content: "I ran into a temporary connection issue. Please click retry or send your message again.",
+        content: err?.message || "I ran into a temporary connection issue. Please click retry or send your message again.",
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, errorMessage]);

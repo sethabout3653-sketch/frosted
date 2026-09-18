@@ -106,9 +106,21 @@ export default function ProfileSetup({
 
   if (imageToCrop) {
     return (
-      <div className="flex flex-col h-full items-center justify-center p-6 w-full max-w-md mx-auto">
+      <div 
+        style={{
+          backgroundColor: "var(--theme-surface)",
+          borderColor: "var(--theme-border)",
+        }}
+        className="flex flex-col h-full items-center justify-center p-6 w-full max-w-md mx-auto border rounded-3xl shadow-2xl backdrop-blur-xl"
+      >
         <h3 className="text-xl font-bold mb-4 text-white">Crop Profile Picture</h3>
-        <div className="relative w-full h-64 bg-black rounded-2xl overflow-hidden mb-4 border border-neutral-800">
+        <div 
+          style={{
+            backgroundColor: "var(--theme-darkest)",
+            borderColor: "var(--theme-border)",
+          }}
+          className="relative w-full h-64 rounded-2xl overflow-hidden mb-4 border"
+        >
           <Cropper
             image={imageToCrop}
             crop={crop}
@@ -128,20 +140,28 @@ export default function ProfileSetup({
           step={0.1}
           aria-labelledby="Zoom"
           onChange={(e) => setZoom(Number(e.target.value))}
-          className="w-full mb-6 accent-white cursor-pointer"
+          className="w-full mb-6 accent-[var(--theme-text-accent)] cursor-pointer"
         />
         <div className="flex gap-3 w-full">
           <button
             type="button"
             onClick={() => setImageToCrop(null)}
-            className="flex-1 py-3 rounded-xl bg-neutral-800 text-white font-semibold flex items-center justify-center gap-2 hover:bg-neutral-700 transition-colors"
+            style={{
+              backgroundColor: "var(--theme-darkest)",
+              borderColor: "var(--theme-border)",
+            }}
+            className="flex-1 py-3 rounded-xl border text-white font-semibold flex items-center justify-center gap-2 hover:bg-white/10 transition-colors"
           >
             <X size={18} /> Cancel
           </button>
           <button
             type="button"
             onClick={createCroppedImage}
-            className="flex-1 py-3 rounded-xl bg-white text-black font-semibold flex items-center justify-center gap-2 hover:bg-neutral-200 transition-colors"
+            style={{
+              backgroundColor: "var(--theme-accent)",
+              borderColor: "var(--theme-border-strong)",
+            }}
+            className="flex-1 py-3 rounded-xl border text-white font-semibold flex items-center justify-center gap-2 hover:brightness-110 transition-all cursor-pointer shadow-lg"
           >
             <Check size={18} /> Save Crop
           </button>
@@ -154,10 +174,23 @@ export default function ProfileSetup({
 
   return (
     <div className="flex flex-col items-center justify-center p-4 min-h-full w-full py-8">
-      {/* Centered Modal Box matching Image 3 */}
-      <div className="w-full max-w-md bg-[#121212] border border-neutral-800/90 rounded-3xl p-8 shadow-2xl flex flex-col items-center text-center">
-        {/* White squircle with speech bubble icon */}
-        <div className="w-16 h-16 rounded-2xl bg-white text-black flex items-center justify-center shadow-xl mb-5">
+      {/* Centered Modal Box matching Theme Variables */}
+      <div 
+        style={{
+          backgroundColor: "var(--theme-surface)",
+          borderColor: "var(--theme-border)",
+        }}
+        className="w-full max-w-md border rounded-3xl p-8 shadow-2xl flex flex-col items-center text-center backdrop-blur-xl transition-colors duration-200"
+      >
+        {/* Accent squircle with speech bubble icon */}
+        <div 
+          style={{
+            backgroundColor: "var(--theme-accent)",
+            borderColor: "var(--theme-border-strong)",
+            color: "#ffffff",
+          }}
+          className="w-16 h-16 rounded-2xl border flex items-center justify-center shadow-xl mb-5 ring-1 ring-white/10"
+        >
           <MessageSquare size={32} strokeWidth={2.2} />
         </div>
 
@@ -167,18 +200,18 @@ export default function ProfileSetup({
         </h2>
 
         {/* Subtitle */}
-        <p className="text-neutral-400 text-xs mb-6 max-w-xs leading-relaxed">
+        <p style={{ color: "var(--theme-text-muted)" }} className="text-xs mb-6 max-w-xs leading-relaxed">
           Chat, voice rooms, and games with friends.
         </p>
 
         <form onSubmit={handleSubmit} className="w-full flex flex-col gap-5 text-left">
           {/* USERNAME field */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-neutral-400 tracking-wider uppercase">
+            <label style={{ color: "var(--theme-text-accent)" }} className="text-[11px] font-bold tracking-wider uppercase">
               USERNAME
             </label>
             <div className="relative flex items-center">
-              <User size={16} className="absolute left-3.5 text-neutral-500" />
+              <User size={16} className="absolute left-3.5 text-neutral-400" />
               <input
                 id="chat-username-input"
                 type="text"
@@ -187,7 +220,11 @@ export default function ProfileSetup({
                 placeholder="e.g. MasterGamer99"
                 maxLength={20}
                 required
-                className="w-full bg-[#0a0a0a] border border-neutral-800 focus:border-white text-white rounded-xl pl-10 pr-4 py-3 text-sm placeholder-neutral-600 focus:outline-none transition-colors"
+                style={{
+                  backgroundColor: "var(--theme-darkest)",
+                  borderColor: "var(--theme-border)",
+                }}
+                className="w-full border focus:border-[var(--theme-text-accent)] text-white rounded-xl pl-10 pr-4 py-3 text-sm placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-[var(--theme-text-accent)]/50 transition-all"
               />
             </div>
           </div>
@@ -195,13 +232,17 @@ export default function ProfileSetup({
           {/* PICK AVATAR COLOR section */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-bold text-neutral-400 tracking-wider uppercase">
+              <label style={{ color: "var(--theme-text-accent)" }} className="text-[11px] font-bold tracking-wider uppercase">
                 PICK AVATAR COLOR
               </label>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="text-[11px] font-semibold text-neutral-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer bg-neutral-900 border border-neutral-800 px-2.5 py-1 rounded-lg"
+                style={{
+                  backgroundColor: "var(--theme-darkest)",
+                  borderColor: "var(--theme-border)",
+                }}
+                className="text-[11px] font-semibold text-neutral-200 hover:text-white hover:border-[var(--theme-text-accent)] transition-all cursor-pointer border px-2.5 py-1 rounded-lg flex items-center gap-1.5"
               >
                 <Camera size={12} />
                 <span>Custom Image</span>
@@ -218,7 +259,7 @@ export default function ProfileSetup({
                     onClick={() => handleSelectColor(item.color)}
                     className={`w-9 h-9 rounded-xl flex-shrink-0 transition-all cursor-pointer ${
                       isSelected
-                        ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#121212]"
+                        ? "scale-110 ring-2 ring-[var(--theme-text-accent)] ring-offset-2 ring-offset-[var(--theme-surface)]"
                         : "opacity-80 hover:opacity-100"
                     }`}
                     style={{ backgroundColor: item.color }}
@@ -231,8 +272,12 @@ export default function ProfileSetup({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className={`w-9 h-9 rounded-xl flex-shrink-0 bg-neutral-900 border border-neutral-700 flex items-center justify-center text-neutral-300 hover:text-white transition-all cursor-pointer overflow-hidden ${
-                  isCustomPhoto ? "ring-2 ring-white ring-offset-2 ring-offset-[#121212]" : ""
+                style={{
+                  backgroundColor: "var(--theme-darkest)",
+                  borderColor: "var(--theme-border)",
+                }}
+                className={`w-9 h-9 rounded-xl flex-shrink-0 border flex items-center justify-center text-neutral-300 hover:text-white transition-all cursor-pointer overflow-hidden ${
+                  isCustomPhoto ? "ring-2 ring-[var(--theme-text-accent)] ring-offset-2 ring-offset-[var(--theme-surface)]" : ""
                 }`}
                 title="Upload Custom Profile Picture"
               >
@@ -258,7 +303,11 @@ export default function ProfileSetup({
               <button
                 type="button"
                 onClick={onCancel}
-                className="py-3.5 px-4 rounded-xl bg-neutral-900 text-white font-bold text-sm hover:bg-neutral-800 transition-colors"
+                style={{
+                  backgroundColor: "var(--theme-darkest)",
+                  borderColor: "var(--theme-border)",
+                }}
+                className="py-3.5 px-4 rounded-xl border text-white font-bold text-sm hover:bg-white/5 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -267,10 +316,14 @@ export default function ProfileSetup({
               id="enter-chat-submit-btn"
               type="submit"
               disabled={!username.trim()}
-              className="flex-1 py-3.5 rounded-xl bg-neutral-300 hover:bg-white text-black font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{
+                backgroundColor: username.trim() ? "var(--theme-accent)" : "var(--theme-darkest)",
+                borderColor: "var(--theme-border)",
+              }}
+              className="flex-1 py-3.5 rounded-xl border font-bold text-sm text-white flex items-center justify-center gap-2 hover:brightness-110 active:scale-[0.99] transition-all cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span>{isEditMode ? "Save Changes" : "Enter Chat"}</span>
-              <ArrowRight size={16} />
+              <ArrowRight size={16} className="text-[var(--theme-text-accent)]" />
             </button>
           </div>
         </form>
