@@ -1,6 +1,6 @@
 {
   "name": "Frosted Studying And Chat",
-  "description": "A minimal, black-and-white unblocked games portal featuring games from RawGitHack and LuminSDK.",
+  "description": "A cozy unblocked study portal and games library with an AI assistant powered by OpenRouter free models, reactive color themes, and social chat.",
   "requestFramePermissions": [
     "microphone",
     "camera"

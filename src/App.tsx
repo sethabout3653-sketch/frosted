@@ -7,6 +7,7 @@ import Header from "./components/Header";
 import GameGrid from "./components/GameGrid";
 import GamePlayer from "./components/GamePlayer";
 import Chat from "./components/Chat";
+import AiAssistant from "./components/AiAssistant";
 import BackgroundEditor, { DEFAULT_BACKGROUND, AppBackground } from "./components/BackgroundEditor";
 import SettingsModal from "./components/SettingsModal";
 import LoadingScreen from "./components/LoadingScreen";
@@ -67,7 +68,7 @@ function prepareGame(g: Game, defaultSource: "catalog" | "luminsdk" = "catalog")
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<"home" | "game" | "chat">("home");
+  const [currentView, setCurrentView] = useState<"home" | "game" | "chat" | "assistant">("home");
   const [showStartup, setShowStartup] = useState(true);
   // Core games list state seeded synchronously with ALL catalog and Lumin games combined,
   // guaranteeing that on Vercel, offline, or slower networks, all 1,600+ games are present immediately.
@@ -232,6 +233,13 @@ export default function App() {
     setCurrentView("chat");
   }, []);
 
+  const handleOpenAssistant = useCallback(() => {
+    setSelectedGame(null);
+    setCurrentView("assistant");
+    document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
+  }, []);
+
   // Ultra-fast pre-indexed filtering
   const processedGames = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
@@ -262,7 +270,7 @@ export default function App() {
           <LoadingScreen onComplete={() => setShowStartup(false)} />
         )}
       </AnimatePresence>
-      <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" ? "h-screen overflow-hidden" : "min-h-screen"} ${showStartup ? "pointer-events-none select-none" : ""} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
+      <div id="app-root" className={`${(currentView === "game" && !isSoundboardActive) || currentView === "chat" || currentView === "assistant" ? "h-screen overflow-hidden" : "min-h-screen"} ${showStartup ? "pointer-events-none select-none" : ""} text-white antialiased font-sans flex flex-col selection:bg-white/20 selection:text-white`} style={{ background: background.type === "image" ? `url(${background.value}) center / cover fixed` : background.value }}>
       
       {/* Interactive Top Header Component */}
       <Header
@@ -271,8 +279,10 @@ export default function App() {
         selectedTag={selectedTag}
         setSelectedTag={handleTagChange}
         tags={tags}
+        currentView={currentView}
         onGoHome={handleBackToHub}
         onChatClick={handleOpenChat}
+        onAssistantClick={handleOpenAssistant}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenTheme={() => setIsThemeOpen(true)}
       />
@@ -323,11 +333,11 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <h2 className="text-base font-bold tracking-wider uppercase text-white flex items-center gap-2.5">
-                  <span>Games ({processedGames.length})</span>
+                  <span>Library ({processedGames.length.toLocaleString()})</span>
                 </h2>
                 {loadingLive && (
                   <span className="text-[10px] text-[var(--theme-text-muted)]/60 font-semibold uppercase tracking-wider animate-pulse hidden sm:inline">
-                    Loading games...
+                    Checking latest additions...
                   </span>
                 )}
               </div>
@@ -338,6 +348,24 @@ export default function App() {
               onSelectGame={handleSelectGame}
             />
           </section>
+        </motion.div>
+
+        {/* AI Assistant View */}
+        <motion.div 
+          animate={{
+            opacity: currentView === "assistant" ? 1 : 0,
+            y: currentView === "assistant" ? 0 : 16,
+            scale: currentView === "assistant" ? 1 : 0.99,
+          }}
+          initial={{ opacity: 0, y: 16, scale: 0.99 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          style={{ 
+            pointerEvents: currentView === "assistant" ? "auto" : "none",
+            transform: "translateZ(0)"
+          }}
+          className={`flex-1 w-full flex flex-col min-h-0 ${currentView === "assistant" ? "" : "absolute inset-x-0 top-0 invisible h-0 overflow-hidden"}`}
+        >
+          <AiAssistant />
         </motion.div>
 
         {/* Discord Chat View */}
@@ -366,10 +394,10 @@ export default function App() {
 
       {/* Footer Branding Area (Home view only) */}
       {currentView === "home" && (
-        <footer id="app-footer" className="border-t border-[var(--theme-border-subtle)] bg-[var(--theme-darkest)] px-4 py-6 md:px-8 text-center text-xs text-[var(--theme-text-muted)] transition-colors duration-200">
+        <footer id="app-footer" className="border-t border-[var(--theme-border-subtle)] bg-[var(--theme-darkest)]/90 px-4 py-6 md:px-8 text-center text-xs text-[var(--theme-text-muted)] backdrop-blur-md transition-colors duration-200">
           <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="font-medium text-neutral-300">
-              &copy; 2026 FrostedStudying. Fast, unblocked browser games library.
+              Frosted Studying &bull; Fast, cozy, unblocked study library & games.
             </p>
             <div className="flex flex-wrap gap-4 font-semibold text-[var(--theme-text-accent)]">
               <a href="https://discord.gg/D4c9VFYWyU" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">

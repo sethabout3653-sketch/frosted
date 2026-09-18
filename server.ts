@@ -2458,6 +2458,302 @@ Respond strictly in valid JSON:
     res.json({ status: "ok", mode: process.env.NODE_ENV });
   });
 
+  // ==========================================
+  // 🌟 AI Assistant & OpenRouter Free Models
+  // ==========================================
+  interface OpenRouterFreeModel {
+    id: string;
+    name: string;
+    description: string;
+    category: "reasoning" | "conversational" | "coding" | "fast" | "creative";
+    contextLength: number;
+    highlight?: string;
+  }
+
+  const BASE_FREE_MODELS: OpenRouterFreeModel[] = [
+    {
+      id: "openrouter/free",
+      name: "OpenRouter Auto Free",
+      description: "Automatically routes each prompt to the fastest, most reliable free model available.",
+      category: "fast",
+      contextLength: 128000,
+      highlight: "Auto-Selected"
+    },
+    {
+      id: "deepseek/deepseek-r1:free",
+      name: "DeepSeek R1",
+      description: "State-of-the-art chain-of-thought reasoning. Excels at math, multi-step logic, and deep analysis.",
+      category: "reasoning",
+      contextLength: 64000,
+      highlight: "Deep Reasoning"
+    },
+    {
+      id: "deepseek/deepseek-chat:free",
+      name: "DeepSeek V3",
+      description: "High-capability flagship model for natural conversations, essay writing, and analytical problem-solving.",
+      category: "conversational",
+      contextLength: 64000,
+      highlight: "All-Rounder"
+    },
+    {
+      id: "meta-llama/llama-3.3-70b-instruct:free",
+      name: "Llama 3.3 70B",
+      description: "Meta's flagship 70B open weight model. Highly articulate, comprehensive knowledge and writing ability.",
+      category: "conversational",
+      contextLength: 128000,
+      highlight: "70B Powerhouse"
+    },
+    {
+      id: "meta-llama/llama-3.1-8b-instruct:free",
+      name: "Llama 3.1 8B",
+      description: "Snappy, lightweight, low-latency companion for quick questions, flashcard quizzes, and fast answers.",
+      category: "fast",
+      contextLength: 128000,
+      highlight: "Ultra Fast"
+    },
+    {
+      id: "qwen/qwen-2.5-coder-32b-instruct:free",
+      name: "Qwen 2.5 Coder 32B",
+      description: "Dedicated coding and computer science assistant. Expert at debugging, code explanation, and writing scripts.",
+      category: "coding",
+      contextLength: 32768,
+      highlight: "Coding Pro"
+    },
+    {
+      id: "qwen/qwen-2.5-72b-instruct:free",
+      name: "Qwen 2.5 72B",
+      description: "Top-tier multilingual open model with strong reasoning, literature analysis, and comprehension.",
+      category: "reasoning",
+      contextLength: 32768,
+      highlight: "72B Giant"
+    },
+    {
+      id: "mistralai/mistral-small-24b-instruct-2501:free",
+      name: "Mistral Small 24B",
+      description: "Crisp, factual European model built for direct, well-structured answers without fluff.",
+      category: "fast",
+      contextLength: 32768,
+      highlight: "Concise & Accurate"
+    },
+    {
+      id: "meta-llama/llama-3.1-8b-instruct:free",
+      name: "Llama 3.1 8B",
+      description: "Snappy, lightweight, low-latency companion for quick questions, flashcard quizzes, and fast answers.",
+      category: "fast",
+      contextLength: 128000,
+      highlight: "Ultra Fast"
+    },
+    {
+      id: "google/gemini-2.0-flash-thinking-exp:free",
+      name: "Gemini 2.0 Thinking Exp",
+      description: "Shows its internal thinking trace and step-by-step problem breakdown before answering.",
+      category: "reasoning",
+      contextLength: 32768,
+      highlight: "Step-by-Step"
+    },
+    {
+      id: "microsoft/phi-4:free",
+      name: "Microsoft Phi-4",
+      description: "Compact synthetic-data trained reasoning champion for science, logic, and mathematics.",
+      category: "reasoning",
+      contextLength: 16384,
+      highlight: "Math & Logic"
+    },
+    {
+      id: "google/gemma-2-9b-it:free",
+      name: "Gemma 2 9B",
+      description: "Google's lightweight, safe conversational model. Friendly, patient, and great for schoolwork tutoring.",
+      category: "conversational",
+      contextLength: 8192,
+      highlight: "Patient Tutor"
+    },
+    {
+      id: "cognitivecomputations/dolphin-mistral-24b-venom:free",
+      name: "Dolphin Mistral 24B",
+      description: "Open, creative, and unconstrained model for imaginative creative writing and roleplay.",
+      category: "creative",
+      contextLength: 32768,
+      highlight: "Creative"
+    },
+    {
+      id: "nvidia/nemotron-3.5-content-safety:free",
+      name: "Nvidia Nemotron 3.5",
+      description: "Advanced safety analysis, content critiquing, and text refinement.",
+      category: "reasoning",
+      contextLength: 8192,
+      highlight: "Refinement"
+    }
+  ];
+
+  let cachedFreeModels: OpenRouterFreeModel[] = [...BASE_FREE_MODELS];
+  let freeModelsLastFetched = 0;
+
+  app.get("/api/ai/models", async (req, res) => {
+    const now = Date.now();
+    // Cache for 30 minutes
+    if (now - freeModelsLastFetched > 30 * 60 * 1000) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const orRes = await fetch("https://openrouter.ai/api/v1/models", {
+          signal: controller.signal,
+          headers: {
+            "HTTP-Referer": "https://ai.studio/build",
+            "X-Title": "Frosted Companion"
+          }
+        });
+        clearTimeout(timeout);
+        if (orRes.ok) {
+          const data: any = await orRes.json();
+          if (Array.isArray(data?.data)) {
+            const dynamicFree = data.data
+              .filter((m: any) => typeof m.id === "string" && m.id.endsWith(":free"))
+              .map((m: any): OpenRouterFreeModel => {
+                const existing = BASE_FREE_MODELS.find(b => b.id === m.id);
+                if (existing) return existing;
+                const isCoder = m.id.includes("coder") || m.id.includes("code");
+                const isReasoning = m.id.includes("r1") || m.id.includes("thinking") || m.id.includes("reason");
+                const isSmall = m.id.includes("8b") || m.id.includes("small") || m.id.includes("flash") || m.id.includes("mini");
+                return {
+                  id: m.id,
+                  name: m.name || m.id.split("/")[1] || m.id,
+                  description: m.description || "Free OpenRouter model ready for study and chat.",
+                  category: isCoder ? "coding" : (isReasoning ? "reasoning" : (isSmall ? "fast" : "conversational")),
+                  contextLength: m.context_length || 32768,
+                  highlight: "Free Tier"
+                };
+              });
+
+            const map = new Map<string, OpenRouterFreeModel>();
+            for (const m of BASE_FREE_MODELS) map.set(m.id, m);
+            for (const m of dynamicFree) map.set(m.id, m);
+            cachedFreeModels = Array.from(map.values());
+            freeModelsLastFetched = now;
+          }
+        }
+      } catch (e) {
+        // Silently use cached models
+      }
+    }
+
+    res.json({
+      models: cachedFreeModels,
+      hasServerKey: !!OPENROUTER_API_KEY,
+    });
+  });
+
+  app.post("/api/ai/chat", async (req, res) => {
+    try {
+      const {
+        messages = [],
+        model = "openrouter/free",
+        systemPrompt = "You are Frosted Companion, a warm, patient, and knowledgeable study buddy and assistant. Explain things clearly, format code blocks with language tags, and be encouraging.",
+        temperature = 0.7,
+        customKey = ""
+      } = req.body || {};
+
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return res.status(400).json({ error: "Messages array cannot be empty." });
+      }
+
+      const clientKey = (typeof customKey === "string" && customKey.trim().length > 0)
+        ? customKey.trim()
+        : ((req.headers["x-openrouter-key"] as string) || OPENROUTER_API_KEY);
+
+      // Attempt 1: Call OpenRouter if a key is provided
+      if (clientKey) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 12000);
+
+          const payloadMessages = [
+            { role: "system", content: systemPrompt },
+            ...messages.map((m: any) => ({
+              role: m.role === "assistant" ? "assistant" : "user",
+              content: typeof m.content === "string" ? m.content : JSON.stringify(m.content)
+            }))
+          ];
+
+          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "Authorization": `Bearer ${clientKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": "https://ai.studio/build",
+              "X-Title": "Frosted Companion"
+            },
+            body: JSON.stringify({
+              model: model || "openrouter/free",
+              messages: payloadMessages,
+              temperature
+            })
+          });
+          clearTimeout(timeout);
+
+          if (response.ok) {
+            const data: any = await response.json();
+            const text = data?.choices?.[0]?.message?.content;
+            if (text) {
+              return res.json({
+                text,
+                model: data?.model || model,
+                provider: "openrouter"
+              });
+            }
+          } else {
+            const errText = await response.text().catch(() => "");
+            console.warn("OpenRouter API non-ok status:", response.status, errText);
+          }
+        } catch (e: any) {
+          console.warn("OpenRouter call failed, falling back to Gemini:", e?.message);
+        }
+      }
+
+      // Attempt 2: Seamless fallback to Gemini (works without any OpenRouter key)
+      const gemini = getGeminiClient();
+      if (gemini) {
+        try {
+          const formattedHistory = messages.map((m: any) => {
+            const speaker = m.role === "assistant" ? "Assistant" : "User";
+            return `${speaker}: ${m.content}`;
+          }).join("\n\n");
+
+          const prompt = `${systemPrompt}\n\nConversation so far:\n${formattedHistory}\n\nAssistant:`;
+
+          const result = await gemini.models.generateContent({
+            model: "gemini-3.6-flash",
+            contents: prompt,
+            config: {
+              temperature: Math.min(1.0, Math.max(0.1, temperature))
+            }
+          });
+
+          if (result && result.text) {
+            return res.json({
+              text: result.text,
+              model: model || "gemini-3.6-flash",
+              provider: "gemini-fallback",
+              note: "Powered by Frosted AI Assistant"
+            });
+          }
+        } catch (gemErr: any) {
+          console.warn("Gemini fallback also failed:", gemErr?.message);
+        }
+      }
+
+      // Fallback message if neither is available
+      return res.json({
+        text: "I'm currently unable to generate a response. Please check your internet connection and try sending your message again in a moment.",
+        model: model,
+        provider: "offline-helper"
+      });
+    } catch (err: any) {
+      console.error("AI chat endpoint fatal error:", err);
+      res.status(500).json({ error: "Something went wrong while generating response. Please try again." });
+    }
+  });
+
   // Dynamic LuminSDK Session & Image proxy
   let cachedLuminSessionId: string | null = null;
   let cachedLuminSessionExpiry = 0;
